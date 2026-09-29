@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "OfficeTime",
+    "slug": "officetime-attendance",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "web": {
+      "bundler": "metro"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.officetime"
+    },
+    "android": {
+      "package": "com.example.officetime",
+      "permissions": [
+        "POST_NOTIFICATIONS"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#2563eb",
+          "defaultChannel": "attendance-reminders"
+        }
+      ],
+      "expo-status-bar"
+    ]
+  }
+}

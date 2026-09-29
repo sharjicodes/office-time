@@ -3,7 +3,7 @@ import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, Sc
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import NetInfo from '@react-native-community/netinfo';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AttendanceDay, DEFAULT_POLICY, formatDuration, getAttendanceSummary, localDateKey, PolicyConfig } from './src/lib/attendance';
 import { loadDays, loadPolicy, saveDay, savePolicy, syncPending } from './src/lib/storage';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
@@ -16,6 +16,10 @@ const clock = (value: string | null) => value ? new Date(value).toLocaleTimeStri
 const monthName = (key: string) => new Date(`${key}-01T12:00:00`).toLocaleDateString([], { month: 'long', year: 'numeric' });
 
 export default function App() {
+  return <SafeAreaProvider><OfficeTimeApp /></SafeAreaProvider>;
+}
+
+function OfficeTimeApp() {
   const [session, setSession] = useState<any>(null);
   const [role, setRole] = useState('employee');
   const [booting, setBooting] = useState(true);

@@ -38,6 +38,30 @@ test('break handling can be configured to actual minutes or no deduction', () =>
   assert.equal(getAttendanceSummary(record, new Date('2026-09-29T18:00:00+05:30'), none).netWorkedMinutes, 540);
 });
 
+test('multiple sessions add only punched work and gaps count toward the break', () => {
+  const record: AttendanceDay = { ...day('09:00', '12:00'), sessions: [
+    { punchInAt: '2026-09-29T09:00:00+05:30', punchOutAt: '2026-09-29T12:00:00+05:30' },
+    { punchInAt: '2026-09-29T13:00:00+05:30', punchOutAt: '2026-09-29T18:00:00+05:30' },
+  ] };
+  const summary = getAttendanceSummary(record, new Date('2026-09-29T18:00:00+05:30'));
+  assert.equal(summary.elapsedMinutes, 480);
+  assert.equal(summary.deductedBreakMinutes, 0);
+  assert.equal(summary.netWorkedMinutes, 480);
+  assert.equal(summary.targetReached, true);
+});
+
+test('a later active session adds to completed sessions while time off the clock is excluded', () => {
+  const record: AttendanceDay = { ...day('09:00', '12:00'), sessions: [
+    { punchInAt: '2026-09-29T09:00:00+05:30', punchOutAt: '2026-09-29T12:00:00+05:30' },
+    { punchInAt: '2026-09-29T13:00:00+05:30', punchOutAt: null },
+  ] };
+  const summary = getAttendanceSummary(record, new Date('2026-09-29T15:00:00+05:30'));
+  assert.equal(summary.elapsedMinutes, 300);
+  assert.equal(summary.deductedBreakMinutes, 0);
+  assert.equal(summary.netWorkedMinutes, 300);
+  assert.equal(getAttendanceSummary({ ...record, date: '2026-09-30', punchInAt: null, punchOutAt: null, sessions: [] }).elapsedMinutes, 0);
+});
+
 test('month late count is informational and uses local calendar dates', () => {
   assert.equal(monthLateCount([day('09:30'), day('09:00'), { ...day('09:10'), date: '2026-08-31' }], '2026-09'), 1);
 });

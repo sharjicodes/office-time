@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
-import { AttendanceDay, DEFAULT_POLICY, localDateKey } from './attendance';
+import { AttendanceDay, DEFAULT_POLICY, getDaySessions, localDateKey } from './attendance';
 import { supabase } from './supabase';
 
 const DAYS_KEY = 'officetime.attendance.v1';
@@ -38,6 +38,7 @@ export async function loadDays(): Promise<AttendanceDay[]> {
 function fromRemote(row: any): AttendanceDay {
   return { id: row.id, user_id: row.user_id, date: row.work_date,
     punchInAt: row.punch_in_at, punchOutAt: row.punch_out_at,
+    sessions: Array.isArray(row.sessions) && row.sessions.length ? row.sessions : (row.punch_in_at ? [{ punchInAt: row.punch_in_at, punchOutAt: row.punch_out_at }] : []),
     breakMinutes: row.break_minutes ?? DEFAULT_POLICY.defaultBreakMinutes,
     managerApproval: row.manager_approved_late_login ?? false,
     approvalStatus: row.approval_status ?? 'not_required', synced: true };
@@ -65,7 +66,7 @@ export async function syncPending(days?: AttendanceDay[]) {
   const pending = (days ?? await loadLocalDays()).filter(d => !d.synced);
   for (const day of pending) {
     const payload = { user_id: user.id, work_date: day.date, punch_in_at: day.punchInAt,
-      punch_out_at: day.punchOutAt, break_minutes: day.breakMinutes,
+      punch_out_at: day.punchOutAt, sessions: getDaySessions(day), break_minutes: day.breakMinutes,
       manager_approved_late_login: day.managerApproval };
     const { error } = await supabase.from('attendance_days').upsert(payload, { onConflict: 'user_id,work_date' });
     if (!error) {

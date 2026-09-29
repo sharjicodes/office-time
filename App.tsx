@@ -4,7 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import NetInfo from '@react-native-community/netinfo';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { AttendanceDay, DEFAULT_POLICY, formatDuration, getAttendanceSummary, localDateKey, PolicyConfig } from './src/lib/attendance';
+import { AttendanceDay, DEFAULT_POLICY, formatDuration, getAttendanceSummary, getDaySessions, localDateKey, PolicyConfig } from './src/lib/attendance';
 import { loadDays, loadPolicy, saveDay, savePolicy, syncPending } from './src/lib/storage';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
 import { cancelReminder, scheduleDailyReminder, scheduleTimedReminder } from './src/lib/notifications';
@@ -34,8 +34,10 @@ function OfficeTimeApp() {
   const today = localDateKey(now);
   const day = days.find(item => item.date === today) ?? { date: today, punchInAt: null, punchOutAt: null, breakMinutes: policy.defaultBreakMinutes, managerApproval: false, synced: true };
   const summary = useMemo(() => getAttendanceSummary(day, now, policy), [day, now, policy]);
-  const active = !!day.punchInAt && !day.punchOutAt;
-  const completed = !!day.punchOutAt;
+  const sessions = getDaySessions(day);
+  const activeSession = sessions.slice().reverse().find(session => !session.punchOutAt) ?? null;
+  const active = !!activeSession;
+  const completed = sessions.length > 0 && !active;
   const refresh = useCallback(async () => {
     setDays(await loadDays()); setPolicy(await loadPolicy());
   }, []);
@@ -70,12 +72,19 @@ function OfficeTimeApp() {
   }, [tab, role]);
 
   async function punch(kind: 'in' | 'out') {
-    if (kind === 'in' && day.punchInAt) return Alert.alert('Already punched in', 'There is already a punch-in recorded for today.');
+    if (kind === 'in' && active) return Alert.alert('Already punched in', 'Punch out of your current session before starting another.');
     if (kind === 'out' && !active) return Alert.alert('No active session', 'Punch in before punching out.');
     const stamp = new Date();
-    if (kind === 'out' && stamp <= new Date(day.punchInAt!)) return Alert.alert('Invalid time', 'Punch-out must be later than punch-in.');
-    const updated = await saveDay({ ...day, date: localDateKey(stamp), punchInAt: kind === 'in' ? stamp.toISOString() : day.punchInAt,
-      punchOutAt: kind === 'out' ? stamp.toISOString() : day.punchOutAt, breakMinutes: policy.defaultBreakMinutes });
+    if (kind === 'out' && stamp <= new Date(activeSession!.punchInAt)) return Alert.alert('Invalid time', 'Punch-out must be later than punch-in.');
+    const stampText = stamp.toISOString();
+    const nextSessions = kind === 'in'
+      ? [...sessions, { punchInAt: stampText, punchOutAt: null }]
+      : sessions.map(session => session === activeSession ? { ...session, punchOutAt: stampText } : session);
+    const nextActive = nextSessions.some(session => !session.punchOutAt);
+    const updated = await saveDay({ ...day, date: localDateKey(stamp), sessions: nextSessions,
+      punchInAt: nextSessions[0]?.punchInAt ?? null,
+      punchOutAt: nextActive ? null : nextSessions[nextSessions.length - 1]?.punchOutAt ?? null,
+      breakMinutes: day.sessions?.length ? day.breakMinutes : policy.defaultBreakMinutes });
     setDays(list => [updated, ...list.filter(d => d.date !== updated.date)]);
     if (kind === 'in') {
       await scheduleTimedNotice('missing-punch-out', 'Don’t forget to punch out', 'Your attendance session is still open.', 9 * 60 * 60 * 1000);
@@ -88,8 +97,7 @@ function OfficeTimeApp() {
     }
   }
   async function scheduleWorkTarget(config = policy, currentSummary = summary, record = day) {
-    const futureBreak = config.breakDeductionMode === 'fixed' ? config.defaultBreakMinutes : config.breakDeductionMode === 'actual' ? record.breakMinutes : 0;
-    const ms = Math.max(60_000, (config.recordedWorkTargetMinutes + futureBreak - currentSummary.elapsedMinutes) * 60_000);
+    const ms = Math.max(60_000, currentSummary.remainingMinutes * 60_000);
     await scheduleTimedNotice('work-target', 'Work hours complete', `${formatDuration(config.recordedWorkTargetMinutes)} recorded work hours reached.`, ms);
   }
   async function cancelNotice(kind: string) {
@@ -101,7 +109,7 @@ function OfficeTimeApp() {
   async function submitLateApproval() {
     if (!supabase || !session) return Alert.alert('Sign in to request approval', 'Connect your work account to send a request to your manager.');
     const { error } = await supabase.from('late_arrival_reviews').upsert({ user_id: session.user.id, work_date: day.date,
-      login_at: day.punchInAt, minutes_late: summary.lateMinutes, after_flex_limit: summary.afterFlexLimit, review_status: 'pending' }, { onConflict: 'user_id,work_date' });
+      login_at: sessions[0]?.punchInAt ?? day.punchInAt, minutes_late: summary.lateMinutes, after_flex_limit: summary.afterFlexLimit, review_status: 'pending' }, { onConflict: 'user_id,work_date' });
     if (error) Alert.alert('Request not sent', error.message); else Alert.alert('Request submitted', 'Your manager can review this late-arrival request.');
   }
   async function changePolicy(key: keyof PolicyConfig, value: any) {
@@ -136,12 +144,13 @@ function OfficeTimeApp() {
           <View style={styles.heroTop}><View><Text style={styles.heroLabel}>RECORDED WORK HOURS</Text><Text style={styles.heroTime}>{formatDuration(summary.netWorkedMinutes)}</Text></View><View style={styles.progressBadge}><Text style={styles.progressBadgeText}>{summary.progressPercent}%</Text></View></View>
           <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${summary.progressPercent}%` }]} /></View>
           <View style={styles.progressMeta}><Text style={styles.heroSmall}>{summary.targetStatus}</Text><Text style={styles.heroSmall}>Target {formatDuration(policy.recordedWorkTargetMinutes)}</Text></View>
-          <View style={styles.buttonRow}><Pressable style={[styles.action, styles.primary]} onPress={() => void punch('in')} disabled={!!day.punchInAt}><Text style={styles.actionText}>↗  Punch in</Text></Pressable><Pressable style={[styles.action, styles.teal, !active && styles.dim]} onPress={() => void punch('out')} disabled={!active}><Text style={styles.actionText}>↙  Punch out</Text></Pressable></View>
-          <Text style={styles.helper}>{active ? `Started at ${clock(day.punchInAt)} · don’t forget to punch out` : completed ? 'Your day is complete. Great work.' : 'Tap once when you begin your workday.'}</Text>
+          <View style={styles.buttonRow}><Pressable style={[styles.action, styles.primary, active && styles.dim]} onPress={() => void punch('in')} disabled={active}><Text style={styles.actionText}>↗  Punch in</Text></Pressable><Pressable style={[styles.action, styles.teal, !active && styles.dim]} onPress={() => void punch('out')} disabled={!active}><Text style={styles.actionText}>↙  Punch out</Text></Pressable></View>
+          <Text style={styles.helper}>{active ? `Started at ${clock(activeSession!.punchInAt)} · don’t forget to punch out` : completed ? 'Off the clock · punch in again to add more time.' : 'Tap once when you begin your workday.'}</Text>
         </View>
-        <View style={styles.statGrid}><Stat label="Punch in" value={clock(day.punchInAt)} /><Stat label="Punch out" value={active ? 'In progress' : clock(day.punchOutAt)} /><Stat label="Elapsed" value={formatDuration(summary.elapsedMinutes)} /><Stat label="Break deducted" value={formatDuration(summary.deductedBreakMinutes)} /></View>
+        <View style={styles.statGrid}><Stat label="Punch in" value={clock(sessions[0]?.punchInAt ?? null)} /><Stat label="Punch out" value={active ? 'In progress' : clock(sessions[sessions.length - 1]?.punchOutAt ?? null)} /><Stat label="Elapsed" value={formatDuration(summary.elapsedMinutes)} /><Stat label="Break deducted" value={formatDuration(summary.deductedBreakMinutes)} /></View>
         <View style={styles.card}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>Policy check</Text><Pill text={summary.afterFlexLimit ? 'Review needed' : summary.lateMinutes ? 'Late login' : day.punchInAt ? 'On time' : 'Awaiting punch'} warning={summary.lateMinutes > 0} /></View>
           <Row label="Standard start" value="9:00 AM" /><Row label="Flexible login limit" value="10:00 AM" /><Row label="Login status" value={summary.loginStatus} warning={summary.lateMinutes > 0} />
+          <Row label="Sessions today" value={`${sessions.length}${active ? ' · active' : ''}`} />
           <Row label="Late arrivals this month" value={`${lateDays.length} of ${policy.lateAllowancePerMonth} permitted*`} warning={lateDays.length > policy.lateAllowancePerMonth} />
           {summary.lateMinutes > 0 && day.punchInAt && <Pressable style={styles.outlineButton} onPress={() => void submitLateApproval()}><Text style={styles.outlineText}>Request manager approval</Text></Pressable>}
           <Text style={styles.policyNote}>*Allowance and half-day treatment are not enforced until HR confirms the policy interpretation.</Text>
@@ -183,7 +192,7 @@ function History({ days, policy }: { days: AttendanceDay[]; policy: PolicyConfig
   const rows = days.filter(d => d.date.startsWith(month));
   const total = rows.reduce((sum, d) => sum + getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy).netWorkedMinutes, 0);
   function shiftMonth(delta: number) { const date = new Date(`${month}-01T12:00:00`); date.setMonth(date.getMonth() + delta); setMonth(localDateKey(date).slice(0, 7)); }
-  return <><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{rows.filter(d => d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).lateMinutes > 0).length}</Text></View></View>{rows.length ? rows.map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); return <View key={d.date} style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><View style={styles.historyMain}><Text style={styles.historyTitle}>{clock(d.punchInAt)} — {d.punchOutAt ? clock(d.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{s.loginStatus} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text></View><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text></View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
+  return <><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{rows.filter(d => d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).lateMinutes > 0).length}</Text></View></View>{rows.length ? rows.map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; return <View key={d.date} style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><View style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text></View><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text></View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
 }
 
 function HRDashboard({ rows, loading, onRefresh, onResolve }: { rows: any[]; loading: boolean; onRefresh: () => void; onResolve: (id: string, status: 'approved' | 'rejected') => void }) {

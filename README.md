@@ -5,7 +5,7 @@ Responsive office attendance app built with React Native, Expo SDK 57, TypeScrip
 ## Features
 
 - Email/password sign-up and sign-in with persistent Supabase Auth sessions, plus local-only mode.
-- One-tap daily punch-in and punch-out, current session tracking, and day/month history.
+- One-tap punch-in and punch-out with any number of work sessions per local calendar day, accumulated into day/month totals.
 - Elapsed time, configurable break deduction, net recorded hours, progress, and remaining target time.
 - 9:00 AM standard start, 10:00 AM flexible limit, and late-login flags.
 - Monthly late-arrival count, prior manager approval request, and a monthly allowance setting.
@@ -117,7 +117,8 @@ Use Apple signing/TestFlight for iOS distribution and a Play Console signing key
 
 ## Known boundaries
 
-- A single punch-in/out session per employee per local work date is supported; lunch is represented by a configurable deduction, not separate punch events.
+- Employees may record multiple punch-in/out sessions on the same local calendar day. Each completed interval is added to the daily total; off-clock gaps never count as worked time. A configured break deduction is reduced by gaps between sessions, so a recorded lunch gap is not deducted twice. A new local calendar day starts with a zero daily total.
+- Existing one-session records migrate as a single session. Supabase deployments must rerun `supabase/schema.sql` to add the `sessions` JSONB column before syncing multi-session days.
 - Offline changes persist and sync as attendance-day upserts. For official payroll use, add server-trusted event timestamps, audited correction requests, retention rules, backups, and policy-approved conflict handling.
 - Reminder delivery is best-effort device-local scheduling and depends on notification permission and OS background behavior.
 - Web work-target reminders are foreground-tab timers and are not push notifications; browser storage is local to that browser unless Supabase sync is configured.

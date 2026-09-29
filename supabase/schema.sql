@@ -14,6 +14,7 @@ create table if not exists public.attendance_days (
   work_date date not null,
   punch_in_at timestamptz,
   punch_out_at timestamptz,
+  sessions jsonb not null default '[]'::jsonb check (jsonb_typeof(sessions) = 'array'),
   break_minutes integer not null default 60 check (break_minutes between 0 and 240),
   manager_approved_late_login boolean not null default false,
   approval_status text not null default 'not_required' check (approval_status in ('pending','approved','rejected','not_required')),
@@ -48,6 +49,7 @@ create table if not exists public.late_arrival_reviews (
 
 -- Migration safety for installations that used the starter schema.
 alter table public.attendance_days add column if not exists approval_status text not null default 'not_required';
+alter table public.attendance_days add column if not exists sessions jsonb not null default '[]'::jsonb;
 alter table public.late_arrival_reviews add column if not exists reviewed_by uuid references auth.users(id);
 alter table public.late_arrival_reviews add column if not exists reviewed_at timestamptz;
 
@@ -152,11 +154,26 @@ begin
   return query
     select r.id, p.id, coalesce(p.display_name, u.email::text), u.email::text, coalesce(r.work_date, a.work_date),
       r.minutes_late, r.review_status,
-      case when a.punch_in_at is null then 0 else greatest(0, floor(extract(epoch from (coalesce(a.punch_out_at, now()) - a.punch_in_at))/60)::integer - a.break_minutes) end
+      case when a.punch_in_at is null then 0
+        when jsonb_typeof(a.sessions) = 'array' and jsonb_array_length(a.sessions) > 0 then
+          greatest(0, coalesce(session_totals.elapsed_minutes, 0) - greatest(0, a.break_minutes - coalesce(session_totals.gap_minutes, 0)))
+        else greatest(0, floor(extract(epoch from (coalesce(a.punch_out_at, now()) - a.punch_in_at))/60)::integer - a.break_minutes)
+      end
     from public.attendance_days a
     join auth.users u on u.id = a.user_id
     join public.profiles p on p.id = a.user_id
     full join public.late_arrival_reviews r on r.user_id = a.user_id and r.work_date = a.work_date
+    left join lateral (
+      select
+        coalesce(sum(floor(extract(epoch from (coalesce((s.value->>'punchOutAt')::timestamptz, now()) - (s.value->>'punchInAt')::timestamptz))/60)::integer), 0)::integer as elapsed_minutes,
+        coalesce(sum(case when s.previous_value->>'punchOutAt' is not null
+          then greatest(0, floor(extract(epoch from ((s.value->>'punchInAt')::timestamptz - (s.previous_value->>'punchOutAt')::timestamptz))/60)::integer)
+          else 0 end), 0)::integer as gap_minutes
+      from (
+        select value, lag(value) over (order by ordinality) as previous_value
+        from jsonb_array_elements(case when jsonb_typeof(a.sessions) = 'array' then a.sessions else '[]'::jsonb end) with ordinality
+      ) s
+    ) session_totals on true
     where a.work_date >= current_date - 30 or r.work_date >= current_date - 30
     order by coalesce(r.work_date, a.work_date) desc;
 end; $$;

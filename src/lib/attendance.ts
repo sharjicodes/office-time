@@ -14,17 +14,26 @@ export const DEFAULT_POLICY: PolicyConfig = {
   lateAllowancePerMonth: 4, breakDeductionMode: 'fixed', halfDayRule: 'disabled',
 };
 
+export type AttendanceSession = { punchInAt: string; punchOutAt: string | null };
+
 export type AttendanceDay = {
   id?: string;
   user_id?: string;
   date: string;
   punchInAt: string | null;
   punchOutAt: string | null;
+  /** Individual work intervals. Optional to migrate existing single-session records. */
+  sessions?: AttendanceSession[];
   breakMinutes: number;
   managerApproval: boolean;
   approvalStatus?: 'pending' | 'approved' | 'rejected' | 'not_required';
   synced?: boolean;
 };
+
+export function getDaySessions(day: AttendanceDay): AttendanceSession[] {
+  if (day.sessions?.length) return day.sessions;
+  return day.punchInAt ? [{ punchInAt: day.punchInAt, punchOutAt: day.punchOutAt }] : [];
+}
 
 const mins = (time: string) => {
   const [h, m] = time.split(':').map(Number);
@@ -38,10 +47,22 @@ export function formatDuration(totalMinutes: number) {
   return `${Math.floor(n / 60)}h ${String(n % 60).padStart(2, '0')}m`;
 }
 export function getAttendanceSummary(day: AttendanceDay, now = new Date(), policy = DEFAULT_POLICY) {
-  const start = day.punchInAt ? new Date(day.punchInAt) : null;
-  const end = day.punchOutAt ? new Date(day.punchOutAt) : start ? now : null;
-  const elapsedMinutes = start && end ? Math.max(0, Math.floor((end.getTime() - start.getTime()) / 60000)) : 0;
-  const deducted = !start || policy.breakDeductionMode === 'none' ? 0 : policy.breakDeductionMode === 'actual' ? day.breakMinutes : policy.defaultBreakMinutes;
+  const sessions = getDaySessions(day).slice().sort((a, b) => a.punchInAt.localeCompare(b.punchInAt));
+  const start = sessions[0] ? new Date(sessions[0].punchInAt) : null;
+  let elapsedMinutes = 0;
+  let unpaidGapMinutes = 0;
+  for (let i = 0; i < sessions.length; i++) {
+    const session = sessions[i];
+    const sessionStart = new Date(session.punchInAt);
+    const sessionEnd = session.punchOutAt ? new Date(session.punchOutAt) : now;
+    elapsedMinutes += Math.max(0, Math.floor((sessionEnd.getTime() - sessionStart.getTime()) / 60000));
+    const next = sessions[i + 1];
+    if (session.punchOutAt && next) unpaidGapMinutes += Math.max(0, Math.floor((new Date(next.punchInAt).getTime() - new Date(session.punchOutAt).getTime()) / 60000));
+  }
+  const configuredBreak = policy.breakDeductionMode === 'none' ? 0 : policy.breakDeductionMode === 'actual' ? day.breakMinutes : policy.defaultBreakMinutes;
+  // Time away between sessions already excludes that time from elapsed work.
+  // Only deduct the configured break still missing from those gaps.
+  const deducted = start ? Math.max(0, configuredBreak - unpaidGapMinutes) : 0;
   const netWorkedMinutes = Math.max(0, elapsedMinutes - deducted);
   const remainingMinutes = Math.max(0, policy.recordedWorkTargetMinutes - netWorkedMinutes);
   const progressPercent = Math.min(100, Math.round(netWorkedMinutes / policy.recordedWorkTargetMinutes * 100));

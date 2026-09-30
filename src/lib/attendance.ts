@@ -13,6 +13,7 @@ export const DEFAULT_POLICY: PolicyConfig = {
   recordedWorkTargetMinutes: 480, defaultBreakMinutes: 60,
   lateAllowancePerMonth: 4, breakDeductionMode: 'fixed', halfDayRule: 'disabled',
 };
+export const MONTHLY_LATE_LOGIN_LIMIT = 4;
 
 export type AttendanceSession = { punchInAt: string; punchOutAt: string | null };
 
@@ -79,5 +80,11 @@ export function getAttendanceSummary(day: AttendanceDay, now = new Date(), polic
 }
 
 export function monthLateCount(days: AttendanceDay[], month = localDateKey().slice(0, 7), policy = DEFAULT_POLICY) {
-  return days.filter(day => day.date.startsWith(month) && day.punchInAt && getAttendanceSummary(day, new Date(day.punchInAt), policy).lateMinutes > 0).length;
+  return days.filter(day => day.date.startsWith(month) && day.punchInAt && getAttendanceSummary(day, new Date(day.punchInAt), policy).afterFlexLimit).length;
+}
+
+export function isHalfDayDate(days: AttendanceDay[], date: string, policy = DEFAULT_POLICY) {
+  const lateDates = [...new Set(days.filter(day => day.date.startsWith(date.slice(0, 7)) && day.punchInAt
+    && getAttendanceSummary(day, new Date(day.punchInAt), policy).afterFlexLimit).map(day => day.date))].sort();
+  return lateDates.indexOf(date) >= MONTHLY_LATE_LOGIN_LIMIT - 1;
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AttendanceDay, DEFAULT_POLICY, getAttendanceSummary, formatDuration, monthLateCount } from '../src/lib/attendance';
+import { AttendanceDay, DEFAULT_POLICY, getAttendanceSummary, formatDuration, isHalfDayDate, monthLateCount } from '../src/lib/attendance';
 
 function day(login: string, logout: string | null = null): AttendanceDay {
   return { date: '2026-09-29', punchInAt: `2026-09-29T${login}:00+05:30`, punchOutAt: logout ? `2026-09-29T${logout}:00+05:30` : null, breakMinutes: 60, managerApproval: false };
@@ -63,7 +63,16 @@ test('a later active session adds to completed sessions while time off the clock
 });
 
 test('month late count is informational and uses local calendar dates', () => {
-  assert.equal(monthLateCount([day('09:30'), day('09:00'), { ...day('09:10'), date: '2026-08-31' }], '2026-09'), 1);
+  assert.equal(monthLateCount([day('10:30'), day('09:00'), day('09:30'), { ...day('10:10'), date: '2026-08-31' }], '2026-09'), 1);
+});
+
+test('half-day is applied on the fourth after-10 AM login date of the month', () => {
+  const days = ['2026-09-01', '2026-09-04', '2026-09-12', '2026-09-29'].map((date, index) => ({
+    ...day(['10:05', '10:30', '11:00', '10:15'][index]), date,
+  }));
+  assert.equal(isHalfDayDate(days, '2026-09-12'), false);
+  assert.equal(isHalfDayDate(days, '2026-09-29'), true);
+  assert.equal(isHalfDayDate(days, '2026-10-01'), false);
 });
 
 test('duration formatting clamps negative minutes', () => assert.equal(formatDuration(-1), '0h 00m'));

@@ -4,13 +4,13 @@ import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import NetInfo from '@react-native-community/netinfo';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { AttendanceDay, DEFAULT_POLICY, formatDuration, getAttendanceSummary, getDaySessions, localDateKey, PolicyConfig } from './src/lib/attendance';
+import { AttendanceDay, DEFAULT_POLICY, formatDuration, getAttendanceSummary, getDaySessions, isHalfDayDate, localDateKey, MONTHLY_LATE_LOGIN_LIMIT, monthLateCount, PolicyConfig } from './src/lib/attendance';
 import { clearDay, loadDays, loadPolicy, saveDay, savePolicy, syncPending } from './src/lib/storage';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
-import { cancelReminder, scheduleDailyReminder, scheduleTimedReminder } from './src/lib/notifications';
+import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
 import { colors } from './src/theme';
 
-if (Platform.OS !== 'web') Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: false, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
+if (Platform.OS !== 'web') Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
 type Tab = 'Today' | 'History' | 'HR';
 const clock = (value: string | null) => value ? new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
 const monthName = (key: string) => new Date(`${key}-01T12:00:00`).toLocaleDateString([], { month: 'long', year: 'numeric' });
@@ -83,6 +83,7 @@ function OfficeTimeApp() {
   async function punch(kind: 'in' | 'out') {
     if (kind === 'in' && active) return Alert.alert('Already punched in', 'Punch out of your current session before starting another.');
     if (kind === 'out' && !active) return Alert.alert('No active session', 'Punch in before punching out.');
+    await prepareAttendanceNotifications();
     const stamp = new Date();
     if (kind === 'out' && stamp <= new Date(activeSession!.punchInAt)) return Alert.alert('Invalid time', 'Punch-out must be later than punch-in.');
     const stampText = stamp.toISOString();
@@ -90,19 +91,36 @@ function OfficeTimeApp() {
       ? [...sessions, { punchInAt: stampText, punchOutAt: null }]
       : sessions.map(session => session === activeSession ? { ...session, punchOutAt: stampText } : session);
     const nextActive = nextSessions.some(session => !session.punchOutAt);
-    const updated = await saveDay({ ...day, date: localDateKey(stamp), sessions: nextSessions,
+    const draft = { ...day, date: localDateKey(stamp), sessions: nextSessions,
       punchInAt: nextSessions[0]?.punchInAt ?? null,
       punchOutAt: nextActive ? null : nextSessions[nextSessions.length - 1]?.punchOutAt ?? null,
-      breakMinutes: day.sessions?.length ? day.breakMinutes : policy.defaultBreakMinutes });
+      breakMinutes: day.sessions?.length ? day.breakMinutes : policy.defaultBreakMinutes };
+    const updatedSummary = getAttendanceSummary(draft, stamp, policy);
+    const updated = await saveDay(draft);
     setDays(list => [updated, ...list.filter(d => d.date !== updated.date)]);
+    const targetJustReached = !summary.targetReached && updatedSummary.targetReached;
+    const firstLoginIsLate = kind === 'in' && sessions.length === 0 && updatedSummary.afterFlexLimit;
+    if (targetJustReached) {
+      await cancelNotice('work-target');
+      const body = `${formatDuration(policy.recordedWorkTargetMinutes)} of recorded work reached. Congratulations — fantastic work today!`;
+      if (!(await showWorkHourCongratulations('Daily work goal reached! 🎉', body))) Alert.alert('Daily work goal reached! 🎉', body);
+    }
     if (kind === 'in') {
       await scheduleTimedNotice('missing-punch-out', 'Don’t forget to punch out', 'Your attendance session is still open.', 9 * 60 * 60 * 1000);
-      await scheduleWorkTarget(policy, getAttendanceSummary(updated, stamp, policy), updated);
-      Alert.alert('Punched in', `Recorded at ${clock(stamp.toISOString())}.`);
+      if (!updatedSummary.targetReached) await scheduleWorkTarget(policy, updatedSummary, updated);
+      if (firstLoginIsLate) {
+        const monthCount = monthLateCount([updated, ...days.filter(item => item.date !== updated.date)], updated.date.slice(0, 7), policy);
+        const remaining = Math.max(0, MONTHLY_LATE_LOGIN_LIMIT - monthCount);
+        const body = monthCount >= MONTHLY_LATE_LOGIN_LIMIT
+          ? `Late login ${monthCount} of ${MONTHLY_LATE_LOGIN_LIMIT}. No late logins remain this month. A half-day has been applied for today.`
+          : `Late login ${monthCount} of ${MONTHLY_LATE_LOGIN_LIMIT}. ${remaining} late login${remaining === 1 ? '' : 's'} left this month.`;
+        if (!(await showLateLoginWarning('Late login after 10:00 AM', body))) Alert.alert('Late login after 10:00 AM', body);
+      }
+      if (!firstLoginIsLate) Alert.alert('Punched in', `Recorded at ${clock(stamp.toISOString())}.`);
     } else {
       await cancelNotice('missing-punch-out');
       await cancelNotice('work-target');
-      Alert.alert('Punched out', 'Your attendance for today has been saved.');
+      if (!targetJustReached) Alert.alert('Punched out', 'Your attendance for today has been saved.');
     }
   }
   async function clearAttendanceDay(date: string) {
@@ -115,7 +133,7 @@ function OfficeTimeApp() {
   }
   async function scheduleWorkTarget(config = policy, currentSummary = summary, record = day) {
     const ms = Math.max(60_000, currentSummary.remainingMinutes * 60_000);
-    await scheduleTimedNotice('work-target', 'Work hours complete', `${formatDuration(config.recordedWorkTargetMinutes)} recorded work hours reached.`, ms);
+      await scheduleTimedNotice('work-target', 'Daily work goal reached! 🎉', `Congratulations! You reached ${formatDuration(config.recordedWorkTargetMinutes)} of recorded work today. Fantastic work!`, ms);
   }
   async function cancelNotice(kind: string) {
     await cancelReminder(kind);
@@ -149,7 +167,8 @@ function OfficeTimeApp() {
   if (booting) return <SafeAreaView style={styles.safe}><View style={styles.center}><ActivityIndicator color={colors.blue} /><Text style={styles.muted}>Loading OfficeTime…</Text></View></SafeAreaView>;
   if (!session && isSupabaseConfigured && !offlineContinue) return <AuthScreen onContinue={() => setOfflineContinue(true)} />;
 
-  const lateDays = days.filter(d => d.date.startsWith(today.slice(0, 7)) && d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).lateMinutes > 0);
+  const lateDays = days.filter(d => d.date.startsWith(today.slice(0, 7)) && d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).afterFlexLimit);
+  const halfDayToday = isHalfDayDate(days, today, policy);
   return <SafeAreaView style={styles.safe}>
     <StatusBar style="dark" />
     <ScrollView contentContainerStyle={styles.page}>
@@ -165,20 +184,19 @@ function OfficeTimeApp() {
           <Text style={styles.helper}>{active ? `Started at ${clock(activeSession!.punchInAt)} · don’t forget to punch out` : completed ? 'Off the clock · punch in again to add more time.' : 'Tap once when you begin your workday.'}</Text>
         </View>
         <View style={styles.statGrid}><Stat label="Punch in" value={clock(sessions[0]?.punchInAt ?? null)} /><Stat label="Punch out" value={active ? 'In progress' : clock(sessions[sessions.length - 1]?.punchOutAt ?? null)} /><Stat label={active ? 'Timer · running' : 'Timer · stopped'} value={formatTimer(timerSeconds)} /><Stat label="Break deducted" value={formatDuration(summary.deductedBreakMinutes)} /></View>
-        <View style={styles.card}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>Policy check</Text><Pill text={summary.afterFlexLimit ? 'Review needed' : summary.lateMinutes ? 'Late login' : day.punchInAt ? 'On time' : 'Awaiting punch'} warning={summary.lateMinutes > 0} /></View>
+        <View style={styles.card}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>Policy check</Text><Pill text={halfDayToday ? 'Half-day' : summary.afterFlexLimit ? 'Late login' : summary.lateMinutes ? 'Late before flex limit' : day.punchInAt ? 'On time' : 'Awaiting punch'} warning={halfDayToday || summary.lateMinutes > 0} /></View>
           <Row label="Standard start" value="9:00 AM" /><Row label="Flexible login limit" value="10:00 AM" /><Row label="Login status" value={summary.loginStatus} warning={summary.lateMinutes > 0} />
           <Row label="Sessions today" value={`${sessions.length}${active ? ' · active' : ''}`} />
-          <Row label="Late arrivals this month" value={`${lateDays.length} of ${policy.lateAllowancePerMonth} permitted*`} warning={lateDays.length > policy.lateAllowancePerMonth} />
+          <Row label="Late logins after 10 AM this month" value={`${lateDays.length} of ${MONTHLY_LATE_LOGIN_LIMIT} · ${Math.max(0, MONTHLY_LATE_LOGIN_LIMIT - lateDays.length)} left`} warning={lateDays.length >= MONTHLY_LATE_LOGIN_LIMIT} />
+          {halfDayToday && <Row label="Today's attendance" value="Half-day applied" warning />}
           {summary.lateMinutes > 0 && day.punchInAt && <Pressable style={styles.outlineButton} onPress={() => void submitLateApproval()}><Text style={styles.outlineText}>Request manager approval</Text></Pressable>}
-          <Text style={styles.policyNote}>*Allowance and half-day treatment are not enforced until HR confirms the policy interpretation.</Text>
+          <Text style={styles.policyNote}>After-10 AM first punch-ins count toward the four-login monthly limit. The fourth and later qualifying days are marked as half-days.</Text>
         </View>
         <View style={styles.card}><Text style={styles.sectionTitle}>Your workday settings</Text><Text style={styles.muted}>Editable defaults pending HR confirmation</Text>
           <Stepper label="Recorded work target" value={formatDuration(policy.recordedWorkTargetMinutes)} onMinus={() => void changePolicy('recordedWorkTargetMinutes', Math.max(60, policy.recordedWorkTargetMinutes - 30))} onPlus={() => void changePolicy('recordedWorkTargetMinutes', policy.recordedWorkTargetMinutes + 30)} />
           <Stepper label="Break deduction" value={`${policy.defaultBreakMinutes} min`} onMinus={() => void changePolicy('defaultBreakMinutes', Math.max(0, policy.defaultBreakMinutes - 15))} onPlus={() => void changePolicy('defaultBreakMinutes', Math.min(240, policy.defaultBreakMinutes + 15))} />
           <SettingChoice label="Deduction mode" value={policy.breakDeductionMode} options={['fixed', 'actual', 'none']} onSelect={value => void changePolicy('breakDeductionMode', value)} />
           {policy.breakDeductionMode === 'actual' && <Stepper label="Today's actual break" value={`${day.breakMinutes} min`} onMinus={() => void changeTodayBreak(day.breakMinutes - 15)} onPlus={() => void changeTodayBreak(day.breakMinutes + 15)} />}
-          <SettingChoice label="Half-day rule" value={policy.halfDayRule === 'disabled' ? 'disabled' : 'after 10 AM'} options={['disabled', 'after 10 AM']} onSelect={value => void changePolicy('halfDayRule', value === 'disabled' ? 'disabled' : 'after_flex')} />
-          <Stepper label="Late-arrival allowance" value={`${policy.lateAllowancePerMonth} / month`} onMinus={() => void changePolicy('lateAllowancePerMonth', Math.max(0, policy.lateAllowancePerMonth - 1))} onPlus={() => void changePolicy('lateAllowancePerMonth', policy.lateAllowancePerMonth + 1)} />
           <Pressable style={styles.outlineButton} onPress={() => void scheduleWorkTarget()}><Text style={styles.outlineText}>Remind me when target is reached</Text></Pressable>
           {Platform.OS === 'web' && <Text style={styles.muted}>Browser reminders need notification permission and this tab open. Use the iOS or Android app for scheduled daily reminders.</Text>}
           <Text style={styles.policyNote}>The policy mentions both a 9-hour day including breaks and 8 recorded work hours. Defaults display 8 net hours after a fixed 1-hour deduction; adjust above until HR confirms.</Text>
@@ -208,9 +226,12 @@ function AuthScreen({ onContinue }: { onContinue: () => void }) {
 function History({ days, policy, onClear }: { days: AttendanceDay[]; policy: PolicyConfig; onClear: (date: string) => Promise<void> }) {
   const [month, setMonth] = useState(localDateKey().slice(0, 7));
   const rows = days.filter(d => d.date.startsWith(month));
+  const lateDates = rows.filter(d => d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).afterFlexLimit)
+    .map(d => d.date).sort();
+  const halfDayDates = new Set(lateDates.slice(MONTHLY_LATE_LOGIN_LIMIT - 1));
   const total = rows.reduce((sum, d) => sum + getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy).netWorkedMinutes, 0);
   function shiftMonth(delta: number) { const date = new Date(`${month}-01T12:00:00`); date.setMonth(date.getMonth() + delta); setMonth(localDateKey(date).slice(0, 7)); }
-  return <><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{rows.filter(d => d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).lateMinutes > 0).length}</Text></View></View>{rows.length ? rows.map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; return <View key={d.date} style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><View style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text></View><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text><ClearDayControl date={d.date} onClear={onClear} compact /></View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
+  return <><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{lateDates.length}</Text></View></View>{rows.length ? rows.map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; return <View key={d.date} style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><View style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{halfDayDates.has(d.date) ? 'Half-day applied · ' : ''}{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text></View><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text><ClearDayControl date={d.date} onClear={onClear} compact /></View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
 }
 
 function ClearDayControl({ date, onClear, compact = false }: { date: string; onClear: (date: string) => Promise<void>; compact?: boolean }) {

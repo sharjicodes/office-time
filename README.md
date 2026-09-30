@@ -10,7 +10,9 @@ Responsive office attendance app built with React Native, Expo SDK 57, TypeScrip
 - Clear a selected day’s attendance from Today or History, with offline deletion queued for Supabase sync.
 - Elapsed time, configurable break deduction, net recorded hours, progress, and remaining target time.
 - 9:00 AM standard start, 10:00 AM flexible limit, and late-login flags.
-- Monthly late-arrival count, prior manager approval request, and a monthly allowance setting.
+- Monthly count of first punch-ins after 10:00 AM, with prior manager approval requests for late logins.
+- A warning with a custom alert tone after a first punch-in later than 10:00 AM, showing monthly count and remaining allowance; the fourth and later qualifying dates show a half-day status.
+- A congratulatory notification with a custom celebratory chime when the recorded-work target is reached.
 - HR/manager dashboard for recent attendance reports and approval decisions.
 - Local reminder at 8:50 AM, missing punch-out reminder after punch-in, and an optional target-completion reminder.
 - Per-user local persistence and queued Supabase sync when connectivity returns.
@@ -24,17 +26,17 @@ The source document is `Updated HR Policy 2026_8701.pdf`, dated 25 September 202
 - Page 1: Monday–Friday; standard timing 9:00 AM–6:00 PM; flex timing should not extend beyond 10:00 AM. Employees may arrive “a little late” up to four times per month with prior management approval. Arrivals after 10:00 AM beyond the four allowed occasions are treated as a half-day. The standard full-time workday is 9 hours including breaks, and the office biometric system is the required electronic attendance record.
 - Page 2: 8 hours of work must be recorded in the attendance system and Epic portal; the company provides a 1-hour break; morning tea/coffee breaks should be taken before 11:00 AM. Employees must also update their daily timesheet and Git commit status.
 
-The app starts with an 8-hour recorded-work target and a fixed 60-minute deduction. Those settings can be changed from Today → Your workday settings. The half-day rule starts **disabled** and is only an informational/configurable preference; the app does not automatically classify a half-day. The late allowance is counted and displayed, but the app does not decide what qualifies as “a little late” or whether an approval consumes an allowance.
+The app starts with an 8-hour recorded-work target and a fixed 60-minute deduction. Those settings can be changed from Today → Your workday settings. Per the latest requested app behavior, only a day's first punch-in after 10:00 AM counts toward the four-login monthly limit; the fourth and later qualifying dates are marked as half-days. This is an explicit app interpretation of the policy wording, which says arrivals after 10:00 AM “beyond the four allowed occasions” are treated as a half-day. HR should confirm whether the half-day should begin on the fourth or fifth occasion and whether the limit requires prior manager approval.
 
 HR must confirm before official rollout:
 
 1. Whether the target is 8 net working hours after a 1-hour deduction (9 elapsed hours), and whether the biometric system already deducts break time.
-2. Whether punch times between 9:00 and 10:00 are late, flex-eligible, or both.
+2. Whether punch times between 9:00 and 10:00 are late, flex-eligible, or both. The app currently counts only first punch-ins after 10:00 AM toward the four-login limit.
 3. What “a little late” means, whether the four approved occasions are a monthly cap, and how prior approval is recorded.
-4. Whether the half-day rule applies only after four approved occasions and how it applies to an arrival after 10:00 AM with pending, rejected, or missing approval.
+4. Whether the half-day rule begins on the fourth or fifth after-10:00 AM occasion, and how pending, rejected, or missing manager approval affects the count.
 5. Whether break time is a fixed hour or employee-recorded actual time. Fixed/actual/none deduction modes are available; in actual mode the employee can adjust today's break value before relying on the total.
 6. Whether this app can be an official attendance channel. The source currently identifies the office biometric system as official. OfficeTime is presented as a companion tracker.
-7. Approved notification times and behavior for leave, holidays, weekends, and work-from-home days. The current daily reminder is device-local and notifications are not proof of attendance.
+7. Approved notification behavior for leave, holidays, weekends, and work-from-home days. Late-login and work-goal notices use device-local notifications; delivery and sound depend on device permission/settings.
 
 No policy PDF was copied into the repository. The app and docs reflect the source clauses above; keep the source PDF in the team's policy records.
 
@@ -124,5 +126,5 @@ Use Apple signing/TestFlight for iOS distribution and a Play Console signing key
 - Offline changes persist and sync as attendance-day upserts. For official payroll use, add server-trusted event timestamps, audited correction requests, retention rules, backups, and policy-approved conflict handling.
 - Reminder delivery is best-effort device-local scheduling and depends on notification permission and OS background behavior.
 - Web work-target reminders are foreground-tab timers and are not push notifications; browser storage is local to that browser unless Supabase sync is configured.
-- `halfDayRule` remains disabled by default and is not enforced. Local settings are employee-device preferences, not organization-wide policy configuration.
+- Custom native late-login and goal-achievement sounds are bundled through the Expo notifications config plugin. Rebuild and reinstall the iOS/Android app after changing notification sound assets or app config. Expo Go does not contain this project's custom sound files; use an EAS/development build to hear them. Focus/silent modes and device volume can suppress or reduce notification sounds.
 - No timesheet/Git integration, leave calendar, public holiday calendar, CSV export, or employee/team directory is included.

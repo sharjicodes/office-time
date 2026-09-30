@@ -25,7 +25,11 @@
         {
           "icon": "./assets/notification-icon.png",
           "color": "#2563eb",
-          "defaultChannel": "attendance-reminders"
+          "defaultChannel": "attendance-reminders",
+          "sounds": [
+            "./assets/sounds/late-warning.wav",
+            "./assets/sounds/work-celebration.wav"
+          ]
         }
       ],
       "expo-status-bar"

@@ -1,6 +1,63 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
+export const LATE_ALERT_SOUND = 'late-warning.wav';
+export const WORK_CHEER_SOUND = 'work-celebration.wav';
+const LATE_CHANNEL = 'late-login-alerts-v1';
+const CHEER_CHANNEL = 'work-hour-cheers-v1';
+let webAudioContext: AudioContext | null = null;
+
+export function prepareAttendanceNotificationAudio() {
+  if (Platform.OS !== 'web' || typeof window === 'undefined' || !window.AudioContext) return;
+  webAudioContext ??= new window.AudioContext();
+  if (webAudioContext.state === 'suspended') void webAudioContext.resume();
+}
+
+export async function prepareAttendanceNotifications() {
+  prepareAttendanceNotificationAudio();
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'default')
+      await window.Notification.requestPermission();
+    return;
+  }
+  await Notifications.requestPermissionsAsync();
+  await configureSoundChannels();
+}
+
+function playWebNoticeTone(isLate: boolean) {
+  if (Platform.OS !== 'web' || !webAudioContext || webAudioContext.state !== 'running') return;
+  const context = webAudioContext;
+  const notes = isLate ? [880, 660, 880] : [523, 659, 784, 1047, 784, 1047, 1319];
+  const spacing = isLate ? 0.23 : 0.19;
+  notes.forEach((frequency, index) => {
+    const start = context.currentTime + index * spacing;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'triangle';
+    oscillator.frequency.value = frequency;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.24, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + (isLate ? 0.19 : 0.38));
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(start);
+    oscillator.stop(start + (isLate ? 0.2 : 0.4));
+  });
+}
+
+async function configureSoundChannels() {
+  if (Platform.OS !== 'android') return;
+  await Notifications.setNotificationChannelAsync(LATE_CHANNEL, {
+    name: 'Late login alerts', description: 'Loud reminder for punch-ins after the flexible start limit.',
+    importance: Notifications.AndroidImportance.HIGH, sound: LATE_ALERT_SOUND,
+    vibrationPattern: [0, 350, 120, 350], lightColor: '#DC2626',
+  });
+  await Notifications.setNotificationChannelAsync(CHEER_CHANNEL, {
+    name: 'Work hour achievements', description: 'Celebrations when the daily work target is reached.',
+    importance: Notifications.AndroidImportance.HIGH, sound: WORK_CHEER_SOUND,
+    vibrationPattern: [0, 180, 80, 180, 80, 400], lightColor: '#16A34A',
+  });
+}
+
 export async function scheduleDailyReminder(): Promise<boolean> {
   // Expo local notifications are native-only. Browser notifications require a
   // foreground tab and an explicit user gesture, so don't prompt on page load.
@@ -15,6 +72,7 @@ export async function scheduleDailyReminder(): Promise<boolean> {
       vibrationPattern: [0, 250, 250, 250],
       lightColor: '#2563EB',
     });
+    await configureSoundChannels();
   }
 
   // Avoid duplicate reminders when the app is opened repeatedly.
@@ -50,20 +108,57 @@ export async function scheduleTimedReminder(kind: string, title: string, body: s
     if (old) clearTimeout(old);
     const timer = setTimeout(() => {
       new window.Notification(title, { body });
+      if (kind === 'work-target') playWebNoticeTone(false);
       browserTimers.delete(kind);
     }, Math.max(1000, milliseconds));
     browserTimers.set(kind, timer);
     return;
   }
   await Notifications.requestPermissionsAsync();
+  await configureSoundChannels();
   const scheduled = await Notifications.getAllScheduledNotificationsAsync();
   for (const item of scheduled) {
     if (item.content.data?.kind === kind) await Notifications.cancelScheduledNotificationAsync(item.identifier);
   }
+  const isWorkAchievement = kind === 'work-target';
   await Notifications.scheduleNotificationAsync({
-    content: { title, body, data: { kind } },
-    trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: Math.max(1, Math.ceil(milliseconds / 1000)) },
+    content: { title, body, data: { kind }, sound: isWorkAchievement ? WORK_CHEER_SOUND : 'default',
+      priority: Notifications.AndroidNotificationPriority.HIGH,
+      vibrate: isWorkAchievement ? [0, 180, 80, 180, 80, 400] : [0, 250, 180, 250] },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: Math.max(1, Math.ceil(milliseconds / 1000)),
+      ...(Platform.OS === 'android' ? { channelId: isWorkAchievement ? CHEER_CHANNEL : 'attendance-reminders' } : {}) },
   });
+}
+
+export async function showLateLoginWarning(title: string, body: string): Promise<boolean> {
+  playWebNoticeTone(true);
+  return showAttendanceNotice('late-login', title, body);
+}
+
+export async function showWorkHourCongratulations(title: string, body: string): Promise<boolean> {
+  playWebNoticeTone(false);
+  return showAttendanceNotice('work-target', title, body);
+}
+
+async function showAttendanceNotice(kind: string, title: string, body: string): Promise<boolean> {
+  if (Platform.OS === 'web') {
+    if (typeof window === 'undefined' || !('Notification' in window)) return false;
+    if (window.Notification.permission !== 'granted') await window.Notification.requestPermission();
+    if (window.Notification.permission !== 'granted') return false;
+    new window.Notification(title, { body });
+    return true;
+  }
+  const permission = await Notifications.requestPermissionsAsync();
+  if (!permission.granted) return false;
+  await configureSoundChannels();
+  const isLate = kind === 'late-login';
+  await Notifications.scheduleNotificationAsync({
+    content: { title, body, data: { kind }, sound: isLate ? LATE_ALERT_SOUND : WORK_CHEER_SOUND,
+      priority: Notifications.AndroidNotificationPriority.HIGH,
+      vibrate: isLate ? [0, 350, 120, 350] : [0, 180, 80, 180, 80, 400] },
+    trigger: Platform.OS === 'android' ? { channelId: isLate ? LATE_CHANNEL : CHEER_CHANNEL } : null,
+  });
+  return true;
 }
 
 export async function cancelReminder(kind: string) {

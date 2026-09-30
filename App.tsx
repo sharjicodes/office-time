@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
@@ -11,7 +11,7 @@ import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, 
 import { colors } from './src/theme';
 
 if (Platform.OS !== 'web') Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
-type Tab = 'Today' | 'History' | 'HR';
+type Tab = 'Today' | 'History' | 'Games' | 'HR';
 const clock = (value: string | null) => value ? new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
 const monthName = (key: string) => new Date(`${key}-01T12:00:00`).toLocaleDateString([], { month: 'long', year: 'numeric' });
 const formatTimer = (seconds: number) => {
@@ -174,7 +174,7 @@ function OfficeTimeApp() {
     <ScrollView contentContainerStyle={styles.page}>
       <View style={styles.header}><View><Text style={styles.eyebrow}>ATTENDANCE, MADE SIMPLE</Text><Text style={styles.title}>OfficeTime</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={styles.avatar}><Text style={styles.avatarText}>{session?.user?.email?.[0]?.toUpperCase() ?? 'OT'}</Text></View></View>
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => session ? void supabase?.auth.signOut() : null}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
-      <View style={styles.tabs}>{(['Today', 'History', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</View>
+      <View style={styles.tabs}>{(['Today', 'History', 'Games', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</View>
       {tab === 'Today' && <>
         <View style={styles.hero}>
           <View style={styles.heroTop}><View style={{ flex: 1 }}><Text style={styles.heroLabel}>PUNCH TIMER · {active ? 'RUNNING' : 'STOPPED'}</Text><Text style={styles.timerHero}>{formatTimer(timerSeconds)}</Text><Text style={styles.heroSmall}>Net recorded work: {formatDuration(summary.netWorkedMinutes)}</Text></View><View style={styles.progressBadge}><Text style={styles.progressBadgeText}>{summary.progressPercent}%</Text></View></View>
@@ -204,6 +204,7 @@ function OfficeTimeApp() {
       </>}
       {tab === 'Today' && sessions.length > 0 && <ClearDayControl date={today} onClear={clearAttendanceDay} />}
       {tab === 'History' && <History days={days} policy={policy} onClear={clearAttendanceDay} />}
+      {tab === 'Games' && <MemoryMatchGame />}
       {tab === 'HR' && <HRDashboard rows={hrRows} loading={busy} onRefresh={async () => { setBusy(true); const { data } = await supabase!.rpc('hr_attendance_report'); setHrRows(data ?? []); setBusy(false); }} onResolve={resolveReview} />}
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. OfficeTime is a companion tracker until HR authorizes it for official use.</Text></View>
       <Text style={styles.footer}>OfficeTime · Secure attendance for your team</Text>
@@ -221,6 +222,76 @@ function AuthScreen({ onContinue }: { onContinue: () => void }) {
     else if (create && !result.data.session) Alert.alert('Check your email', 'Confirm your email, then sign in.');
   }
   return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><View style={styles.avatarLarge}><Text style={styles.avatarText}>OT</Text></View><Text style={styles.title}>Welcome to OfficeTime</Text><Text style={styles.subtitle}>Sign in to securely sync attendance across devices.</Text><TextInput style={styles.input} placeholder="Work email" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail}/><TextInput style={styles.input} placeholder="Password" secureTextEntry value={password} onChangeText={setPassword}/><Pressable style={[styles.action, styles.primary]} onPress={() => void signIn()} disabled={busy}><Text style={styles.actionText}>{busy ? 'Please wait…' : 'Sign in'}</Text></Pressable><Pressable style={styles.textButton} onPress={() => void signIn(true)}><Text style={styles.outlineText}>Create employee account</Text></Pressable><Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
+}
+
+type MemoryTile = { id: number; symbol: string; matched: boolean };
+const memorySymbols = ['🍋', '🚀', '🎧', '🌈', '🍉', '⚽', '🪴', '⭐'];
+function newMemoryDeck(): MemoryTile[] {
+  const deck = memorySymbols.flatMap((symbol, pair) => [
+    { id: pair * 2, symbol, matched: false }, { id: pair * 2 + 1, symbol, matched: false },
+  ]);
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
+}
+
+function MemoryMatchGame() {
+  const [tiles, setTiles] = useState<MemoryTile[]>(newMemoryDeck);
+  const [opened, setOpened] = useState<number[]>([]);
+  const [scores, setScores] = useState<[number, number]>([0, 0]);
+  const [turn, setTurn] = useState<0 | 1>(0);
+  const [names, setNames] = useState<[string, string]>(['Player 1', 'Player 2']);
+  const locked = useRef(false);
+  const timeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finished = tiles.every(tile => tile.matched);
+  const winner = scores[0] === scores[1] ? null : scores[0] > scores[1] ? 0 : 1;
+
+  useEffect(() => () => { if (timeout.current) clearTimeout(timeout.current); }, []);
+
+  function resetGame() {
+    if (timeout.current) clearTimeout(timeout.current);
+    locked.current = false;
+    setTiles(newMemoryDeck()); setOpened([]); setScores([0, 0]); setTurn(0);
+  }
+
+  function reveal(index: number) {
+    if (locked.current || tiles[index].matched || opened.includes(index)) return;
+    const nextOpened = [...opened, index];
+    setOpened(nextOpened);
+    if (nextOpened.length === 1) return;
+
+    locked.current = true;
+    const firstIndex = nextOpened[0];
+    if (tiles[firstIndex].symbol === tiles[index].symbol) {
+      const nextTiles = tiles.map((tile, tileIndex) => tileIndex === firstIndex || tileIndex === index ? { ...tile, matched: true } : tile);
+      setTiles(nextTiles); setScores(current => current.map((score, player) => player === turn ? score + 1 : score) as [number, number]);
+      setOpened([]); locked.current = false;
+    } else {
+      timeout.current = setTimeout(() => {
+        setOpened([]); setTurn(current => current === 0 ? 1 : 0); locked.current = false; timeout.current = null;
+      }, 850);
+    }
+  }
+
+  const winnerText = winner === null ? 'It’s a tie!' : `${names[winner].trim() || `Player ${winner + 1}`} wins!`;
+  return <View style={styles.gameCard}>
+    <View style={styles.gameHeader}><View style={{ flex: 1 }}><Text style={styles.gameEyebrow}>QUICK BREAK</Text><Text style={styles.gameTitle}>Memory Match</Text></View><Text style={styles.gameIcon}>🧠</Text></View>
+    <Text style={styles.gameDescription}>Find matching pairs. A match scores a point and keeps your turn; a miss passes the turn. Most pairs wins.</Text>
+    <View style={styles.playerRow}>{([0, 1] as const).map(player => <View key={player} style={[styles.playerCard, turn === player && !finished && styles.playerTurn]}>
+      <TextInput accessibilityLabel={`Player ${player + 1} name`} style={styles.playerName} value={names[player]} onChangeText={value => setNames(current => current.map((name, index) => index === player ? value : name) as [string, string])} maxLength={16} />
+      <Text style={styles.playerScore}>{scores[player]}</Text><Text style={styles.playerPairs}>pairs</Text>
+    </View>)}</View>
+    <Text style={styles.turnLabel}>{finished ? winnerText : `${names[turn].trim() || `Player ${turn + 1}`}’s turn`}</Text>
+    <View style={styles.memoryBoard}>{Array.from({ length: 4 }, (_, row) => <View key={row} style={styles.memoryRow}>{tiles.slice(row * 4, row * 4 + 4).map((tile, column) => {
+      const index = row * 4 + column; const faceUp = tile.matched || opened.includes(index);
+      return <Pressable key={tile.id} accessibilityRole="button" accessibilityLabel={faceUp ? `Tile ${tile.symbol}` : 'Hidden tile'} onPress={() => reveal(index)} style={[styles.memoryTile, faceUp && styles.memoryTileOpen, tile.matched && styles.memoryTileMatched]}>
+        <Text style={[styles.memoryTileText, !faceUp && styles.memoryTileHidden]}>{faceUp ? tile.symbol : '?'}</Text>
+      </Pressable>;
+    })}</View>)}</View>
+    <View style={styles.gameFooter}><Text style={styles.gameHint}>{finished ? 'Play another round and see who takes the lead.' : `${tiles.filter(tile => tile.matched).length / 2} of ${memorySymbols.length} pairs found`}</Text><Pressable style={styles.newGameButton} onPress={resetGame}><Text style={styles.newGameText}>{finished ? 'Play again' : 'New game'}</Text></Pressable></View>
+  </View>;
 }
 
 function History({ days, policy, onClear }: { days: AttendanceDay[]; policy: PolicyConfig; onClear: (date: string) => Promise<void> }) {
@@ -256,6 +327,7 @@ const styles = StyleSheet.create({
   connection: { backgroundColor: '#F0FDF4', padding: 11, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }, offline: { backgroundColor: '#FFFBEB' }, dot: { width: 7, height: 7, borderRadius: 5 }, connectionText: { fontSize: 11, color: colors.muted, flex: 1 }, link: { color: colors.blue, fontWeight: '700', fontSize: 12 }, tabs: { flexDirection: 'row', gap: 8, backgroundColor: '#E9EEF5', padding: 4, borderRadius: 14 }, tab: { flex: 1, paddingVertical: 10, borderRadius: 11, alignItems: 'center' }, tabActive: { backgroundColor: '#FFFFFF', elevation: 1 }, tabText: { fontSize: 13, fontWeight: '700', color: colors.muted }, tabTextActive: { color: colors.text },
   hero: { backgroundColor: colors.navy, borderRadius: 25, padding: 22, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 9 }, shadowOpacity: 0.13, shadowRadius: 17, elevation: 3 }, heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }, heroLabel: { color: '#BFDBFE', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, timerHero: { color: '#FFF', fontSize: 44, fontWeight: '800', fontVariant: ['tabular-nums'], letterSpacing: 1, marginTop: 5, marginBottom: 5 }, progressBadge: { backgroundColor: '#263A56', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, progressBadgeText: { color: '#DCEBFF', fontSize: 14, fontWeight: '800' }, progressTrack: { height: 8, backgroundColor: '#334155', borderRadius: 99, overflow: 'hidden', marginTop: 16 }, progressFill: { height: 8, backgroundColor: '#60A5FA', borderRadius: 99 }, progressMeta: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 9 }, heroSmall: { color: '#CBD5E1', fontSize: 11 }, buttonRow: { flexDirection: 'row', gap: 10, marginTop: 21 }, action: { flex: 1, borderRadius: 13, paddingVertical: 14, alignItems: 'center' }, primary: { backgroundColor: colors.blue }, teal: { backgroundColor: '#0F766E' }, dim: { opacity: 0.45 }, actionText: { color: '#FFF', fontWeight: '800', fontSize: 14 }, helper: { color: '#CBD5E1', fontSize: 12, marginTop: 12, lineHeight: 18 },
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, statCard: { flexBasis: '47%', flexGrow: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 14, gap: 8 }, statLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 }, statValue: { color: colors.text, fontSize: 16, fontWeight: '800' }, card: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 17, gap: 13 }, cardHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, sectionTitle: { color: colors.text, fontSize: 17, fontWeight: '800' }, row: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 }, rowLabel: { color: colors.muted, fontSize: 12, flex: 1 }, rowValue: { color: colors.text, fontSize: 12, fontWeight: '700', textAlign: 'right', flex: 1 }, pill: { backgroundColor: '#DCFCE7', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 99 }, pillWarn: { backgroundColor: '#FEF3C7' }, pillText: { color: '#15803D', fontSize: 10, fontWeight: '800' }, policyNote: { color: '#854D0E', fontSize: 11, lineHeight: 17, backgroundColor: '#FFFBEB', padding: 10, borderRadius: 10 }, outlineButton: { borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 11, padding: 11, alignItems: 'center', backgroundColor: '#F8FBFF' }, outlineText: { color: colors.blue, fontSize: 12, fontWeight: '800' }, muted: { color: colors.muted, fontSize: 12, lineHeight: 18 }, stepper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, stepActions: { flexDirection: 'row', alignItems: 'center', gap: 10 }, stepButton: { width: 30, height: 30, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }, stepText: { fontSize: 20, color: colors.text }, stepValue: { minWidth: 64, textAlign: 'center', fontWeight: '800', color: colors.text, fontSize: 12 }, settingChoice: { gap: 8 }, choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, choice: { backgroundColor: '#F1F5F9', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 99 }, choiceSelected: { backgroundColor: '#DBEAFE' }, choiceText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, choiceTextSelected: { color: colors.blue },
+  gameCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 18, gap: 15 }, gameHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, gameEyebrow: { color: colors.blue, fontWeight: '800', fontSize: 10, letterSpacing: 1.2 }, gameTitle: { color: colors.text, fontSize: 24, fontWeight: '800', marginTop: 3 }, gameIcon: { fontSize: 34 }, gameDescription: { color: colors.muted, fontSize: 12, lineHeight: 18 }, playerRow: { flexDirection: 'row', gap: 10 }, playerCard: { flex: 1, alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 10 }, playerTurn: { borderColor: colors.blue, backgroundColor: '#EFF6FF' }, playerName: { width: '100%', color: colors.text, textAlign: 'center', fontWeight: '700', fontSize: 12, paddingVertical: 4 }, playerScore: { color: colors.blue, fontWeight: '800', fontSize: 25, marginTop: 4 }, playerPairs: { color: colors.muted, fontSize: 10 }, turnLabel: { textAlign: 'center', color: colors.text, fontWeight: '800', fontSize: 14 }, memoryBoard: { width: '100%', maxWidth: 460, alignSelf: 'center', gap: 8 }, memoryRow: { flexDirection: 'row', gap: 8 }, memoryTile: { flex: 1, aspectRatio: 1, borderRadius: 13, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: colors.navy, alignItems: 'center', justifyContent: 'center' }, memoryTileOpen: { backgroundColor: '#EFF6FF', borderColor: '#93C5FD' }, memoryTileMatched: { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }, memoryTileText: { fontSize: 29, fontWeight: '800' }, memoryTileHidden: { color: '#BFDBFE', fontSize: 31 }, gameFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, gameHint: { flex: 1, color: colors.muted, fontSize: 11 }, newGameButton: { backgroundColor: colors.blue, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 11 }, newGameText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   monthBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 }, monthArrow: { fontSize: 28, color: colors.blue, paddingHorizontal: 10 }, monthTitle: { color: colors.text, fontSize: 18, fontWeight: '800' }, summaryStrip: { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: '#EFF6FF', borderRadius: 15, padding: 16 }, monthStat: { color: colors.text, fontSize: 18, fontWeight: '800', marginTop: 5 }, historyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, padding: 12 }, historyDate: { width: 43, height: 48, borderRadius: 11, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' }, historyDay: { color: colors.blue, fontSize: 9, fontWeight: '700' }, historyNum: { color: colors.text, fontSize: 16, fontWeight: '800' }, historyMain: { flex: 1, gap: 5 }, historyTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, historySub: { color: colors.muted, fontSize: 10 }, historyHours: { color: colors.text, fontSize: 12, fontWeight: '800' }, clearCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 14, flexDirection: 'row', justifyContent: 'flex-end' }, clearCompact: { alignItems: 'flex-end', gap: 5 }, clearText: { color: colors.text, fontSize: 12, flex: 1 }, clearActions: { flexDirection: 'row', gap: 14, alignItems: 'center' }, clearDanger: { color: '#B91C1C', fontWeight: '800', fontSize: 12 }, empty: { padding: 26, alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: 15, gap: 6 }, emptyTitle: { color: colors.text, fontWeight: '800', fontSize: 14 }, hrRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderTopWidth: 1, borderTopColor: colors.border, gap: 10 }, hrActions: { gap: 9 }, approve: { color: '#15803D', fontWeight: '800', fontSize: 11 }, reject: { color: '#B91C1C', fontWeight: '800', fontSize: 11 },
   footerCard: { backgroundColor: '#EFF6FF', padding: 15, borderRadius: 14, gap: 5 }, footerTitle: { color: '#1D4ED8', fontSize: 12, fontWeight: '800' }, footerText: { color: '#1E40AF', fontSize: 11, lineHeight: 17 }, footer: { color: colors.muted, fontSize: 10, textAlign: 'center' }, authWrap: { flex: 1, justifyContent: 'center', padding: 20 }, authCard: { width: '100%', maxWidth: 430, alignSelf: 'center', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 24, gap: 14 }, input: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 11, padding: 13, color: colors.text, fontSize: 14 }, textButton: { alignItems: 'center', padding: 8 },
 });

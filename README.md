@@ -8,6 +8,8 @@ Responsive office attendance app built with React Native, Expo SDK 57, TypeScrip
 - One-tap punch-in and punch-out with any number of work sessions per local calendar day, accumulated into day/month totals.
 - Live `HH:MM:SS` work timer that runs during a punch-in session and freezes at punch-out.
 - Clear a selected day’s attendance from Today or History, with offline deletion queued for Supabase sync.
+- Expand any day in History to review every punch-in and punch-out interval, including an active session.
+- Export the selected month’s daily totals, break deductions, status, and individual punch history as a PDF. On web, choose “Save as PDF” in the print dialog; on iOS/Android, save or share the generated PDF from the system share sheet.
 - Two-player Memory Match mini-game for short breaks with 8-, 16-, and 24-pair board sizes; it uses the supplied team portraits and animal emoji pairs, and the player with the most matches wins.
 - Elapsed time, configurable break deduction, net recorded hours, progress, and remaining target time.
 - 9:00 AM standard start, 10:00 AM flexible limit, and late-login flags.

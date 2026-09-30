@@ -126,10 +126,12 @@ create policy profiles_select_own on public.profiles for select to authenticated
 drop policy if exists attendance_days_select_own on public.attendance_days;
 drop policy if exists attendance_days_insert_own on public.attendance_days;
 drop policy if exists attendance_days_update_own on public.attendance_days;
+drop policy if exists attendance_days_delete_own on public.attendance_days;
 drop policy if exists attendance_days_select_staff on public.attendance_days;
 create policy attendance_days_select_own on public.attendance_days for select to authenticated using (auth.uid() = user_id or public.has_staff_role());
 create policy attendance_days_insert_own on public.attendance_days for insert to authenticated with check (auth.uid() = user_id);
 create policy attendance_days_update_own on public.attendance_days for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy attendance_days_delete_own on public.attendance_days for delete to authenticated using (auth.uid() = user_id);
 
 drop policy if exists attendance_events_select_own on public.attendance_events;
 drop policy if exists attendance_events_insert_own on public.attendance_events;

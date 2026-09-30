@@ -5,6 +5,7 @@ import { supabase } from './supabase';
 
 const DAYS_KEY = 'officetime.attendance.v1';
 const POLICY_KEY = 'officetime.policy.v1';
+const DELETED_DAYS_KEY = 'officetime.deleted-days.v1';
 async function daysKey() {
   try {
     const { data } = await supabase?.auth.getSession() ?? { data: { session: null } };
@@ -19,7 +20,8 @@ export async function loadDays(): Promise<AttendanceDay[]> {
     if (supabase && user && state.isConnected) {
       const { data, error } = await supabase.from('attendance_days').select('*').order('work_date', { ascending: false }).limit(370);
       if (!error && data) {
-        const remote = data.map(fromRemote);
+        const deleted = await loadDeletedDays();
+        const remote = data.map(fromRemote).filter(day => !deleted.includes(day.date));
         const local = JSON.parse(await AsyncStorage.getItem(await daysKey()) || '[]') as AttendanceDay[];
         const merged = [...remote];
         for (const item of local.filter(d => !d.synced)) {
@@ -33,6 +35,26 @@ export async function loadDays(): Promise<AttendanceDay[]> {
     }
   } catch { /* retain local copy when offline/backend is unavailable */ }
   try { return JSON.parse(await AsyncStorage.getItem(await daysKey()) || '[]'); } catch { return []; }
+}
+
+async function loadDeletedDays(): Promise<string[]> {
+  try { return JSON.parse(await AsyncStorage.getItem(`${DELETED_DAYS_KEY}.${(await daysKey()).split('.').pop()}`) || '[]'); }
+  catch { return []; }
+}
+
+async function deletedDaysKey() {
+  const key = await daysKey();
+  return `${DELETED_DAYS_KEY}.${key.slice(DAYS_KEY.length + 1)}`;
+}
+
+export async function clearDay(date: string) {
+  const key = await daysKey();
+  const current = await loadLocalDays();
+  await AsyncStorage.setItem(key, JSON.stringify(current.filter(day => day.date !== date)));
+  const tombstones = new Set(await loadDeletedDays());
+  tombstones.add(date);
+  await AsyncStorage.setItem(await deletedDaysKey(), JSON.stringify([...tombstones]));
+  await syncPending();
 }
 
 function fromRemote(row: any): AttendanceDay {
@@ -63,6 +85,14 @@ export async function syncPending(days?: AttendanceDay[]) {
   if (!state.isConnected) return;
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return;
+  const deleted = await loadDeletedDays();
+  for (const date of deleted) {
+    const { error } = await supabase.from('attendance_days').delete().eq('user_id', user.id).eq('work_date', date);
+    if (!error) {
+      const left = (await loadDeletedDays()).filter(item => item !== date);
+      await AsyncStorage.setItem(await deletedDaysKey(), JSON.stringify(left));
+    }
+  }
   const pending = (days ?? await loadLocalDays()).filter(d => !d.synced);
   for (const day of pending) {
     const payload = { user_id: user.id, work_date: day.date, punch_in_at: day.punchInAt,

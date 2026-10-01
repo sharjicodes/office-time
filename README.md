@@ -23,7 +23,7 @@ Responsive office attendance app built with React Native, Expo SDK 57, TypeScrip
 - Supabase RLS, trusted role provisioning, server-checked HR RPCs, and protected approval fields.
 - Responsive Expo Web build configured for Vercel static hosting.
 - While the web app is open, it checks for deployments once per minute and shows a reload prompt with the deployment's commit title when a newer build is available.
-- Team chat for visitors and employees with live text, private photo/video uploads, browser-recorded voice notes, and per-viewer view-once photos.
+- Team chat for visitors and employees with live text, quick emoji insertion, emoji reactions, threaded replies, private photo/video uploads, browser-recorded voice notes, and per-viewer view-once photos.
 - Chat messages can be hidden for the current user or removed for everyone by their sender; row-level security enforces the sender-only removal rule.
 
 ## HR policy interpretation

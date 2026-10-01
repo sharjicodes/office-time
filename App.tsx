@@ -293,7 +293,9 @@ function OfficeTimeApp() {
   </SafeAreaView>;
 }
 
-type ChatMessage = { id: string; sender_id: string; sender_name: string; body: string; media_path: string | null; media_type: 'image' | 'video' | 'audio' | null; view_once: boolean; sent_at: string };
+type ChatMessage = { id: string; sender_id: string; sender_name: string; body: string; media_path: string | null; media_type: 'image' | 'video' | 'audio' | null; view_once: boolean; sent_at: string; reply_to?: string | null };
+type ChatReaction = { message_id: string; user_id: string; emoji: string };
+const QUICK_EMOJIS = ['😊', '❤️', '👍', '😂', '🎉', '🙏'];
 
 function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) => Promise<string | null> }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -301,6 +303,8 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState('');
   const [draft, setDraft] = useState('');
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
+  const [reactions, setReactions] = useState<ChatReaction[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [viewOnce, setViewOnce] = useState(false);
   const [sending, setSending] = useState(false);
@@ -330,8 +334,15 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       if (!alive) return;
       if (error) setChatError(error.message);
       else {
-        setMessages(((data ?? []) as ChatMessage[]).filter(message => !hiddenIds.has(message.id)));
+        const visibleMessages = ((data ?? []) as ChatMessage[]).filter(message => !hiddenIds.has(message.id));
+        setMessages(visibleMessages);
         if (!hideError) setChatError('');
+        if (visibleMessages.length) {
+          const { data: reactionRows, error: reactionError } = await supabase.from('chat_message_reactions').select('message_id,user_id,emoji').in('message_id', visibleMessages.map(message => message.id));
+          if (!alive) return;
+          if (reactionError) setChatError(`Reactions need the latest chat database setup: ${reactionError.message}`);
+          else setReactions((reactionRows ?? []) as ChatReaction[]);
+        } else setReactions([]);
       }
     })();
     const channel = supabase.channel('officetime-team-chat')
@@ -349,6 +360,16 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
         if (!alive) return;
         const hiddenId = (payload.new as { message_id: string }).message_id;
         setMessages(current => current.filter(item => item.id !== hiddenId));
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_message_reactions' }, payload => {
+        if (!alive) return;
+        const incoming = payload.new as ChatReaction;
+        setReactions(current => current.some(item => item.message_id === incoming.message_id && item.user_id === incoming.user_id && item.emoji === incoming.emoji) ? current : [...current, incoming]);
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'chat_message_reactions' }, payload => {
+        if (!alive) return;
+        const removed = payload.old as ChatReaction;
+        setReactions(current => current.filter(item => !(item.message_id === removed.message_id && item.user_id === removed.user_id && item.emoji === removed.emoji)));
       }).subscribe();
     return () => { alive = false; void supabase?.removeChannel(channel); };
   }, [isJoined, session?.user?.id]);
@@ -413,11 +434,24 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
         const { error: uploadError } = await supabase.storage.from('chat-media').upload(mediaPath, attachment, { contentType: attachment.type, upsert: false });
         if (uploadError) throw uploadError;
       }
-      const { error } = await supabase.from('chat_messages').insert({ sender_id: session.user.id, sender_name: myName.slice(0, 40), body, media_path: mediaPath, media_type: mediaType, view_once: !!(viewOnce && mediaType === 'image') });
+      const { error } = await supabase.from('chat_messages').insert({ sender_id: session.user.id, sender_name: myName.slice(0, 40), body, media_path: mediaPath, media_type: mediaType, view_once: !!(viewOnce && mediaType === 'image'), reply_to: replyTo?.id ?? null });
       if (error) throw error;
-      setDraft(''); setFile(null); setViewOnce(false);
+      setDraft(''); setFile(null); setViewOnce(false); setReplyTo(null);
     } catch (error: any) { Alert.alert('Message not sent', error?.message || 'Check your connection and try again.'); }
     finally { setSending(false); }
+  }
+
+  async function toggleReaction(message: ChatMessage, emoji: string) {
+    if (!supabase || !session?.user?.id) return;
+    const existing = reactions.some(item => item.message_id === message.id && item.user_id === session.user.id && item.emoji === emoji);
+    const query = supabase.from('chat_message_reactions');
+    const { error } = existing
+      ? await query.delete().eq('message_id', message.id).eq('user_id', session.user.id).eq('emoji', emoji)
+      : await query.insert({ message_id: message.id, user_id: session.user.id, emoji });
+    if (error) setChatError(`Could not update reaction: ${error.message}`);
+    else setReactions(current => existing
+      ? current.filter(item => !(item.message_id === message.id && item.user_id === session.user.id && item.emoji === emoji))
+      : [...current, { message_id: message.id, user_id: session.user.id, emoji }]);
   }
 
   async function deleteForMe(message: ChatMessage) {
@@ -467,12 +501,16 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       <ScrollView ref={messageScroll} onContentSizeChange={() => messageScroll.current?.scrollToEnd({ animated: true })} style={styles.chatMessages} contentContainerStyle={styles.chatMessagesContent} nestedScrollEnabled>
         {messages.length === 0 ? <View style={styles.chatEmpty}><Text style={styles.chatEmptyIcon}>☕</Text><Text style={styles.emptyTitle}>Start the conversation</Text><Text style={styles.muted}>Send a message, photo, video, or voice note.</Text></View> : messages.map(message => {
           const mine = message.sender_id === session.user.id;
+          const repliedMessage = messages.find(item => item.id === message.reply_to);
           return <View key={message.id} style={[styles.chatBubble, mine ? styles.chatBubbleMine : styles.chatBubbleOther]}>
             {!mine && <Text style={styles.chatSender}>{message.sender_name}</Text>}
+            {message.reply_to && <View style={{ borderLeftWidth: 3, borderLeftColor: colors.blue, backgroundColor: '#EFF6FF', padding: 7, borderRadius: 7, marginBottom: 6 }}><Text style={{ color: colors.blue, fontSize: 9, fontWeight: '800' }}>Replying to {repliedMessage?.sender_name ?? 'message'}</Text><Text numberOfLines={2} style={{ color: colors.muted, fontSize: 10 }}>{repliedMessage?.body || (repliedMessage?.media_type ? ` ${repliedMessage.media_type} attachment` : 'Original message hidden or unavailable')}</Text></View>}
             {!!message.body && <Text style={styles.chatBody}>{message.body}</Text>}
             {message.media_path && <Pressable onPress={() => void openMedia(message)} style={styles.mediaButton}><Text style={styles.mediaIcon}>{message.view_once ? '◉' : message.media_type === 'video' ? '▶' : message.media_type === 'audio' ? '♫' : '▧'}</Text><View style={{ flex: 1 }}><Text style={styles.mediaTitle}>{message.view_once ? 'View-once photo' : message.media_type === 'video' ? 'Video' : message.media_type === 'audio' ? 'Voice message' : 'Photo'}</Text><Text style={styles.mediaHint}>{message.view_once && viewed.includes(message.id) ? 'Already opened' : 'Tap to open'}</Text></View><Text style={styles.mediaChevron}>›</Text></Pressable>}
             <Text style={styles.chatTime}>{new Date(message.sent_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 5, marginTop: 6 }}>{QUICK_EMOJIS.map(emoji => { const count = reactions.filter(item => item.message_id === message.id && item.emoji === emoji).length; const selected = reactions.some(item => item.message_id === message.id && item.user_id === session.user.id && item.emoji === emoji); return <Pressable key={emoji} accessibilityLabel={`${selected ? 'Remove' : 'Add'} ${emoji} reaction${count ? `, ${count} total` : ''}`} onPress={() => void toggleReaction(message, emoji)} style={{ borderRadius: 99, borderWidth: 1, borderColor: selected ? colors.blue : colors.border, backgroundColor: selected ? '#DBEAFE' : '#FFFFFF', paddingHorizontal: 6, paddingVertical: 3 }}><Text style={{ fontSize: 11 }}>{emoji}{count ? ` ${count}` : ''}</Text></Pressable>; })}</View>
             <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 7 }}>
+              <Pressable onPress={() => setReplyTo(message)}><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '700' }}>Reply</Text></Pressable>
               <Pressable disabled={deletingId === message.id} onPress={() => void deleteForMe(message)}><Text style={{ color: '#64748B', fontSize: 10, fontWeight: '700' }}>Delete for me</Text></Pressable>
               {mine && <Pressable disabled={deletingId === message.id} onPress={() => setDeleteAllTarget(message)}><Text style={{ color: '#B91C1C', fontSize: 10, fontWeight: '700' }}>Delete for everyone</Text></Pressable>}
             </View>
@@ -481,7 +519,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       </ScrollView>
       {file && <View style={styles.attachmentPreview}><Text style={styles.attachmentText}>▧  {file.name}</Text><Pressable onPress={() => { setFile(null); setViewOnce(false); }}><Text style={styles.link}>Remove</Text></Pressable></View>}
       {file?.type.startsWith('image/') && <Pressable onPress={() => setViewOnce(value => !value)} style={styles.onceToggle}><Text style={styles.onceCheckbox}>{viewOnce ? '✓' : ''}</Text><Text style={styles.onceText}>View once (each person can open this photo once)</Text></Pressable>}
-      <View style={styles.chatComposer}><View style={styles.chatTools}><Pressable accessibilityLabel="Add photo or video" onPress={chooseFile} style={styles.chatTool}><Text style={styles.chatToolText}>＋ Media</Text></Pressable><Pressable accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice message'} onPress={recording ? stopVoiceRecording : () => void startVoiceRecording()} style={[styles.chatTool, recording && styles.recordingTool]}><Text style={[styles.chatToolText, recording && styles.recordingText]}>{recording ? '■ Stop' : '● Voice'}</Text></Pressable></View><View style={styles.chatInputRow}><TextInput style={styles.chatInput} multiline maxLength={1000} value={draft} onChangeText={setDraft} placeholder="Message the team…"/><Pressable accessibilityLabel="Send message" disabled={sending || (!draft.trim() && !file)} onPress={() => void sendMessage()} style={[styles.sendButton, (sending || (!draft.trim() && !file)) && styles.dim]}><Text style={styles.sendButtonText}>{sending ? '…' : '↑'}</Text></Pressable></View></View>
+      <View style={styles.chatComposer}>{!!replyTo && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#EFF6FF', borderRadius: 10, padding: 9 }}><View style={{ flex: 1 }}><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800' }}>Replying to {replyTo.sender_name}</Text><Text numberOfLines={1} style={styles.muted}>{replyTo.body || (replyTo.media_type ? `${replyTo.media_type} attachment` : '')}</Text></View><Pressable accessibilityLabel="Cancel reply" onPress={() => setReplyTo(null)}><Text style={styles.link}>×</Text></Pressable></View>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>{QUICK_EMOJIS.map(emoji => <Pressable key={emoji} accessibilityLabel={`Insert ${emoji}`} onPress={() => setDraft(current => `${current}${emoji}`)} style={{ paddingHorizontal: 5, paddingVertical: 3 }}><Text style={{ fontSize: 18 }}>{emoji}</Text></Pressable>)}</View><View style={styles.chatTools}><Pressable accessibilityLabel="Add photo or video" onPress={chooseFile} style={styles.chatTool}><Text style={styles.chatToolText}>＋ Media</Text></Pressable><Pressable accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice message'} onPress={recording ? stopVoiceRecording : () => void startVoiceRecording()} style={[styles.chatTool, recording && styles.recordingTool]}><Text style={[styles.chatToolText, recording && styles.recordingText]}>{recording ? '■ Stop' : '● Voice'}</Text></Pressable></View><View style={styles.chatInputRow}><TextInput style={styles.chatInput} multiline maxLength={1000} value={draft} onChangeText={setDraft} placeholder="Message the team…"/><Pressable accessibilityLabel="Send message" disabled={sending || (!draft.trim() && !file)} onPress={() => void sendMessage()} style={[styles.sendButton, (sending || (!draft.trim() && !file)) && styles.dim]}><Text style={styles.sendButtonText}>{sending ? '…' : '↑'}</Text></Pressable></View></View>
     </>}
     <Modal visible={!!mediaView} transparent animationType="fade" onRequestClose={() => setMediaView(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{mediaView?.once ? 'View-once photo' : 'Shared media'}</Text><Pressable onPress={() => setMediaView(null)}><Text style={styles.link}>Close</Text></Pressable></View>{mediaView?.type === 'image' ? <Image source={{ uri: mediaView.url }} resizeMode="contain" style={styles.mediaImage}/> : Platform.OS === 'web' && mediaView ? React.createElement(mediaView.type === 'video' ? 'video' : 'audio', { src: mediaView.url, controls: true, playsInline: true, style: { width: '100%', maxHeight: 420 } }) : <Text style={styles.muted}>Open this media in the web app to play it.</Text>}{mediaView?.once && <Text style={styles.onceFootnote}>This view is now used. Close this window to hide the photo.</Text>}</View></View></Modal>
     <Modal visible={!!deleteAllTarget} transparent animationType="fade" onRequestClose={() => setDeleteAllTarget(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><Text style={styles.sectionTitle}>Delete for everyone?</Text><Text style={styles.muted}>This removes the message from the shared chat for all participants.</Text><View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}><Pressable style={styles.outlineButton} onPress={() => setDeleteAllTarget(null)}><Text style={styles.outlineText}>Cancel</Text></Pressable><Pressable disabled={!!deletingId} onPress={() => deleteAllTarget && void deleteForEveryone(deleteAllTarget)} style={[styles.action, { backgroundColor: '#B91C1C', paddingHorizontal: 14 }]}><Text style={styles.actionText}>{deletingId === deleteAllTarget?.id ? 'Deleting…' : 'Delete for everyone'}</Text></Pressable></View></View></View></Modal>

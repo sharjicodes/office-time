@@ -14,7 +14,16 @@ create table if not exists public.chat_messages (
   check ((media_path is null and media_type is null and view_once = false) or (media_path is not null and media_type is not null)),
   check (view_once = false or media_type = 'image')
 );
+alter table public.chat_messages add column if not exists reply_to uuid references public.chat_messages(id) on delete set null;
 create index if not exists chat_messages_sent_at_idx on public.chat_messages (sent_at desc);
+
+create table if not exists public.chat_message_reactions (
+  message_id uuid not null references public.chat_messages(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  emoji text not null check (emoji in ('😊','❤️','👍','😂','🎉','🙏')),
+  reacted_at timestamptz not null default now(),
+  primary key (message_id, user_id, emoji)
+);
 
 create table if not exists public.chat_media_views (
   message_id uuid not null references public.chat_messages(id) on delete cascade,
@@ -25,6 +34,7 @@ create table if not exists public.chat_media_views (
 
 alter table public.chat_messages enable row level security;
 alter table public.chat_media_views enable row level security;
+alter table public.chat_message_reactions enable row level security;
 create table if not exists public.chat_message_hides (
   message_id uuid not null references public.chat_messages(id) on delete cascade,
   viewer_id uuid not null references auth.users(id) on delete cascade,
@@ -54,6 +64,16 @@ revoke delete on public.chat_messages from anon, authenticated;
 grant select, insert, delete on public.chat_messages to authenticated;
 revoke all on public.chat_message_hides from anon, authenticated;
 grant select, insert, delete on public.chat_message_hides to authenticated;
+drop policy if exists chat_message_reactions_read on public.chat_message_reactions;
+drop policy if exists chat_message_reactions_insert_own on public.chat_message_reactions;
+drop policy if exists chat_message_reactions_delete_own on public.chat_message_reactions;
+create policy chat_message_reactions_read on public.chat_message_reactions for select to authenticated using (true);
+create policy chat_message_reactions_insert_own on public.chat_message_reactions for insert to authenticated
+  with check (auth.uid() = user_id);
+create policy chat_message_reactions_delete_own on public.chat_message_reactions for delete to authenticated
+  using (auth.uid() = user_id);
+revoke all on public.chat_message_reactions from anon, authenticated;
+grant select, insert, delete on public.chat_message_reactions to authenticated;
 revoke all on public.chat_media_views from anon, authenticated;
 
 create or replace function public.limit_chat_message_rate()
@@ -106,5 +126,9 @@ exception when duplicate_object then null;
 end $$;
 do $$ begin
   alter publication supabase_realtime add table public.chat_message_hides;
+exception when duplicate_object then null;
+end $$;
+do $$ begin
+  alter publication supabase_realtime add table public.chat_message_reactions;
 exception when duplicate_object then null;
 end $$;

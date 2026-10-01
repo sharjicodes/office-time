@@ -21,6 +21,7 @@ Responsive office attendance app built with React Native, Expo SDK 57, TypeScrip
 - Per-user local persistence and queued Supabase sync when connectivity returns.
 - Supabase RLS, trusted role provisioning, server-checked HR RPCs, and protected approval fields.
 - Responsive Expo Web build configured for Vercel static hosting.
+- While the web app is open, it checks for deployments once per minute and shows a reload prompt with the deployment's commit title when a newer build is available.
 
 ## HR policy interpretation
 
@@ -111,6 +112,8 @@ For local simulator/device development:
 npx expo run:ios
 npx expo run:android
 ```
+
+Vercel web builds create `release.json` from the deployment ID and Git commit title. An open browser session checks it every minute (and when returning to the tab); selecting **Reload to update** loads the new deployment. This is an in-app prompt and only appears while the site is open; OS-level push notifications for a web page would require browser notification permission and a push subscription service.
 
 For store builds, install/configure EAS CLI and an Expo account, replace `com.example.officetime` in `app.json` with organization-owned identifiers, then run:
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, ImageSourcePropType, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, ImageSourcePropType, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -11,6 +11,7 @@ import { clearDay, loadDays, loadPolicy, saveDay, savePolicy, syncPending } from
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
 import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
 import { colors } from './src/theme';
+import { BUILD_ID, BUILD_SUMMARY } from './src/release';
 
 if (Platform.OS !== 'web') Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
 type Tab = 'Today' | 'History' | 'Games' | 'HR';
@@ -22,7 +23,45 @@ const formatTimer = (seconds: number) => {
 };
 
 export default function App() {
-  return <SafeAreaProvider><OfficeTimeApp /></SafeAreaProvider>;
+  return <SafeAreaProvider><OfficeTimeApp /><DeploymentUpdateNotice /></SafeAreaProvider>;
+}
+
+type ReleaseInfo = { buildId: string; summary: string; deployedAt: string };
+
+function DeploymentUpdateNotice() {
+  const [release, setRelease] = useState<ReleaseInfo | null>(null);
+  const dismissedId = useRef<string | null>(null);
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    let mounted = true;
+    const check = async () => {
+      try {
+        const response = await fetch(`/release.json?check=${Date.now()}`, { cache: 'no-store' });
+        if (!response.ok) return;
+        const latest = await response.json() as ReleaseInfo;
+        if (!mounted || !latest.buildId || latest.buildId === BUILD_ID) return;
+        if (dismissedId.current !== latest.buildId) setRelease(latest);
+      } catch { /* A failed update check leaves the current session undisturbed. */ }
+    };
+    void check();
+    const timer = setInterval(() => { if ((globalThis as any).document?.visibilityState !== 'hidden') void check(); }, 60_000);
+    const onFocus = () => void check();
+    (globalThis as any).window?.addEventListener('focus', onFocus);
+    return () => { mounted = false; clearInterval(timer); (globalThis as any).window?.removeEventListener('focus', onFocus); };
+  }, []);
+
+  const dismiss = () => { dismissedId.current = release?.buildId ?? null; setRelease(null); };
+  const reload = () => (globalThis as any).window?.location?.reload();
+  return <Modal visible={!!release} transparent animationType="fade" onRequestClose={dismiss}>
+    <View style={styles.updateOverlay}><View style={styles.updateCard}>
+      <View style={styles.updateBadge}><Text style={styles.updateBadgeText}>NEW VERSION</Text></View>
+      <Text style={styles.updateTitle}>A new update is here</Text>
+      <Text style={styles.updateSummary}>{release?.summary || BUILD_SUMMARY || 'OfficeTime has been updated.'}</Text>
+      {!!release?.deployedAt && <Text style={styles.updateMeta}>Deployed {new Date(release.deployedAt).toLocaleString()}</Text>}
+      <Pressable accessibilityRole="button" onPress={reload} style={styles.updatePrimary}><Text style={styles.updatePrimaryText}>Reload to update</Text></Pressable>
+      <Pressable accessibilityRole="button" onPress={dismiss} style={styles.updateLater}><Text style={styles.updateLaterText}>Later</Text></Pressable>
+    </View></View>
+  </Modal>;
 }
 
 function OfficeTimeApp() {
@@ -372,6 +411,7 @@ const styles = StyleSheet.create({
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, statCard: { flexBasis: '47%', flexGrow: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 14, gap: 8 }, statLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 }, statValue: { color: colors.text, fontSize: 16, fontWeight: '800' }, card: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 17, gap: 13 }, cardHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, sectionTitle: { color: colors.text, fontSize: 17, fontWeight: '800' }, row: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 }, rowLabel: { color: colors.muted, fontSize: 12, flex: 1 }, rowValue: { color: colors.text, fontSize: 12, fontWeight: '700', textAlign: 'right', flex: 1 }, pill: { backgroundColor: '#DCFCE7', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 99 }, pillWarn: { backgroundColor: '#FEF3C7' }, pillText: { color: '#15803D', fontSize: 10, fontWeight: '800' }, policyNote: { color: '#854D0E', fontSize: 11, lineHeight: 17, backgroundColor: '#FFFBEB', padding: 10, borderRadius: 10 }, outlineButton: { borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 11, padding: 11, alignItems: 'center', backgroundColor: '#F8FBFF' }, outlineText: { color: colors.blue, fontSize: 12, fontWeight: '800' }, muted: { color: colors.muted, fontSize: 12, lineHeight: 18 }, stepper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, stepActions: { flexDirection: 'row', alignItems: 'center', gap: 10 }, stepButton: { width: 30, height: 30, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }, stepText: { fontSize: 20, color: colors.text }, stepValue: { minWidth: 64, textAlign: 'center', fontWeight: '800', color: colors.text, fontSize: 12 }, settingChoice: { gap: 8 }, choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, choice: { backgroundColor: '#F1F5F9', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 99 }, choiceSelected: { backgroundColor: '#DBEAFE' }, choiceText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, choiceTextSelected: { color: colors.blue },
   gameCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 18, gap: 15 }, gameHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, gameEyebrow: { color: colors.blue, fontWeight: '800', fontSize: 10, letterSpacing: 1.2 }, gameTitle: { color: colors.text, fontSize: 24, fontWeight: '800', marginTop: 3 }, gameIcon: { fontSize: 34 }, gameDescription: { color: colors.muted, fontSize: 12, lineHeight: 18 }, difficultyRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 7 }, difficultyLabel: { color: colors.muted, fontSize: 11, fontWeight: '700', marginRight: 3 }, difficultyButton: { borderRadius: 99, paddingVertical: 7, paddingHorizontal: 10, backgroundColor: '#F1F5F9' }, difficultySelected: { backgroundColor: '#DBEAFE' }, difficultyText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, difficultyTextSelected: { color: colors.blue }, playerRow: { flexDirection: 'row', gap: 10 }, playerCard: { flex: 1, alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 10 }, playerTurn: { borderColor: colors.blue, backgroundColor: '#EFF6FF' }, playerName: { width: '100%', color: colors.text, textAlign: 'center', fontWeight: '700', fontSize: 12, paddingVertical: 4 }, playerScore: { color: colors.blue, fontWeight: '800', fontSize: 25, marginTop: 4 }, playerPairs: { color: colors.muted, fontSize: 10 }, turnLabel: { textAlign: 'center', color: colors.text, fontWeight: '800', fontSize: 14 }, memoryBoard: { width: '100%', maxWidth: 460, alignSelf: 'center', gap: 8 }, memoryRow: { flexDirection: 'row', gap: 8 }, memoryTile: { flex: 1, aspectRatio: 1, borderRadius: 13, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: colors.navy, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }, memoryFaceImage: { width: '100%', height: '100%' }, memoryTileOpen: { backgroundColor: '#EFF6FF', borderColor: '#93C5FD' }, memoryTileMatched: { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }, memoryTileText: { fontSize: 29, fontWeight: '800' }, memoryTileHidden: { color: '#BFDBFE', fontSize: 31 }, gameFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, gameHint: { flex: 1, color: colors.muted, fontSize: 11 }, newGameButton: { backgroundColor: colors.blue, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 11 }, newGameText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   exportButton: { backgroundColor: colors.blue, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, alignItems: 'center' }, exportDisabled: { opacity: 0.45 }, exportButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' }, historyDayCard: { backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' }, sessionToggle: { color: colors.blue, fontSize: 10, fontWeight: '700' }, sessionList: { borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#F8FAFC' }, sessionEntry: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border }, sessionLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', width: 58 }, sessionTime: { color: colors.text, fontSize: 11, fontWeight: '700', flex: 1 }, sessionDuration: { color: colors.muted, fontSize: 10 },
+  updateOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.58)', alignItems: 'center', justifyContent: 'center', padding: 22 }, updateCard: { width: '100%', maxWidth: 420, backgroundColor: colors.card, borderRadius: 24, padding: 25, gap: 13, borderWidth: 1, borderColor: colors.border, shadowColor: '#0F172A', shadowOpacity: 0.2, shadowRadius: 24, elevation: 8 }, updateBadge: { alignSelf: 'flex-start', backgroundColor: '#DBEAFE', borderRadius: 99, paddingHorizontal: 10, paddingVertical: 6 }, updateBadgeText: { color: colors.blue, fontSize: 10, fontWeight: '900', letterSpacing: 1 }, updateTitle: { color: colors.text, fontSize: 24, lineHeight: 30, fontWeight: '900' }, updateSummary: { color: colors.muted, fontSize: 14, lineHeight: 21 }, updateMeta: { color: colors.muted, fontSize: 11 }, updatePrimary: { backgroundColor: colors.blue, paddingVertical: 14, borderRadius: 13, alignItems: 'center', marginTop: 4 }, updatePrimaryText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 }, updateLater: { paddingVertical: 9, alignItems: 'center' }, updateLaterText: { color: colors.muted, fontWeight: '700', fontSize: 12 },
   monthBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 }, monthArrow: { fontSize: 28, color: colors.blue, paddingHorizontal: 10 }, monthTitle: { color: colors.text, fontSize: 18, fontWeight: '800' }, summaryStrip: { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: '#EFF6FF', borderRadius: 15, padding: 16 }, monthStat: { color: colors.text, fontSize: 18, fontWeight: '800', marginTop: 5 }, historyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, padding: 12 }, historyDate: { width: 43, height: 48, borderRadius: 11, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' }, historyDay: { color: colors.blue, fontSize: 9, fontWeight: '700' }, historyNum: { color: colors.text, fontSize: 16, fontWeight: '800' }, historyMain: { flex: 1, gap: 5 }, historyTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, historySub: { color: colors.muted, fontSize: 10 }, historyHours: { color: colors.text, fontSize: 12, fontWeight: '800' }, clearCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 14, flexDirection: 'row', justifyContent: 'flex-end' }, clearCompact: { alignItems: 'flex-end', gap: 5 }, clearText: { color: colors.text, fontSize: 12, flex: 1 }, clearActions: { flexDirection: 'row', gap: 14, alignItems: 'center' }, clearDanger: { color: '#B91C1C', fontWeight: '800', fontSize: 12 }, empty: { padding: 26, alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: 15, gap: 6 }, emptyTitle: { color: colors.text, fontWeight: '800', fontSize: 14 }, hrRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderTopWidth: 1, borderTopColor: colors.border, gap: 10 }, hrActions: { gap: 9 }, approve: { color: '#15803D', fontWeight: '800', fontSize: 11 }, reject: { color: '#B91C1C', fontWeight: '800', fontSize: 11 },
   footerCard: { backgroundColor: '#EFF6FF', padding: 15, borderRadius: 14, gap: 5 }, footerTitle: { color: '#1D4ED8', fontSize: 12, fontWeight: '800' }, footerText: { color: '#1E40AF', fontSize: 11, lineHeight: 17 }, footer: { color: colors.muted, fontSize: 10, textAlign: 'center' }, authWrap: { flex: 1, justifyContent: 'center', padding: 20 }, authCard: { width: '100%', maxWidth: 430, alignSelf: 'center', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 24, gap: 14 }, input: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 11, padding: 13, color: colors.text, fontSize: 14 }, textButton: { alignItems: 'center', padding: 8 },
 });

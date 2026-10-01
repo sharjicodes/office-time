@@ -6,7 +6,7 @@ import * as Sharing from 'expo-sharing';
 import * as Notifications from 'expo-notifications';
 import NetInfo from '@react-native-community/netinfo';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { AttendanceDay, DEFAULT_POLICY, formatDuration, getAttendanceSummary, getDaySessions, isHalfDayDate, localDateKey, MONTHLY_LATE_LOGIN_LIMIT, monthLateCount, PolicyConfig } from './src/lib/attendance';
+import { AttendanceDay, AttendanceSession, DEFAULT_POLICY, formatDuration, getAttendanceSummary, getDaySessions, isHalfDayDate, localDateKey, MONTHLY_LATE_LOGIN_LIMIT, monthLateCount, PolicyConfig } from './src/lib/attendance';
 import { clearDay, loadDays, loadPolicy, saveDay, savePolicy, syncPending } from './src/lib/storage';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
 import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
@@ -76,6 +76,7 @@ function OfficeTimeApp() {
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(new Date());
   const [hrRows, setHrRows] = useState<any[]>([]);
+  const [correctionTarget, setCorrectionTarget] = useState<{ date: string; add: boolean } | null>(null);
   const today = localDateKey(now);
   const day = days.find(item => item.date === today) ?? { date: today, punchInAt: null, punchOutAt: null, breakMinutes: policy.defaultBreakMinutes, managerApproval: false, synced: true };
   const summary = useMemo(() => getAttendanceSummary(day, now, policy), [day, now, policy]);
@@ -172,6 +173,34 @@ function OfficeTimeApp() {
       await cancelNotice('work-target');
     }
   }
+  async function savePunchCorrection(date: string, correctedSessions: AttendanceSession[], addToExisting: boolean) {
+    const existing = days.find(item => item.date === date);
+    const base = existing ?? { date, punchInAt: null, punchOutAt: null, breakMinutes: policy.defaultBreakMinutes, managerApproval: false, synced: true };
+    const allSessions = (addToExisting ? [...getDaySessions(base), ...correctedSessions] : correctedSessions)
+      .slice().sort((a, b) => a.punchInAt.localeCompare(b.punchInAt));
+    if (!allSessions.length) throw new Error('Add at least one punch-in and punch-out time.');
+    for (let index = 0; index < allSessions.length; index++) {
+      const current = allSessions[index];
+      if (current.punchOutAt && new Date(current.punchOutAt) <= new Date(current.punchInAt)) throw new Error('Punch-out must be later than punch-in.');
+      if (!current.punchOutAt && (date !== today || index !== allSessions.length - 1)) throw new Error('Only the final session today can be left in progress.');
+      const next = allSessions[index + 1];
+      if (next && (!current.punchOutAt || new Date(current.punchOutAt) > new Date(next.punchInAt))) throw new Error('Punch sessions cannot overlap. Check the times and try again.');
+    }
+    const hasOpenSession = allSessions.some(item => !item.punchOutAt);
+    const draft: AttendanceDay = { ...base, date, sessions: allSessions,
+      punchInAt: allSessions[0]?.punchInAt ?? null,
+      punchOutAt: hasOpenSession ? null : allSessions[allSessions.length - 1]?.punchOutAt ?? null };
+    const updated = await saveDay(draft);
+    setDays(list => [updated, ...list.filter(item => item.date !== date)].sort((a, b) => b.date.localeCompare(a.date)));
+    if (date === today) {
+      const correctedSummary = getAttendanceSummary(updated, now, policy);
+      const openSession = allSessions.some(item => !item.punchOutAt);
+      if (openSession) await scheduleTimedNotice('missing-punch-out', 'Don’t forget to punch out', 'Your attendance session is still open.', 9 * 60 * 60 * 1000);
+      else await cancelNotice('missing-punch-out');
+      if (correctedSummary.targetReached) await cancelNotice('work-target');
+      else if (allSessions.length) await scheduleWorkTarget(policy, correctedSummary, updated);
+    }
+  }
   async function scheduleWorkTarget(config = policy, currentSummary = summary, record = day) {
     const ms = Math.max(60_000, currentSummary.remainingMinutes * 60_000);
       await scheduleTimedNotice('work-target', 'Daily work goal reached! 🎉', `Congratulations! You reached ${formatDuration(config.recordedWorkTargetMinutes)} of recorded work today. Fantastic work!`, ms);
@@ -248,8 +277,8 @@ function OfficeTimeApp() {
           <Text style={styles.policyNote}>The policy mentions both a 9-hour day including breaks and 8 recorded work hours. Defaults display 8 net hours after a fixed 1-hour deduction; adjust above until HR confirms.</Text>
         </View>
       </>}
-      {tab === 'Today' && sessions.length > 0 && <ClearDayControl date={today} onClear={clearAttendanceDay} />}
-      {tab === 'History' && <History days={days} policy={policy} onClear={clearAttendanceDay} />}
+      {tab === 'Today' && <><Pressable style={styles.outlineButton} onPress={() => setCorrectionTarget({ date: today, add: !days.some(item => item.date === today) })}><Text style={styles.outlineText}>{sessions.length ? 'Adjust or add punch times' : 'Add a missed punch'}</Text></Pressable>{sessions.length > 0 && <ClearDayControl date={today} onClear={clearAttendanceDay} />}</>}
+      {tab === 'History' && <History days={days} policy={policy} onClear={clearAttendanceDay} onCorrect={date => setCorrectionTarget({ date, add: false })} onAddMissed={date => setCorrectionTarget({ date, add: true })} />}
       {tab === 'Chat' && <TeamChat session={session} onJoin={async name => {
         if (!supabase) return 'Configure Supabase to enable shared chat.';
         const { error } = await supabase.auth.signInAnonymously({ options: { data: { full_name: name } } });
@@ -260,6 +289,7 @@ function OfficeTimeApp() {
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. OfficeTime is a companion tracker until HR authorizes it for official use.</Text></View>
       <Text style={styles.footer}>OfficeTime · Secure attendance for your team</Text>
     </ScrollView>
+    {correctionTarget && <PunchCorrectionModal key={`${correctionTarget.date}-${correctionTarget.add}`} date={correctionTarget.date} day={days.find(item => item.date === correctionTarget.date)} addToExisting={correctionTarget.add} onClose={() => setCorrectionTarget(null)} onSave={savePunchCorrection} />}
   </SafeAreaView>;
 }
 
@@ -564,7 +594,77 @@ function MemoryMatchGame() {
   </View>;
 }
 
-function History({ days, policy, onClear }: { days: AttendanceDay[]; policy: PolicyConfig; onClear: (date: string) => Promise<void> }) {
+type PunchTimeDraft = { punchIn: string; punchOut: string };
+
+function toLocalClock(value: string | null) {
+  return value ? new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+}
+
+function fromLocalClock(date: string, time: string) {
+  const [year, month, day] = date.split('-').map(Number);
+  const [hour, minute] = time.split(':').map(Number);
+  return new Date(year, month - 1, day, hour, minute, 0, 0).toISOString();
+}
+
+function shiftClock(time: string, delta: number) {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return time;
+  const [hour, minute] = time.split(':').map(Number);
+  const total = Math.max(0, Math.min(1439, hour * 60 + minute + delta));
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+function PunchCorrectionModal({ date: initialDate, day, addToExisting, onClose, onSave }: {
+  date: string; day?: AttendanceDay; addToExisting: boolean; onClose: () => void;
+  onSave: (date: string, sessions: AttendanceSession[], addToExisting: boolean) => Promise<void>;
+}) {
+  const [date, setDate] = useState(initialDate);
+  const [rows, setRows] = useState<PunchTimeDraft[]>(() => {
+    const existing = addToExisting ? [] : getDaySessions(day ?? { date: initialDate, punchInAt: null, punchOutAt: null, breakMinutes: DEFAULT_POLICY.defaultBreakMinutes, managerApproval: false });
+    return existing.length ? existing.map(session => ({ punchIn: toLocalClock(session.punchInAt), punchOut: toLocalClock(session.punchOutAt) })) : [{ punchIn: '', punchOut: '' }];
+  });
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  function updateRow(index: number, field: keyof PunchTimeDraft, value: string) {
+    setRows(current => current.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row));
+    setError('');
+  }
+  async function save() {
+    setError('');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || localDateKey(new Date(`${date}T12:00:00`)) !== date) {
+      setError('Enter a valid date in YYYY-MM-DD format.'); return;
+    }
+    const entered = rows.filter(row => row.punchIn || row.punchOut);
+    if (!entered.length) { setError('Enter at least one missed punch session.'); return; }
+    const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+    const sessions: AttendanceSession[] = [];
+    for (const row of entered) {
+      if (!timePattern.test(row.punchIn)) { setError('Enter a valid punch-in time in 24-hour HH:MM format.'); return; }
+      if (row.punchOut && !timePattern.test(row.punchOut)) { setError('Enter a valid punch-out time in 24-hour HH:MM format.'); return; }
+      const punchInAt = fromLocalClock(date, row.punchIn);
+      const punchOutAt = row.punchOut ? fromLocalClock(date, row.punchOut) : null;
+      if (punchOutAt && new Date(punchOutAt) <= new Date(punchInAt)) { setError('Punch-out must be later than punch-in.'); return; }
+      sessions.push({ punchInAt, punchOutAt });
+    }
+    sessions.sort((a, b) => a.punchInAt.localeCompare(b.punchInAt));
+    for (let index = 0; index < sessions.length; index++) {
+      if (!sessions[index].punchOutAt && (date !== localDateKey() || index !== sessions.length - 1)) {
+        setError('Only the final session today can have an empty punch-out.'); return;
+      }
+      const currentEnd = sessions[index].punchOutAt;
+      if (index < sessions.length - 1 && (!currentEnd || new Date(currentEnd) > new Date(sessions[index + 1].punchInAt))) {
+        setError('Punch sessions cannot overlap. Check the times and try again.'); return;
+      }
+    }
+    setSaving(true);
+    try { await onSave(date, sessions, addToExisting); onClose(); }
+    catch (saveError) { setError(saveError instanceof Error ? saveError.message : 'Could not save corrected punches.'); }
+    finally { setSaving(false); }
+  }
+  const field = (index: number, kind: keyof PunchTimeDraft, label: string) => <View style={{ flex: 1, gap: 5 }}><Text style={styles.rowLabel}>{label}</Text><View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><Pressable accessibilityLabel={`Subtract 15 minutes from ${label}`} onPress={() => updateRow(index, kind, shiftClock(rows[index][kind], -15))} style={{ paddingHorizontal: 5, paddingVertical: 9 }}><Text style={styles.link}>−15</Text></Pressable><TextInput accessibilityLabel={`${label} time`} style={[styles.input, { flex: 1, minWidth: 60, padding: 9, textAlign: 'center' }]} value={rows[index][kind]} onChangeText={value => updateRow(index, kind, value)} placeholder="HH:MM" keyboardType="numbers-and-punctuation" maxLength={5}/><Pressable accessibilityLabel={`Add 15 minutes to ${label}`} onPress={() => updateRow(index, kind, shiftClock(rows[index][kind], 15))} style={{ paddingHorizontal: 5, paddingVertical: 9 }}><Text style={styles.link}>+15</Text></Pressable></View></View>;
+  return <Modal visible transparent animationType="fade" onRequestClose={onClose}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{addToExisting ? 'Add missed punches' : 'Correct punch times'}</Text><Pressable onPress={onClose}><Text style={styles.link}>Close</Text></Pressable></View><Text style={styles.muted}>Enter local 24-hour times, or adjust them in 15-minute steps. Corrections update your daily hours.</Text>{addToExisting ? <TextInput accessibilityLabel="Attendance date" style={styles.input} value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" keyboardType="numbers-and-punctuation"/> : <Text style={styles.historySub}>Date: {date}</Text>}{rows.map((row, index) => <View key={index} style={{ gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }}><View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><Text style={styles.historyTitle}>Session {index + 1}</Text>{rows.length > 1 && <Pressable onPress={() => setRows(current => current.filter((_, rowIndex) => rowIndex !== index))}><Text style={styles.clearDanger}>Remove</Text></Pressable>}</View><View style={{ flexDirection: 'row', gap: 8 }}>{field(index, 'punchIn', 'Punch in')}{field(index, 'punchOut', 'Punch out')}</View></View>)}<Pressable style={styles.outlineButton} onPress={() => setRows(current => [...current, { punchIn: '', punchOut: '' }])}><Text style={styles.outlineText}>＋ Add missed session</Text></Pressable>{!!error && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{error}</Text>}<Pressable disabled={saving} style={[styles.action, styles.primary, saving && styles.dim]} onPress={() => void save()}><Text style={styles.actionText}>{saving ? 'Saving…' : 'Save corrected punches'}</Text></Pressable></View></View></Modal>;
+}
+
+function History({ days, policy, onClear, onCorrect, onAddMissed }: { days: AttendanceDay[]; policy: PolicyConfig; onClear: (date: string) => Promise<void>; onCorrect: (date: string) => void; onAddMissed: (date: string) => void }) {
   const [month, setMonth] = useState(localDateKey().slice(0, 7));
   const [expandedDates, setExpandedDates] = useState<string[]>([]);
   const [exporting, setExporting] = useState(false);
@@ -595,7 +695,7 @@ function History({ days, policy, onClear }: { days: AttendanceDay[]; policy: Pol
     } catch { Alert.alert('Export failed', 'The attendance PDF could not be created. Please try again.'); }
     finally { setExporting(false); }
   }
-  return <><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><Pressable accessibilityRole="button" disabled={exporting || !rows.length} onPress={() => void exportPdf()} style={[styles.exportButton, (!rows.length || exporting) && styles.exportDisabled]}><Text style={styles.exportButtonText}>{exporting ? 'Preparing PDF…' : 'Export month as PDF'}</Text></Pressable><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{lateDates.length}</Text></View></View>{rows.length ? [...rows].sort((a, b) => b.date.localeCompare(a.date)).map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; const expanded = expandedDates.includes(d.date); return <View key={d.date} style={styles.historyDayCard}><View style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? 'Hide' : 'Show'} punches for ${d.date}`} onPress={() => setExpandedDates(current => expanded ? current.filter(date => date !== d.date) : [...current, d.date])} style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{halfDayDates.has(d.date) ? 'Half-day applied · ' : ''}{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text><Text style={styles.sessionToggle}>{expanded ? 'Hide punch details' : 'View punch details'}</Text></Pressable><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text><ClearDayControl date={d.date} onClear={onClear} compact /></View>{expanded && <View style={styles.sessionList}>{daySessions.map((session, index) => { const end = session.punchOutAt ? new Date(session.punchOutAt) : new Date(); const elapsed = Math.max(0, Math.floor((end.getTime() - new Date(session.punchInAt).getTime()) / 60000)); return <View key={`${session.punchInAt}-${index}`} style={styles.sessionEntry}><Text style={styles.sessionLabel}>Session {index + 1}</Text><Text style={styles.sessionTime}>{clock(session.punchInAt)} → {session.punchOutAt ? clock(session.punchOutAt) : 'In progress'}</Text><Text style={styles.sessionDuration}>{formatDuration(elapsed)}</Text></View>; })}</View>}</View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
+  return <><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><Pressable accessibilityRole="button" onPress={() => onAddMissed(`${month}-01`)} style={styles.outlineButton}><Text style={styles.outlineText}>＋ Add missed attendance</Text></Pressable><Pressable accessibilityRole="button" disabled={exporting || !rows.length} onPress={() => void exportPdf()} style={[styles.exportButton, (!rows.length || exporting) && styles.exportDisabled]}><Text style={styles.exportButtonText}>{exporting ? 'Preparing PDF…' : 'Export month as PDF'}</Text></Pressable><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{lateDates.length}</Text></View></View>{rows.length ? [...rows].sort((a, b) => b.date.localeCompare(a.date)).map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; const expanded = expandedDates.includes(d.date); return <View key={d.date} style={styles.historyDayCard}><View style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? 'Hide' : 'Show'} punches for ${d.date}`} onPress={() => setExpandedDates(current => expanded ? current.filter(date => date !== d.date) : [...current, d.date])} style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{halfDayDates.has(d.date) ? 'Half-day applied · ' : ''}{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text><Text style={styles.sessionToggle}>{expanded ? 'Hide punch details' : 'View punch details'}</Text></Pressable><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text><ClearDayControl date={d.date} onClear={onClear} compact /></View>{expanded && <View style={styles.sessionList}>{daySessions.map((session, index) => { const end = session.punchOutAt ? new Date(session.punchOutAt) : new Date(); const elapsed = Math.max(0, Math.floor((end.getTime() - new Date(session.punchInAt).getTime()) / 60000)); return <View key={`${session.punchInAt}-${index}`} style={styles.sessionEntry}><Text style={styles.sessionLabel}>Session {index + 1}</Text><Text style={styles.sessionTime}>{clock(session.punchInAt)} → {session.punchOutAt ? clock(session.punchOutAt) : 'In progress'}</Text><Text style={styles.sessionDuration}>{formatDuration(elapsed)}</Text></View>; })}<Pressable style={styles.outlineButton} onPress={() => onCorrect(d.date)}><Text style={styles.outlineText}>Correct punch times</Text></Pressable></View>}</View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
 }
 
 function ClearDayControl({ date, onClear, compact = false }: { date: string; onClear: (date: string) => Promise<void>; compact?: boolean }) {

@@ -6,6 +6,7 @@ Responsive office attendance app built with React Native, Expo SDK 57, TypeScrip
 
 - Email/password sign-up and sign-in with persistent Supabase Auth sessions, plus local-only mode.
 - One-tap punch-in and punch-out with any number of work sessions per local calendar day, accumulated into day/month totals.
+- Manual punch correction from Today or History, with exact local-time entry, 15-minute increase/decrease controls, and support for adding a missed session or day.
 - Live `HH:MM:SS` work timer that runs during a punch-in session and freezes at punch-out.
 - Clear a selected day’s attendance from Today or History, with offline deletion queued for Supabase sync.
 - Expand any day in History to review every punch-in and punch-out interval, including an active session.

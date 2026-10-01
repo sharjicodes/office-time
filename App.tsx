@@ -208,7 +208,9 @@ function OfficeTimeApp() {
   if (booting) return <SafeAreaView style={styles.safe}><View style={styles.center}><ActivityIndicator color={colors.blue} /><Text style={styles.muted}>Loading OfficeTime…</Text></View></SafeAreaView>;
   if (!session && isSupabaseConfigured && !offlineContinue) return <AuthScreen onContinue={() => setOfflineContinue(true)} onJoinChat={async name => {
     const { error } = await supabase!.auth.signInAnonymously({ options: { data: { full_name: name } } });
-    if (error) Alert.alert('Could not join chat', error.message); else setOfflineContinue(true);
+    if (error) return error.message;
+    setOfflineContinue(true);
+    return null;
   }} />;
 
   const lateDays = days.filter(d => d.date.startsWith(today.slice(0, 7)) && d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).afterFlexLimit);
@@ -249,9 +251,9 @@ function OfficeTimeApp() {
       {tab === 'Today' && sessions.length > 0 && <ClearDayControl date={today} onClear={clearAttendanceDay} />}
       {tab === 'History' && <History days={days} policy={policy} onClear={clearAttendanceDay} />}
       {tab === 'Chat' && <TeamChat session={session} onJoin={async name => {
-        if (!supabase) return Alert.alert('Chat unavailable', 'Configure Supabase to enable shared chat.');
+        if (!supabase) return 'Configure Supabase to enable shared chat.';
         const { error } = await supabase.auth.signInAnonymously({ options: { data: { full_name: name } } });
-        if (error) Alert.alert('Could not join chat', error.message);
+        return error?.message ?? null;
       }} />}
       {tab === 'Games' && <MemoryMatchGame />}
       {tab === 'HR' && <HRDashboard rows={hrRows} loading={busy} onRefresh={async () => { setBusy(true); const { data } = await supabase!.rpc('hr_attendance_report'); setHrRows(data ?? []); setBusy(false); }} onResolve={resolveReview} />}
@@ -263,9 +265,11 @@ function OfficeTimeApp() {
 
 type ChatMessage = { id: string; sender_id: string; sender_name: string; body: string; media_path: string | null; media_type: 'image' | 'video' | 'audio' | null; view_once: boolean; sent_at: string };
 
-function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) => Promise<void> }) {
+function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) => Promise<string | null> }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [displayName, setDisplayName] = useState('');
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState('');
   const [draft, setDraft] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [viewOnce, setViewOnce] = useState(false);
@@ -375,7 +379,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
 
   return <View style={styles.chatCard}>
     <View style={styles.chatHeading}><View style={styles.chatAvatar}><Text style={styles.chatAvatarText}>✦</Text></View><View style={{ flex: 1 }}><Text style={styles.sectionTitle}>Office chat</Text><Text style={styles.chatPresence}>Shared room · everyone can read · live</Text></View><Text style={styles.onlineBadge}>● LIVE</Text></View>
-    {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Say hello to the team</Text><Text style={styles.muted}>Join with a display name. No work email is needed.</Text><TextInput style={styles.input} value={displayName} onChangeText={setDisplayName} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary]} disabled={!displayName.trim()} onPress={() => void onJoin(displayName.trim())}><Text style={styles.actionText}>Join the chat</Text></Pressable></View> : <>
+    {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Say hello to the team</Text><Text style={styles.muted}>Join with a display name. No work email is needed.</Text><TextInput style={styles.input} value={displayName} onChangeText={value => { setDisplayName(value); setJoinError(''); }} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary, joining && styles.dim]} disabled={!displayName.trim() || joining} onPress={() => { setJoining(true); setJoinError(''); void onJoin(displayName.trim()).then(message => setJoinError(message ?? '')).catch(error => setJoinError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.')).finally(() => setJoining(false)); }}><Text style={styles.actionText}>{joining ? 'Please wait…' : 'Join the chat'}</Text></Pressable>{!!joinError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{joinError}</Text>}</View> : <>
       <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Chatting as {myName}{isAnonymous ? ' · guest' : ''}</Text></View>
       <ScrollView ref={messageScroll} onContentSizeChange={() => messageScroll.current?.scrollToEnd({ animated: true })} style={styles.chatMessages} contentContainerStyle={styles.chatMessagesContent} nestedScrollEnabled>
         {messages.length === 0 ? <View style={styles.chatEmpty}><Text style={styles.chatEmptyIcon}>☕</Text><Text style={styles.emptyTitle}>Start the conversation</Text><Text style={styles.muted}>Send a message, photo, video, or voice note.</Text></View> : messages.map(message => {
@@ -396,8 +400,8 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   </View>;
 }
 
-function AuthScreen({ onContinue, onJoinChat }: { onContinue: () => void; onJoinChat: (name: string) => Promise<void> }) {
-  const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [guestName, setGuestName] = useState(''); const [busy, setBusy] = useState(false);
+function AuthScreen({ onContinue, onJoinChat }: { onContinue: () => void; onJoinChat: (name: string) => Promise<string | null> }) {
+  const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [guestName, setGuestName] = useState(''); const [busy, setBusy] = useState(false); const [guestError, setGuestError] = useState('');
   async function signIn(create = false) {
     if (!supabase) return; setBusy(true);
     const result = create ? await supabase.auth.signUp({ email: email.trim(), password }) : await supabase.auth.signInWithPassword({ email: email.trim(), password });
@@ -405,8 +409,13 @@ function AuthScreen({ onContinue, onJoinChat }: { onContinue: () => void; onJoin
     if (result.error) Alert.alert(create ? 'Could not create account' : 'Could not sign in', result.error.message);
     else if (create && !result.data.session) Alert.alert('Check your email', 'Confirm your email, then sign in.');
   }
-  async function joinGuestChat() { setBusy(true); await onJoinChat(guestName.trim()); setBusy(false); }
-  return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><View style={styles.avatarLarge}><Text style={styles.avatarText}>OT</Text></View><Text style={styles.title}>Welcome to OfficeTime</Text><Text style={styles.subtitle}>Sign in to securely sync attendance across devices.</Text><TextInput style={styles.input} placeholder="Work email" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail}/><TextInput style={styles.input} placeholder="Password" secureTextEntry value={password} onChangeText={setPassword}/><Pressable style={[styles.action, styles.primary]} onPress={() => void signIn()} disabled={busy}><Text style={styles.actionText}>{busy ? 'Please wait…' : 'Sign in'}</Text></Pressable><Pressable style={styles.textButton} onPress={() => void signIn(true)}><Text style={styles.outlineText}>Create employee account</Text></Pressable><View style={styles.chatJoinDivider}><View style={styles.chatDividerLine}/><Text style={styles.muted}>OR CHAT AS A GUEST</Text><View style={styles.chatDividerLine}/></View><TextInput style={styles.input} placeholder="Chat display name" autoCapitalize="words" value={guestName} onChangeText={setGuestName} maxLength={40}/><Pressable style={[styles.action, styles.guestAction]} disabled={busy || !guestName.trim()} onPress={() => void joinGuestChat()}><Text style={styles.guestActionText}>{busy ? 'Please wait…' : 'Join office chat'}</Text></Pressable><Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
+  async function joinGuestChat() {
+    setBusy(true); setGuestError('');
+    try { setGuestError((await onJoinChat(guestName.trim())) ?? ''); }
+    catch (error) { setGuestError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.'); }
+    finally { setBusy(false); }
+  }
+  return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><View style={styles.avatarLarge}><Text style={styles.avatarText}>OT</Text></View><Text style={styles.title}>Welcome to OfficeTime</Text><Text style={styles.subtitle}>Sign in to securely sync attendance across devices.</Text><TextInput style={styles.input} placeholder="Work email" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail}/><TextInput style={styles.input} placeholder="Password" secureTextEntry value={password} onChangeText={setPassword}/><Pressable style={[styles.action, styles.primary]} onPress={() => void signIn()} disabled={busy}><Text style={styles.actionText}>{busy ? 'Please wait…' : 'Sign in'}</Text></Pressable><Pressable style={styles.textButton} onPress={() => void signIn(true)}><Text style={styles.outlineText}>Create employee account</Text></Pressable><View style={styles.chatJoinDivider}><View style={styles.chatDividerLine}/><Text style={styles.muted}>OR CHAT AS A GUEST</Text><View style={styles.chatDividerLine}/></View><TextInput style={styles.input} placeholder="Chat display name" autoCapitalize="words" value={guestName} onChangeText={value => { setGuestName(value); setGuestError(''); }} maxLength={40}/><Pressable style={[styles.action, styles.guestAction]} disabled={busy || !guestName.trim()} onPress={() => void joinGuestChat()}><Text style={styles.guestActionText}>{busy ? 'Please wait…' : 'Join office chat'}</Text></Pressable>{!!guestError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{guestError}</Text>}<Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
 }
 
 type MemoryTile = { id: number; pairKey: string; symbol?: string; faceSource?: ImageSourcePropType; matched: boolean };

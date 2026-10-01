@@ -4,5 +4,6 @@
     "strict": true,
     "noEmit": true,
     "types": ["react", "node"]
-  }
+  },
+  "exclude": ["supabase/functions"]
 }

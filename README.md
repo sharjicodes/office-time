@@ -22,6 +22,7 @@ Responsive office attendance app built with React Native, Expo SDK 57, TypeScrip
 - Supabase RLS, trusted role provisioning, server-checked HR RPCs, and protected approval fields.
 - Responsive Expo Web build configured for Vercel static hosting.
 - While the web app is open, it checks for deployments once per minute and shows a reload prompt with the deployment's commit title when a newer build is available.
+- Team chat for visitors and employees with live text, private photo/video uploads, browser-recorded voice notes, and per-viewer view-once photos.
 
 ## HR policy interpretation
 
@@ -63,7 +64,8 @@ No policy PDF was copied into the repository. The app and docs reflect the sourc
    The public anon key is safe for the client only because RLS is enabled. Never place the service-role key in the app.
 
 4. In Supabase SQL Editor, run [`supabase/schema.sql`](supabase/schema.sql). This creates tables, profile provisioning, row-level policies, and protected HR report/approval functions.
-5. Start the app:
+5. To enable chat, enable **Anonymous sign-ins** in Supabase Authentication → Providers, then run [`supabase/chat-schema.sql`](supabase/chat-schema.sql). Install the Supabase CLI, run `npx supabase link --project-ref YOUR_PROJECT_REF`, then deploy the protected media-link function with `npx supabase functions deploy chat-media-url`. The function uses Supabase's server-side service-role secret; never add it to the app or Vercel client environment.
+6. Start the app:
 
    ```sh
    npx expo start
@@ -71,7 +73,7 @@ No policy PDF was copied into the repository. The app and docs reflect the sourc
 
    Use Expo Go for mobile UI iteration. Run `npm run web` to preview the browser layout locally.
 
-With Supabase variables omitted, the app supports local attendance and history on that device. Supabase setup is needed for sign-in, cross-device sync, and HR features.
+With Supabase variables omitted, the app supports local attendance and history on that device. Supabase setup is needed for sign-in, cross-device sync, chat, and HR features. Guest chat sign-in requires Anonymous sign-ins to be enabled in Supabase. Guest attendance remains local to the device and is not uploaded under the chat-only account.
 
 ## Deploy the web app to Vercel
 
@@ -81,7 +83,7 @@ With Supabase variables omitted, the app supports local attendance and history o
 4. In Supabase Authentication URL Configuration, set the production Vercel URL as the Site URL and add the Preview URLs you intend to use as allowed redirect URLs.
 5. Run `npm run build:web` locally before deploying if you want to validate the production export.
 
-The web layout adapts to phone and desktop widths. Web attendance persists in browser storage and syncs to Supabase when configured; local-only web records stay in that browser. Browser work-target notifications require permission and the tab to remain open. The weekday morning reminder is scheduled by the native iOS/Android apps.
+The web layout adapts to phone and desktop widths. Web attendance persists in browser storage and syncs to Supabase when configured; local-only web records stay in that browser. Chat media uploads, voice recording, and playback are supported in the HTTPS web app; microphone access requires browser permission. View-once means each signed-in viewer can open the image once in OfficeTime, using a one-minute private link. Recipients can still capture or copy media while it is visible. Browser work-target notifications require permission and the tab to remain open. The weekday morning reminder is scheduled by the native iOS/Android apps.
 
 ## HR account setup
 

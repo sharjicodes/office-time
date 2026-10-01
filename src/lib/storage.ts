@@ -9,7 +9,9 @@ const DELETED_DAYS_KEY = 'officetime.deleted-days.v1';
 async function daysKey() {
   try {
     const { data } = await supabase?.auth.getSession() ?? { data: { session: null } };
-    return `${DAYS_KEY}.${data.session?.user.id ?? 'device'}`;
+    const user = data.session?.user;
+    // Guest chat auth is not an employee account; keep attendance device-local.
+    return `${DAYS_KEY}.${user && !user.is_anonymous ? user.id : 'device'}`;
   } catch { return `${DAYS_KEY}.device`; }
 }
 
@@ -17,7 +19,7 @@ export async function loadDays(): Promise<AttendanceDay[]> {
   try {
     const { data: { user } } = await supabase?.auth.getUser() ?? { data: { user: null } };
     const state = await NetInfo.fetch();
-    if (supabase && user && state.isConnected) {
+    if (supabase && user && !user.is_anonymous && state.isConnected) {
       const { data, error } = await supabase.from('attendance_days').select('*').order('work_date', { ascending: false }).limit(370);
       if (!error && data) {
         const deleted = await loadDeletedDays();
@@ -84,7 +86,7 @@ export async function syncPending(days?: AttendanceDay[]) {
   const state = await NetInfo.fetch();
   if (!state.isConnected) return;
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return;
+  if (!user || user.is_anonymous) return;
   const deleted = await loadDeletedDays();
   for (const date of deleted) {
     const { error } = await supabase.from('attendance_days').delete().eq('user_id', user.id).eq('work_date', date);

@@ -14,7 +14,7 @@ import { colors } from './src/theme';
 import { BUILD_ID, BUILD_SUMMARY } from './src/release';
 
 if (Platform.OS !== 'web') Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
-type Tab = 'Today' | 'History' | 'Games' | 'HR';
+type Tab = 'Today' | 'History' | 'Chat' | 'Games' | 'HR';
 const clock = (value: string | null) => value ? new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
 const monthName = (key: string) => new Date(`${key}-01T12:00:00`).toLocaleDateString([], { month: 'long', year: 'numeric' });
 const formatTimer = (seconds: number) => {
@@ -206,7 +206,10 @@ function OfficeTimeApp() {
   }
 
   if (booting) return <SafeAreaView style={styles.safe}><View style={styles.center}><ActivityIndicator color={colors.blue} /><Text style={styles.muted}>Loading OfficeTime…</Text></View></SafeAreaView>;
-  if (!session && isSupabaseConfigured && !offlineContinue) return <AuthScreen onContinue={() => setOfflineContinue(true)} />;
+  if (!session && isSupabaseConfigured && !offlineContinue) return <AuthScreen onContinue={() => setOfflineContinue(true)} onJoinChat={async name => {
+    const { error } = await supabase!.auth.signInAnonymously({ options: { data: { full_name: name } } });
+    if (error) Alert.alert('Could not join chat', error.message); else setOfflineContinue(true);
+  }} />;
 
   const lateDays = days.filter(d => d.date.startsWith(today.slice(0, 7)) && d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).afterFlexLimit);
   const halfDayToday = isHalfDayDate(days, today, policy);
@@ -215,7 +218,7 @@ function OfficeTimeApp() {
     <ScrollView contentContainerStyle={styles.page}>
       <View style={styles.header}><View><Text style={styles.eyebrow}>ATTENDANCE, MADE SIMPLE</Text><Text style={styles.title}>OfficeTime</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={styles.avatar}><Text style={styles.avatarText}>{session?.user?.email?.[0]?.toUpperCase() ?? 'OT'}</Text></View></View>
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => session ? void supabase?.auth.signOut() : null}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
-      <View style={styles.tabs}>{(['Today', 'History', 'Games', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</View>
+      <View style={styles.tabs}>{(['Today', 'History', 'Chat', 'Games', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</View>
       {tab === 'Today' && <>
         <View style={styles.hero}>
           <View style={styles.heroTop}><View style={{ flex: 1 }}><Text style={styles.heroLabel}>PUNCH TIMER · {active ? 'RUNNING' : 'STOPPED'}</Text><Text style={styles.timerHero}>{formatTimer(timerSeconds)}</Text><Text style={styles.heroSmall}>Net recorded work: {formatDuration(summary.netWorkedMinutes)}</Text></View><View style={styles.progressBadge}><Text style={styles.progressBadgeText}>{summary.progressPercent}%</Text></View></View>
@@ -245,6 +248,11 @@ function OfficeTimeApp() {
       </>}
       {tab === 'Today' && sessions.length > 0 && <ClearDayControl date={today} onClear={clearAttendanceDay} />}
       {tab === 'History' && <History days={days} policy={policy} onClear={clearAttendanceDay} />}
+      {tab === 'Chat' && <TeamChat session={session} onJoin={async name => {
+        if (!supabase) return Alert.alert('Chat unavailable', 'Configure Supabase to enable shared chat.');
+        const { error } = await supabase.auth.signInAnonymously({ options: { data: { full_name: name } } });
+        if (error) Alert.alert('Could not join chat', error.message);
+      }} />}
       {tab === 'Games' && <MemoryMatchGame />}
       {tab === 'HR' && <HRDashboard rows={hrRows} loading={busy} onRefresh={async () => { setBusy(true); const { data } = await supabase!.rpc('hr_attendance_report'); setHrRows(data ?? []); setBusy(false); }} onResolve={resolveReview} />}
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. OfficeTime is a companion tracker until HR authorizes it for official use.</Text></View>
@@ -253,8 +261,143 @@ function OfficeTimeApp() {
   </SafeAreaView>;
 }
 
-function AuthScreen({ onContinue }: { onContinue: () => void }) {
-  const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [busy, setBusy] = useState(false);
+type ChatMessage = { id: string; sender_id: string; sender_name: string; body: string; media_path: string | null; media_type: 'image' | 'video' | 'audio' | null; view_once: boolean; sent_at: string };
+
+function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) => Promise<void> }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [displayName, setDisplayName] = useState('');
+  const [draft, setDraft] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [viewOnce, setViewOnce] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [mediaView, setMediaView] = useState<{ url: string; type: string; once: boolean } | null>(null);
+  const [viewed, setViewed] = useState<string[]>([]);
+  const recorder = useRef<MediaRecorder | null>(null);
+  const mediaStream = useRef<MediaStream | null>(null);
+  const chunks = useRef<Blob[]>([]);
+  const messageScroll = useRef<ScrollView>(null);
+  const isJoined = !!session?.user?.id;
+  const isAnonymous = !!session?.user?.is_anonymous;
+  const myName = session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')[0] || 'Guest';
+
+  useEffect(() => {
+    if (!supabase || !isJoined) return;
+    let alive = true;
+    void supabase.from('chat_messages').select('*').order('sent_at', { ascending: true }).limit(100)
+      .then(({ data, error }) => { if (alive && !error) setMessages((data ?? []) as ChatMessage[]); });
+    const channel = supabase.channel('officetime-team-chat')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, payload => {
+        if (!alive) return;
+        const incoming = payload.new as ChatMessage;
+        setMessages(current => current.some(item => item.id === incoming.id) ? current : [...current, incoming].slice(-100));
+      }).subscribe();
+    return () => { alive = false; void supabase?.removeChannel(channel); };
+  }, [isJoined, session?.user?.id]);
+
+  useEffect(() => () => {
+    recorder.current?.stop();
+    mediaStream.current?.getTracks().forEach(track => track.stop());
+  }, []);
+
+  function chooseFile() {
+    if (Platform.OS !== 'web') return Alert.alert('Use the website', 'Photo and video upload is available in the web chat.');
+    const input = (globalThis as any).document.createElement('input');
+    input.type = 'file'; input.accept = 'image/*,video/*';
+    input.onchange = () => {
+      const selected = input.files?.[0] as File | undefined;
+      if (!selected) return;
+      if (selected.size > 50 * 1024 * 1024) return Alert.alert('File too large', 'Choose a photo or video under 50 MB.');
+      if (!selected.type.startsWith('image/') && !selected.type.startsWith('video/')) return Alert.alert('Unsupported file', 'Choose an image or video.');
+      setFile(selected); setViewOnce(false);
+    };
+    input.click();
+  }
+
+  async function startVoiceRecording() {
+    try {
+      if (Platform.OS !== 'web' || !(globalThis as any).navigator?.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined')
+        return Alert.alert('Voice recording unavailable', 'Use a supported browser and allow microphone access.');
+      const stream = await (globalThis as any).navigator.mediaDevices.getUserMedia({ audio: true }) as MediaStream;
+      mediaStream.current = stream; chunks.current = [];
+      const audioRecorder = new MediaRecorder(stream);
+      recorder.current = audioRecorder;
+      audioRecorder.ondataavailable = event => { if (event.data.size) chunks.current.push(event.data); };
+      audioRecorder.onstop = () => {
+        stream.getTracks().forEach(track => track.stop()); mediaStream.current = null;
+        const blob = new Blob(chunks.current, { type: audioRecorder.mimeType || 'audio/webm' });
+        if (blob.size) {
+          const audioFile = new File([blob], `voice-${Date.now()}.${blob.type.includes('mp4') ? 'm4a' : 'webm'}`, { type: blob.type });
+          void sendMessage('', audioFile);
+        }
+      };
+      audioRecorder.start(); setRecording(true);
+    } catch { Alert.alert('Microphone unavailable', 'Allow microphone access in your browser settings, then try again.'); }
+  }
+
+  function stopVoiceRecording() { recorder.current?.stop(); recorder.current = null; setRecording(false); }
+
+  async function sendMessage(text = draft, attachment = file) {
+    if (!supabase || !session?.user?.id || sending) return;
+    const body = text.trim();
+    if (!body && !attachment) return;
+    if (body.length > 1000) return Alert.alert('Message too long', 'Keep chat messages under 1,000 characters.');
+    setSending(true);
+    try {
+      let mediaPath: string | null = null;
+      let mediaType: ChatMessage['media_type'] = null;
+      if (attachment) {
+        if (attachment.size > 50 * 1024 * 1024) throw new Error('Media files must be under 50 MB.');
+        mediaType = attachment.type.startsWith('image/') ? 'image' : attachment.type.startsWith('video/') ? 'video' : attachment.type.startsWith('audio/') ? 'audio' : null;
+        if (!mediaType) throw new Error('This file type is not supported.');
+        const extension = attachment.name?.split('.').pop()?.replace(/[^a-z0-9]/gi, '').slice(0, 8) || (mediaType === 'audio' ? 'webm' : mediaType === 'video' ? 'mp4' : 'jpg');
+        mediaPath = `${session.user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+        const { error: uploadError } = await supabase.storage.from('chat-media').upload(mediaPath, attachment, { contentType: attachment.type, upsert: false });
+        if (uploadError) throw uploadError;
+      }
+      const { error } = await supabase.from('chat_messages').insert({ sender_id: session.user.id, sender_name: myName.slice(0, 40), body, media_path: mediaPath, media_type: mediaType, view_once: !!(viewOnce && mediaType === 'image') });
+      if (error) throw error;
+      setDraft(''); setFile(null); setViewOnce(false);
+    } catch (error: any) { Alert.alert('Message not sent', error?.message || 'Check your connection and try again.'); }
+    finally { setSending(false); }
+  }
+
+  async function openMedia(message: ChatMessage) {
+    if (!supabase || !message.media_type) return;
+    if (message.view_once && viewed.includes(message.id)) return Alert.alert('Already opened', 'This photo can only be viewed once on this account.');
+    const { data, error } = await supabase.functions.invoke('chat-media-url', { body: { messageId: message.id } });
+    if (error || !data?.url) return Alert.alert('Media unavailable', error?.message || 'Could not open this attachment.');
+    if (message.view_once) setViewed(current => [...current, message.id]);
+    setMediaView({ url: data.url, type: message.media_type, once: message.view_once });
+  }
+
+  if (!supabase) return <View style={styles.card}><Text style={styles.sectionTitle}>Team chat</Text><Text style={styles.muted}>Shared chat needs Supabase configured. Set up the chat schema and media function using the README instructions.</Text></View>;
+
+  return <View style={styles.chatCard}>
+    <View style={styles.chatHeading}><View style={styles.chatAvatar}><Text style={styles.chatAvatarText}>✦</Text></View><View style={{ flex: 1 }}><Text style={styles.sectionTitle}>Office chat</Text><Text style={styles.chatPresence}>Shared room · everyone can read · live</Text></View><Text style={styles.onlineBadge}>● LIVE</Text></View>
+    {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Say hello to the team</Text><Text style={styles.muted}>Join with a display name. No work email is needed.</Text><TextInput style={styles.input} value={displayName} onChangeText={setDisplayName} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary]} disabled={!displayName.trim()} onPress={() => void onJoin(displayName.trim())}><Text style={styles.actionText}>Join the chat</Text></Pressable></View> : <>
+      <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Chatting as {myName}{isAnonymous ? ' · guest' : ''}</Text></View>
+      <ScrollView ref={messageScroll} onContentSizeChange={() => messageScroll.current?.scrollToEnd({ animated: true })} style={styles.chatMessages} contentContainerStyle={styles.chatMessagesContent} nestedScrollEnabled>
+        {messages.length === 0 ? <View style={styles.chatEmpty}><Text style={styles.chatEmptyIcon}>☕</Text><Text style={styles.emptyTitle}>Start the conversation</Text><Text style={styles.muted}>Send a message, photo, video, or voice note.</Text></View> : messages.map(message => {
+          const mine = message.sender_id === session.user.id;
+          return <View key={message.id} style={[styles.chatBubble, mine ? styles.chatBubbleMine : styles.chatBubbleOther]}>
+            {!mine && <Text style={styles.chatSender}>{message.sender_name}</Text>}
+            {!!message.body && <Text style={styles.chatBody}>{message.body}</Text>}
+            {message.media_path && <Pressable onPress={() => void openMedia(message)} style={styles.mediaButton}><Text style={styles.mediaIcon}>{message.view_once ? '◉' : message.media_type === 'video' ? '▶' : message.media_type === 'audio' ? '♫' : '▧'}</Text><View style={{ flex: 1 }}><Text style={styles.mediaTitle}>{message.view_once ? 'View-once photo' : message.media_type === 'video' ? 'Video' : message.media_type === 'audio' ? 'Voice message' : 'Photo'}</Text><Text style={styles.mediaHint}>{message.view_once && viewed.includes(message.id) ? 'Already opened' : 'Tap to open'}</Text></View><Text style={styles.mediaChevron}>›</Text></Pressable>}
+            <Text style={styles.chatTime}>{new Date(message.sent_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text>
+          </View>;
+        })}
+      </ScrollView>
+      {file && <View style={styles.attachmentPreview}><Text style={styles.attachmentText}>▧  {file.name}</Text><Pressable onPress={() => { setFile(null); setViewOnce(false); }}><Text style={styles.link}>Remove</Text></Pressable></View>}
+      {file?.type.startsWith('image/') && <Pressable onPress={() => setViewOnce(value => !value)} style={styles.onceToggle}><Text style={styles.onceCheckbox}>{viewOnce ? '✓' : ''}</Text><Text style={styles.onceText}>View once (each person can open this photo once)</Text></Pressable>}
+      <View style={styles.chatComposer}><View style={styles.chatTools}><Pressable accessibilityLabel="Add photo or video" onPress={chooseFile} style={styles.chatTool}><Text style={styles.chatToolText}>＋ Media</Text></Pressable><Pressable accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice message'} onPress={recording ? stopVoiceRecording : () => void startVoiceRecording()} style={[styles.chatTool, recording && styles.recordingTool]}><Text style={[styles.chatToolText, recording && styles.recordingText]}>{recording ? '■ Stop' : '● Voice'}</Text></Pressable></View><View style={styles.chatInputRow}><TextInput style={styles.chatInput} multiline maxLength={1000} value={draft} onChangeText={setDraft} placeholder="Message the team…"/><Pressable accessibilityLabel="Send message" disabled={sending || (!draft.trim() && !file)} onPress={() => void sendMessage()} style={[styles.sendButton, (sending || (!draft.trim() && !file)) && styles.dim]}><Text style={styles.sendButtonText}>{sending ? '…' : '↑'}</Text></Pressable></View></View>
+    </>}
+    <Modal visible={!!mediaView} transparent animationType="fade" onRequestClose={() => setMediaView(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{mediaView?.once ? 'View-once photo' : 'Shared media'}</Text><Pressable onPress={() => setMediaView(null)}><Text style={styles.link}>Close</Text></Pressable></View>{mediaView?.type === 'image' ? <Image source={{ uri: mediaView.url }} resizeMode="contain" style={styles.mediaImage}/> : Platform.OS === 'web' && mediaView ? React.createElement(mediaView.type === 'video' ? 'video' : 'audio', { src: mediaView.url, controls: true, playsInline: true, style: { width: '100%', maxHeight: 420 } }) : <Text style={styles.muted}>Open this media in the web app to play it.</Text>}{mediaView?.once && <Text style={styles.onceFootnote}>This view is now used. Close this window to hide the photo.</Text>}</View></View></Modal>
+  </View>;
+}
+
+function AuthScreen({ onContinue, onJoinChat }: { onContinue: () => void; onJoinChat: (name: string) => Promise<void> }) {
+  const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [guestName, setGuestName] = useState(''); const [busy, setBusy] = useState(false);
   async function signIn(create = false) {
     if (!supabase) return; setBusy(true);
     const result = create ? await supabase.auth.signUp({ email: email.trim(), password }) : await supabase.auth.signInWithPassword({ email: email.trim(), password });
@@ -262,7 +405,8 @@ function AuthScreen({ onContinue }: { onContinue: () => void }) {
     if (result.error) Alert.alert(create ? 'Could not create account' : 'Could not sign in', result.error.message);
     else if (create && !result.data.session) Alert.alert('Check your email', 'Confirm your email, then sign in.');
   }
-  return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><View style={styles.avatarLarge}><Text style={styles.avatarText}>OT</Text></View><Text style={styles.title}>Welcome to OfficeTime</Text><Text style={styles.subtitle}>Sign in to securely sync attendance across devices.</Text><TextInput style={styles.input} placeholder="Work email" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail}/><TextInput style={styles.input} placeholder="Password" secureTextEntry value={password} onChangeText={setPassword}/><Pressable style={[styles.action, styles.primary]} onPress={() => void signIn()} disabled={busy}><Text style={styles.actionText}>{busy ? 'Please wait…' : 'Sign in'}</Text></Pressable><Pressable style={styles.textButton} onPress={() => void signIn(true)}><Text style={styles.outlineText}>Create employee account</Text></Pressable><Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
+  async function joinGuestChat() { setBusy(true); await onJoinChat(guestName.trim()); setBusy(false); }
+  return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><View style={styles.avatarLarge}><Text style={styles.avatarText}>OT</Text></View><Text style={styles.title}>Welcome to OfficeTime</Text><Text style={styles.subtitle}>Sign in to securely sync attendance across devices.</Text><TextInput style={styles.input} placeholder="Work email" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail}/><TextInput style={styles.input} placeholder="Password" secureTextEntry value={password} onChangeText={setPassword}/><Pressable style={[styles.action, styles.primary]} onPress={() => void signIn()} disabled={busy}><Text style={styles.actionText}>{busy ? 'Please wait…' : 'Sign in'}</Text></Pressable><Pressable style={styles.textButton} onPress={() => void signIn(true)}><Text style={styles.outlineText}>Create employee account</Text></Pressable><View style={styles.chatJoinDivider}><View style={styles.chatDividerLine}/><Text style={styles.muted}>OR CHAT AS A GUEST</Text><View style={styles.chatDividerLine}/></View><TextInput style={styles.input} placeholder="Chat display name" autoCapitalize="words" value={guestName} onChangeText={setGuestName} maxLength={40}/><Pressable style={[styles.action, styles.guestAction]} disabled={busy || !guestName.trim()} onPress={() => void joinGuestChat()}><Text style={styles.guestActionText}>{busy ? 'Please wait…' : 'Join office chat'}</Text></Pressable><Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
 }
 
 type MemoryTile = { id: number; pairKey: string; symbol?: string; faceSource?: ImageSourcePropType; matched: boolean };
@@ -411,6 +555,8 @@ const styles = StyleSheet.create({
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, statCard: { flexBasis: '47%', flexGrow: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 14, gap: 8 }, statLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 }, statValue: { color: colors.text, fontSize: 16, fontWeight: '800' }, card: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 17, gap: 13 }, cardHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, sectionTitle: { color: colors.text, fontSize: 17, fontWeight: '800' }, row: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 }, rowLabel: { color: colors.muted, fontSize: 12, flex: 1 }, rowValue: { color: colors.text, fontSize: 12, fontWeight: '700', textAlign: 'right', flex: 1 }, pill: { backgroundColor: '#DCFCE7', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 99 }, pillWarn: { backgroundColor: '#FEF3C7' }, pillText: { color: '#15803D', fontSize: 10, fontWeight: '800' }, policyNote: { color: '#854D0E', fontSize: 11, lineHeight: 17, backgroundColor: '#FFFBEB', padding: 10, borderRadius: 10 }, outlineButton: { borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 11, padding: 11, alignItems: 'center', backgroundColor: '#F8FBFF' }, outlineText: { color: colors.blue, fontSize: 12, fontWeight: '800' }, muted: { color: colors.muted, fontSize: 12, lineHeight: 18 }, stepper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, stepActions: { flexDirection: 'row', alignItems: 'center', gap: 10 }, stepButton: { width: 30, height: 30, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }, stepText: { fontSize: 20, color: colors.text }, stepValue: { minWidth: 64, textAlign: 'center', fontWeight: '800', color: colors.text, fontSize: 12 }, settingChoice: { gap: 8 }, choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, choice: { backgroundColor: '#F1F5F9', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 99 }, choiceSelected: { backgroundColor: '#DBEAFE' }, choiceText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, choiceTextSelected: { color: colors.blue },
   gameCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 18, gap: 15 }, gameHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, gameEyebrow: { color: colors.blue, fontWeight: '800', fontSize: 10, letterSpacing: 1.2 }, gameTitle: { color: colors.text, fontSize: 24, fontWeight: '800', marginTop: 3 }, gameIcon: { fontSize: 34 }, gameDescription: { color: colors.muted, fontSize: 12, lineHeight: 18 }, difficultyRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 7 }, difficultyLabel: { color: colors.muted, fontSize: 11, fontWeight: '700', marginRight: 3 }, difficultyButton: { borderRadius: 99, paddingVertical: 7, paddingHorizontal: 10, backgroundColor: '#F1F5F9' }, difficultySelected: { backgroundColor: '#DBEAFE' }, difficultyText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, difficultyTextSelected: { color: colors.blue }, playerRow: { flexDirection: 'row', gap: 10 }, playerCard: { flex: 1, alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 10 }, playerTurn: { borderColor: colors.blue, backgroundColor: '#EFF6FF' }, playerName: { width: '100%', color: colors.text, textAlign: 'center', fontWeight: '700', fontSize: 12, paddingVertical: 4 }, playerScore: { color: colors.blue, fontWeight: '800', fontSize: 25, marginTop: 4 }, playerPairs: { color: colors.muted, fontSize: 10 }, turnLabel: { textAlign: 'center', color: colors.text, fontWeight: '800', fontSize: 14 }, memoryBoard: { width: '100%', maxWidth: 460, alignSelf: 'center', gap: 8 }, memoryRow: { flexDirection: 'row', gap: 8 }, memoryTile: { flex: 1, aspectRatio: 1, borderRadius: 13, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: colors.navy, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }, memoryFaceImage: { width: '100%', height: '100%' }, memoryTileOpen: { backgroundColor: '#EFF6FF', borderColor: '#93C5FD' }, memoryTileMatched: { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }, memoryTileText: { fontSize: 29, fontWeight: '800' }, memoryTileHidden: { color: '#BFDBFE', fontSize: 31 }, gameFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, gameHint: { flex: 1, color: colors.muted, fontSize: 11 }, newGameButton: { backgroundColor: colors.blue, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 11 }, newGameText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   exportButton: { backgroundColor: colors.blue, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, alignItems: 'center' }, exportDisabled: { opacity: 0.45 }, exportButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' }, historyDayCard: { backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' }, sessionToggle: { color: colors.blue, fontSize: 10, fontWeight: '700' }, sessionList: { borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#F8FAFC' }, sessionEntry: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border }, sessionLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', width: 58 }, sessionTime: { color: colors.text, fontSize: 11, fontWeight: '700', flex: 1 }, sessionDuration: { color: colors.muted, fontSize: 10 },
+  chatJoinDivider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }, chatDividerLine: { flex: 1, height: 1, backgroundColor: colors.border }, guestAction: { backgroundColor: '#0F766E' }, guestActionText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  chatCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 16, gap: 13 }, chatHeading: { flexDirection: 'row', alignItems: 'center', gap: 11 }, chatAvatar: { width: 43, height: 43, borderRadius: 15, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center' }, chatAvatarText: { color: colors.blue, fontSize: 22, fontWeight: '800' }, chatPresence: { color: colors.muted, fontSize: 10, marginTop: 3 }, onlineBadge: { color: '#15803D', fontSize: 9, fontWeight: '900', backgroundColor: '#DCFCE7', overflow: 'hidden', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 6 }, chatJoin: { gap: 12, paddingVertical: 12 }, chatWelcome: { color: colors.text, fontSize: 17, fontWeight: '800' }, chatIdentity: { borderRadius: 10, backgroundColor: '#F8FAFC', padding: 9 }, chatIdentityText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, chatMessages: { maxHeight: 430, minHeight: 220, backgroundColor: '#F8FAFC', borderRadius: 16 }, chatMessagesContent: { flexGrow: 1, justifyContent: 'flex-end', padding: 12, gap: 9 }, chatEmpty: { flex: 1, minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: 7 }, chatEmptyIcon: { fontSize: 30 }, chatBubble: { maxWidth: '88%', borderRadius: 15, paddingHorizontal: 12, paddingVertical: 9, gap: 5 }, chatBubbleMine: { alignSelf: 'flex-end', backgroundColor: '#DBEAFE', borderBottomRightRadius: 5 }, chatBubbleOther: { alignSelf: 'flex-start', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderBottomLeftRadius: 5 }, chatSender: { color: colors.blue, fontSize: 10, fontWeight: '800' }, chatBody: { color: colors.text, fontSize: 13, lineHeight: 19 }, chatTime: { color: colors.muted, fontSize: 9, alignSelf: 'flex-end' }, mediaButton: { minWidth: 185, flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: 11, padding: 10, backgroundColor: 'rgba(255,255,255,0.75)', borderWidth: 1, borderColor: colors.border }, mediaIcon: { color: colors.blue, fontSize: 19, fontWeight: '800' }, mediaTitle: { color: colors.text, fontSize: 11, fontWeight: '800' }, mediaHint: { color: colors.muted, fontSize: 9, marginTop: 2 }, mediaChevron: { color: colors.blue, fontSize: 21 }, chatComposer: { gap: 9 }, chatTools: { flexDirection: 'row', gap: 8 }, chatTool: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingHorizontal: 11, paddingVertical: 8 }, chatToolText: { color: colors.blue, fontSize: 10, fontWeight: '800' }, recordingTool: { backgroundColor: '#FEE2E2' }, recordingText: { color: '#B91C1C' }, chatInputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 }, chatInput: { flex: 1, maxHeight: 110, minHeight: 43, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 13, paddingHorizontal: 12, paddingVertical: 11, color: colors.text, fontSize: 13 }, sendButton: { width: 43, height: 43, borderRadius: 13, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' }, sendButtonText: { color: '#FFFFFF', fontSize: 24, lineHeight: 28, fontWeight: '800' }, attachmentPreview: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#EFF6FF', borderRadius: 10, padding: 10 }, attachmentText: { color: colors.text, fontSize: 10, fontWeight: '700', flex: 1 }, onceToggle: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 3 }, onceCheckbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 1, borderColor: colors.blue, backgroundColor: '#EFF6FF', textAlign: 'center', overflow: 'hidden', color: colors.blue, fontSize: 12, fontWeight: '900' }, onceText: { color: colors.muted, fontSize: 10, flex: 1 }, mediaOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.82)', padding: 18 }, mediaModal: { width: '100%', maxWidth: 620, maxHeight: '90%', backgroundColor: colors.card, borderRadius: 18, padding: 15, gap: 12 }, mediaImage: { width: '100%', height: 420 }, onceFootnote: { color: colors.muted, fontSize: 10, textAlign: 'center' },
   updateOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.58)', alignItems: 'center', justifyContent: 'center', padding: 22 }, updateCard: { width: '100%', maxWidth: 420, backgroundColor: colors.card, borderRadius: 24, padding: 25, gap: 13, borderWidth: 1, borderColor: colors.border, shadowColor: '#0F172A', shadowOpacity: 0.2, shadowRadius: 24, elevation: 8 }, updateBadge: { alignSelf: 'flex-start', backgroundColor: '#DBEAFE', borderRadius: 99, paddingHorizontal: 10, paddingVertical: 6 }, updateBadgeText: { color: colors.blue, fontSize: 10, fontWeight: '900', letterSpacing: 1 }, updateTitle: { color: colors.text, fontSize: 24, lineHeight: 30, fontWeight: '900' }, updateSummary: { color: colors.muted, fontSize: 14, lineHeight: 21 }, updateMeta: { color: colors.muted, fontSize: 11 }, updatePrimary: { backgroundColor: colors.blue, paddingVertical: 14, borderRadius: 13, alignItems: 'center', marginTop: 4 }, updatePrimaryText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 }, updateLater: { paddingVertical: 9, alignItems: 'center' }, updateLaterText: { color: colors.muted, fontWeight: '700', fontSize: 12 },
   monthBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 }, monthArrow: { fontSize: 28, color: colors.blue, paddingHorizontal: 10 }, monthTitle: { color: colors.text, fontSize: 18, fontWeight: '800' }, summaryStrip: { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: '#EFF6FF', borderRadius: 15, padding: 16 }, monthStat: { color: colors.text, fontSize: 18, fontWeight: '800', marginTop: 5 }, historyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, padding: 12 }, historyDate: { width: 43, height: 48, borderRadius: 11, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' }, historyDay: { color: colors.blue, fontSize: 9, fontWeight: '700' }, historyNum: { color: colors.text, fontSize: 16, fontWeight: '800' }, historyMain: { flex: 1, gap: 5 }, historyTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, historySub: { color: colors.muted, fontSize: 10 }, historyHours: { color: colors.text, fontSize: 12, fontWeight: '800' }, clearCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 14, flexDirection: 'row', justifyContent: 'flex-end' }, clearCompact: { alignItems: 'flex-end', gap: 5 }, clearText: { color: colors.text, fontSize: 12, flex: 1 }, clearActions: { flexDirection: 'row', gap: 14, alignItems: 'center' }, clearDanger: { color: '#B91C1C', fontWeight: '800', fontSize: 12 }, empty: { padding: 26, alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: 15, gap: 6 }, emptyTitle: { color: colors.text, fontWeight: '800', fontSize: 14 }, hrRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderTopWidth: 1, borderTopColor: colors.border, gap: 10 }, hrActions: { gap: 9 }, approve: { color: '#15803D', fontWeight: '800', fontSize: 11 }, reject: { color: '#B91C1C', fontWeight: '800', fontSize: 11 },
   footerCard: { backgroundColor: '#EFF6FF', padding: 15, borderRadius: 14, gap: 5 }, footerTitle: { color: '#1D4ED8', fontSize: 12, fontWeight: '800' }, footerText: { color: '#1E40AF', fontSize: 11, lineHeight: 17 }, footer: { color: colors.muted, fontSize: 10, textAlign: 'center' }, authWrap: { flex: 1, justifyContent: 'center', padding: 20 }, authCard: { width: '100%', maxWidth: 430, alignSelf: 'center', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 24, gap: 14 }, input: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 11, padding: 13, color: colors.text, fontSize: 14 }, textButton: { alignItems: 'center', padding: 8 },

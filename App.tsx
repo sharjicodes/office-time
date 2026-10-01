@@ -274,6 +274,9 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   const [file, setFile] = useState<File | null>(null);
   const [viewOnce, setViewOnce] = useState(false);
   const [sending, setSending] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteAllTarget, setDeleteAllTarget] = useState<ChatMessage | null>(null);
+  const [chatError, setChatError] = useState('');
   const [recording, setRecording] = useState(false);
   const [mediaView, setMediaView] = useState<{ url: string; type: string; once: boolean } | null>(null);
   const [viewed, setViewed] = useState<string[]>([]);
@@ -288,13 +291,34 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   useEffect(() => {
     if (!supabase || !isJoined) return;
     let alive = true;
-    void supabase.from('chat_messages').select('*').order('sent_at', { ascending: true }).limit(100)
-      .then(({ data, error }) => { if (alive && !error) setMessages((data ?? []) as ChatMessage[]); });
+    void (async () => {
+      const { data: hidden, error: hideError } = await supabase.from('chat_message_hides').select('message_id').eq('viewer_id', session.user.id);
+      if (!alive) return;
+      const hiddenIds = new Set((hidden ?? []).map(row => row.message_id as string));
+      if (hideError) setChatError(`Delete controls need the latest chat database setup: ${hideError.message}`);
+      const { data, error } = await supabase.from('chat_messages').select('*').order('sent_at', { ascending: true }).limit(100);
+      if (!alive) return;
+      if (error) setChatError(error.message);
+      else {
+        setMessages(((data ?? []) as ChatMessage[]).filter(message => !hiddenIds.has(message.id)));
+        if (!hideError) setChatError('');
+      }
+    })();
     const channel = supabase.channel('officetime-team-chat')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, payload => {
         if (!alive) return;
         const incoming = payload.new as ChatMessage;
         setMessages(current => current.some(item => item.id === incoming.id) ? current : [...current, incoming].slice(-100));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'chat_messages' }, payload => {
+        if (!alive) return;
+        const deletedId = (payload.old as Partial<ChatMessage>).id;
+        if (deletedId) setMessages(current => current.filter(item => item.id !== deletedId));
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_message_hides', filter: `viewer_id=eq.${session.user.id}` }, payload => {
+        if (!alive) return;
+        const hiddenId = (payload.new as { message_id: string }).message_id;
+        setMessages(current => current.filter(item => item.id !== hiddenId));
       }).subscribe();
     return () => { alive = false; void supabase?.removeChannel(channel); };
   }, [isJoined, session?.user?.id]);
@@ -366,6 +390,34 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
     finally { setSending(false); }
   }
 
+  async function deleteForMe(message: ChatMessage) {
+    if (!supabase || !session?.user?.id || deletingId) return;
+    setDeletingId(message.id); setChatError('');
+    try {
+      const { error } = await supabase.from('chat_message_hides').insert({ message_id: message.id, viewer_id: session.user.id });
+      if (error) throw error;
+      setMessages(current => current.filter(item => item.id !== message.id));
+    } catch (error: any) { setChatError(error?.message || 'Could not hide this message for you.'); }
+    finally { setDeletingId(null); }
+  }
+
+  async function deleteForEveryone(message: ChatMessage) {
+    if (!supabase || !session?.user?.id || message.sender_id !== session.user.id || deletingId) return;
+    setDeletingId(message.id); setChatError('');
+    try {
+      const { data, error } = await supabase.from('chat_messages').delete().eq('id', message.id).eq('sender_id', session.user.id).select('id').maybeSingle();
+      if (error) throw error;
+      if (!data) throw new Error('Only the person who sent this message can delete it for everyone.');
+      setMessages(current => current.filter(item => item.id !== message.id));
+      setDeleteAllTarget(null);
+      if (message.media_path) {
+        const { error: mediaError } = await supabase.storage.from('chat-media').remove([message.media_path]);
+        if (mediaError) setChatError(`Message removed, but its attachment could not be cleaned up: ${mediaError.message}`);
+      }
+    } catch (error: any) { setChatError(error?.message || 'Could not delete this message.'); }
+    finally { setDeletingId(null); }
+  }
+
   async function openMedia(message: ChatMessage) {
     if (!supabase || !message.media_type) return;
     if (message.view_once && viewed.includes(message.id)) return Alert.alert('Already opened', 'This photo can only be viewed once on this account.');
@@ -379,6 +431,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
 
   return <View style={styles.chatCard}>
     <View style={styles.chatHeading}><View style={styles.chatAvatar}><Text style={styles.chatAvatarText}>✦</Text></View><View style={{ flex: 1 }}><Text style={styles.sectionTitle}>Office chat</Text><Text style={styles.chatPresence}>Shared room · everyone can read · live</Text></View><Text style={styles.onlineBadge}>● LIVE</Text></View>
+    {!!chatError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{chatError}</Text>}
     {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Say hello to the team</Text><Text style={styles.muted}>Join with a display name. No work email is needed.</Text><TextInput style={styles.input} value={displayName} onChangeText={value => { setDisplayName(value); setJoinError(''); }} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary, joining && styles.dim]} disabled={!displayName.trim() || joining} onPress={() => { setJoining(true); setJoinError(''); void onJoin(displayName.trim()).then(message => setJoinError(message ?? '')).catch(error => setJoinError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.')).finally(() => setJoining(false)); }}><Text style={styles.actionText}>{joining ? 'Please wait…' : 'Join the chat'}</Text></Pressable>{!!joinError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{joinError}</Text>}</View> : <>
       <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Chatting as {myName}{isAnonymous ? ' · guest' : ''}</Text></View>
       <ScrollView ref={messageScroll} onContentSizeChange={() => messageScroll.current?.scrollToEnd({ animated: true })} style={styles.chatMessages} contentContainerStyle={styles.chatMessagesContent} nestedScrollEnabled>
@@ -389,6 +442,10 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
             {!!message.body && <Text style={styles.chatBody}>{message.body}</Text>}
             {message.media_path && <Pressable onPress={() => void openMedia(message)} style={styles.mediaButton}><Text style={styles.mediaIcon}>{message.view_once ? '◉' : message.media_type === 'video' ? '▶' : message.media_type === 'audio' ? '♫' : '▧'}</Text><View style={{ flex: 1 }}><Text style={styles.mediaTitle}>{message.view_once ? 'View-once photo' : message.media_type === 'video' ? 'Video' : message.media_type === 'audio' ? 'Voice message' : 'Photo'}</Text><Text style={styles.mediaHint}>{message.view_once && viewed.includes(message.id) ? 'Already opened' : 'Tap to open'}</Text></View><Text style={styles.mediaChevron}>›</Text></Pressable>}
             <Text style={styles.chatTime}>{new Date(message.sent_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 7 }}>
+              <Pressable disabled={deletingId === message.id} onPress={() => void deleteForMe(message)}><Text style={{ color: '#64748B', fontSize: 10, fontWeight: '700' }}>Delete for me</Text></Pressable>
+              {mine && <Pressable disabled={deletingId === message.id} onPress={() => setDeleteAllTarget(message)}><Text style={{ color: '#B91C1C', fontSize: 10, fontWeight: '700' }}>Delete for everyone</Text></Pressable>}
+            </View>
           </View>;
         })}
       </ScrollView>
@@ -397,6 +454,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       <View style={styles.chatComposer}><View style={styles.chatTools}><Pressable accessibilityLabel="Add photo or video" onPress={chooseFile} style={styles.chatTool}><Text style={styles.chatToolText}>＋ Media</Text></Pressable><Pressable accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice message'} onPress={recording ? stopVoiceRecording : () => void startVoiceRecording()} style={[styles.chatTool, recording && styles.recordingTool]}><Text style={[styles.chatToolText, recording && styles.recordingText]}>{recording ? '■ Stop' : '● Voice'}</Text></Pressable></View><View style={styles.chatInputRow}><TextInput style={styles.chatInput} multiline maxLength={1000} value={draft} onChangeText={setDraft} placeholder="Message the team…"/><Pressable accessibilityLabel="Send message" disabled={sending || (!draft.trim() && !file)} onPress={() => void sendMessage()} style={[styles.sendButton, (sending || (!draft.trim() && !file)) && styles.dim]}><Text style={styles.sendButtonText}>{sending ? '…' : '↑'}</Text></Pressable></View></View>
     </>}
     <Modal visible={!!mediaView} transparent animationType="fade" onRequestClose={() => setMediaView(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{mediaView?.once ? 'View-once photo' : 'Shared media'}</Text><Pressable onPress={() => setMediaView(null)}><Text style={styles.link}>Close</Text></Pressable></View>{mediaView?.type === 'image' ? <Image source={{ uri: mediaView.url }} resizeMode="contain" style={styles.mediaImage}/> : Platform.OS === 'web' && mediaView ? React.createElement(mediaView.type === 'video' ? 'video' : 'audio', { src: mediaView.url, controls: true, playsInline: true, style: { width: '100%', maxHeight: 420 } }) : <Text style={styles.muted}>Open this media in the web app to play it.</Text>}{mediaView?.once && <Text style={styles.onceFootnote}>This view is now used. Close this window to hide the photo.</Text>}</View></View></Modal>
+    <Modal visible={!!deleteAllTarget} transparent animationType="fade" onRequestClose={() => setDeleteAllTarget(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><Text style={styles.sectionTitle}>Delete for everyone?</Text><Text style={styles.muted}>This removes the message from the shared chat for all participants.</Text><View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}><Pressable style={styles.outlineButton} onPress={() => setDeleteAllTarget(null)}><Text style={styles.outlineText}>Cancel</Text></Pressable><Pressable disabled={!!deletingId} onPress={() => deleteAllTarget && void deleteForEveryone(deleteAllTarget)} style={[styles.action, { backgroundColor: '#B91C1C', paddingHorizontal: 14 }]}><Text style={styles.actionText}>{deletingId === deleteAllTarget?.id ? 'Deleting…' : 'Delete for everyone'}</Text></Pressable></View></View></View></Modal>
   </View>;
 }
 

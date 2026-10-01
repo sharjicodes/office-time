@@ -25,13 +25,35 @@ create table if not exists public.chat_media_views (
 
 alter table public.chat_messages enable row level security;
 alter table public.chat_media_views enable row level security;
+create table if not exists public.chat_message_hides (
+  message_id uuid not null references public.chat_messages(id) on delete cascade,
+  viewer_id uuid not null references auth.users(id) on delete cascade,
+  hidden_at timestamptz not null default now(),
+  primary key (message_id, viewer_id)
+);
+alter table public.chat_message_hides enable row level security;
 drop policy if exists chat_messages_read on public.chat_messages;
 drop policy if exists chat_messages_send on public.chat_messages;
+drop policy if exists chat_messages_delete_own on public.chat_messages;
 create policy chat_messages_read on public.chat_messages for select to authenticated using (true);
 create policy chat_messages_send on public.chat_messages for insert to authenticated
   with check (auth.uid() = sender_id and char_length(btrim(sender_name)) between 1 and 40);
-revoke update, delete on public.chat_messages from anon, authenticated;
-grant select, insert on public.chat_messages to authenticated;
+create policy chat_messages_delete_own on public.chat_messages for delete to authenticated
+  using (auth.uid() = sender_id);
+drop policy if exists chat_message_hides_read_own on public.chat_message_hides;
+drop policy if exists chat_message_hides_insert_own on public.chat_message_hides;
+drop policy if exists chat_message_hides_delete_own on public.chat_message_hides;
+create policy chat_message_hides_read_own on public.chat_message_hides for select to authenticated
+  using (auth.uid() = viewer_id);
+create policy chat_message_hides_insert_own on public.chat_message_hides for insert to authenticated
+  with check (auth.uid() = viewer_id);
+create policy chat_message_hides_delete_own on public.chat_message_hides for delete to authenticated
+  using (auth.uid() = viewer_id);
+revoke update on public.chat_messages from anon, authenticated;
+revoke delete on public.chat_messages from anon, authenticated;
+grant select, insert, delete on public.chat_messages to authenticated;
+revoke all on public.chat_message_hides from anon, authenticated;
+grant select, insert, delete on public.chat_message_hides to authenticated;
 revoke all on public.chat_media_views from anon, authenticated;
 
 create or replace function public.limit_chat_message_rate()
@@ -73,9 +95,16 @@ on conflict (id) do update set public = false, file_size_limit = excluded.file_s
 drop policy if exists chat_media_upload_own on storage.objects;
 create policy chat_media_upload_own on storage.objects for insert to authenticated
   with check (bucket_id = 'chat-media' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists chat_media_delete_own on storage.objects;
+create policy chat_media_delete_own on storage.objects for delete to authenticated
+  using (bucket_id = 'chat-media' and (storage.foldername(name))[1] = auth.uid()::text);
 -- No client read policy: media is delivered through the authenticated Edge Function only.
 
 do $$ begin
   alter publication supabase_realtime add table public.chat_messages;
+exception when duplicate_object then null;
+end $$;
+do $$ begin
+  alter publication supabase_realtime add table public.chat_message_hides;
 exception when duplicate_object then null;
 end $$;

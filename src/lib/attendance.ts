@@ -23,6 +23,7 @@ export type AttendanceDay = {
   date: string;
   punchInAt: string | null;
   punchOutAt: string | null;
+  officeOutAt?: string | null;
   /** Individual work intervals. Optional to migrate existing single-session records. */
   sessions?: AttendanceSession[];
   breakMinutes: number;
@@ -50,21 +51,29 @@ export function formatDuration(totalMinutes: number) {
 export function getAttendanceSummary(day: AttendanceDay, now = new Date(), policy = DEFAULT_POLICY) {
   const sessions = getDaySessions(day).slice().sort((a, b) => a.punchInAt.localeCompare(b.punchInAt));
   const start = sessions[0] ? new Date(sessions[0].punchInAt) : null;
-  let elapsedMinutes = 0;
-  let unpaidGapMinutes = 0;
+  let elapsedSeconds = 0;
+  let takenBreakSeconds = 0;
   for (let i = 0; i < sessions.length; i++) {
     const session = sessions[i];
     const sessionStart = new Date(session.punchInAt);
     const sessionEnd = session.punchOutAt ? new Date(session.punchOutAt) : now;
-    elapsedMinutes += Math.max(0, Math.floor((sessionEnd.getTime() - sessionStart.getTime()) / 60000));
+    elapsedSeconds += Math.max(0, Math.floor((sessionEnd.getTime() - sessionStart.getTime()) / 1000));
     const next = sessions[i + 1];
-    if (session.punchOutAt && next) unpaidGapMinutes += Math.max(0, Math.floor((new Date(next.punchInAt).getTime() - new Date(session.punchOutAt).getTime()) / 60000));
+    if (session.punchOutAt && next) takenBreakSeconds += Math.max(0, Math.floor((new Date(next.punchInAt).getTime() - new Date(session.punchOutAt).getTime()) / 1000));
   }
-  const configuredBreak = policy.breakDeductionMode === 'none' ? 0 : policy.breakDeductionMode === 'actual' ? day.breakMinutes : policy.defaultBreakMinutes;
-  // Time away between sessions already excludes that time from elapsed work.
-  // Only deduct the configured break still missing from those gaps.
-  const deducted = start ? Math.max(0, configuredBreak - unpaidGapMinutes) : 0;
-  const netWorkedMinutes = Math.max(0, elapsedMinutes - deducted);
+  const lastSession = sessions[sessions.length - 1];
+  const breakIsOpen = !!lastSession?.punchOutAt && !sessions.some(session => !session.punchOutAt);
+  if (breakIsOpen) {
+    const breakEnd = day.officeOutAt ? new Date(day.officeOutAt).getTime() : day.date === localDateKey(now) ? now.getTime() : new Date(lastSession!.punchOutAt!).getTime();
+    takenBreakSeconds += Math.max(0, Math.floor((breakEnd - new Date(lastSession!.punchOutAt!).getTime()) / 1000));
+  }
+  // Punch intervals are the recorded work; time between sessions is tracked
+  // separately as break time and must not be deducted a second time.
+  const deducted = 0;
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  const netWorkedSeconds = elapsedSeconds;
+  const netWorkedMinutes = Math.floor(netWorkedSeconds / 60);
+  const takenBreakMinutes = Math.floor(takenBreakSeconds / 60);
   const remainingMinutes = Math.max(0, policy.recordedWorkTargetMinutes - netWorkedMinutes);
   const progressPercent = Math.min(100, Math.round(netWorkedMinutes / policy.recordedWorkTargetMinutes * 100));
   const loginMinute = start ? start.getHours() * 60 + start.getMinutes() : 0;
@@ -72,7 +81,8 @@ export function getAttendanceSummary(day: AttendanceDay, now = new Date(), polic
   const afterFlexLimit = !!start && loginMinute > mins(policy.flexibleLimit);
   const loginStatus = !start ? 'Not punched in' : afterFlexLimit ? 'After flexible limit — review' : lateMinutes ? `Late by ${lateMinutes} min` : 'On time';
   return {
-    elapsedMinutes, deductedBreakMinutes: deducted, netWorkedMinutes, remainingMinutes, progressPercent,
+    elapsedMinutes, deductedBreakMinutes: deducted, takenBreakSeconds, takenBreakMinutes,
+    netWorkedSeconds, netWorkedMinutes, remainingMinutes, progressPercent,
     targetReached: netWorkedMinutes >= policy.recordedWorkTargetMinutes,
     targetStatus: netWorkedMinutes >= policy.recordedWorkTargetMinutes ? `${formatDuration(policy.recordedWorkTargetMinutes)} target reached` : `${formatDuration(remainingMinutes)} remaining`,
     loginStatus, lateMinutes, afterFlexLimit,

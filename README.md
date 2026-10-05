@@ -7,12 +7,12 @@ Responsive office attendance app built with React Native, Expo SDK 57, TypeScrip
 - Email/password sign-up and sign-in with persistent Supabase Auth sessions, plus local-only mode.
 - One-tap punch-in and punch-out with any number of work sessions per local calendar day, accumulated into day/month totals.
 - Manual punch correction from Today or History, with exact local-time entry, 15-minute increase/decrease controls, and support for adding a missed session or day.
-- Live `HH:MM:SS` work timer that runs during a punch-in session and freezes at punch-out.
+- Live `HH:MM:SS` net-work timer that runs during a punch-in session and freezes at punch-out, plus a red break timer that runs until the next punch-in.
 - Clear a selected day’s attendance from Today or History, with offline deletion queued for Supabase sync.
 - Expand any day in History to review every punch-in and punch-out interval, including an active session.
-- Export the selected month’s daily totals, break deductions, status, and individual punch history as a PDF. On web, choose “Save as PDF” in the print dialog; on iOS/Android, save or share the generated PDF from the system share sheet.
+- Export the selected month’s daily net work, taken breaks, status, and individual punch history as a PDF. On web, choose “Save as PDF” in the print dialog; on iOS/Android, save or share the generated PDF from the system share sheet.
 - Two-player Memory Match mini-game for short breaks with 8-, 16-, and 24-pair board sizes; it uses the supplied team portraits and animal emoji pairs, and the player with the most matches wins.
-- Elapsed time, configurable break deduction, net recorded hours, progress, and remaining target time.
+- Net recorded work, tracked break time, progress, and remaining target time.
 - 9:00 AM standard start, 10:00 AM flexible limit, and late-login flags.
 - Monthly count of first punch-ins after 10:00 AM, with prior manager approval requests for late logins.
 - A warning with a custom alert tone after a first punch-in later than 10:00 AM, showing monthly count and remaining allowance; the fourth and later qualifying dates show a half-day status.
@@ -33,15 +33,15 @@ The source document is `Updated HR Policy 2026_8701.pdf`, dated 25 September 202
 - Page 1: Monday–Friday; standard timing 9:00 AM–6:00 PM; flex timing should not extend beyond 10:00 AM. Employees may arrive “a little late” up to four times per month with prior management approval. Arrivals after 10:00 AM beyond the four allowed occasions are treated as a half-day. The standard full-time workday is 9 hours including breaks, and the office biometric system is the required electronic attendance record.
 - Page 2: 8 hours of work must be recorded in the attendance system and Epic portal; the company provides a 1-hour break; morning tea/coffee breaks should be taken before 11:00 AM. Employees must also update their daily timesheet and Git commit status.
 
-The app starts with an 8-hour recorded-work target and a fixed 60-minute deduction. Those settings can be changed from Today → Your workday settings. Per the latest requested app behavior, only a day's first punch-in after 10:00 AM counts toward the four-login monthly limit; the fourth and later qualifying dates are marked as half-days. This is an explicit app interpretation of the policy wording, which says arrivals after 10:00 AM “beyond the four allowed occasions” are treated as a half-day. HR should confirm whether the half-day should begin on the fourth or fifth occasion and whether the limit requires prior manager approval.
+The app starts with an 8-hour recorded-work target and a 60-minute expected-break target. Punch-in intervals count as net work; time from punch-out until the next punch-in counts as taken break time. “Office out” records when the workday is finished and opens a summary of all work and break intervals. Per the latest requested app behavior, only a day's first punch-in after 10:00 AM counts toward the four-login monthly limit; the fourth and later qualifying dates are marked as half-days. This is an explicit app interpretation of the policy wording, which says arrivals after 10:00 AM “beyond the four allowed occasions” are treated as a half-day. HR should confirm whether the half-day should begin on the fourth or fifth occasion and whether the limit requires prior manager approval.
 
 HR must confirm before official rollout:
 
-1. Whether the target is 8 net working hours after a 1-hour deduction (9 elapsed hours), and whether the biometric system already deducts break time.
+1. Whether the 8-hour target is net time inside punch-in intervals, and whether the biometric system already deducts break time.
 2. Whether punch times between 9:00 and 10:00 are late, flex-eligible, or both. The app currently counts only first punch-ins after 10:00 AM toward the four-login limit.
 3. What “a little late” means, whether the four approved occasions are a monthly cap, and how prior approval is recorded.
 4. Whether the half-day rule begins on the fourth or fifth after-10:00 AM occasion, and how pending, rejected, or missing manager approval affects the count.
-5. Whether break time is a fixed hour or employee-recorded actual time. Fixed/actual/none deduction modes are available; in actual mode the employee can adjust today's break value before relying on the total.
+5. Whether the 60-minute break is a required minimum or an expected duration. OfficeTime records actual off-clock breaks from punch events and does not deduct the configured break target a second time.
 6. Whether this app can be an official attendance channel. The source currently identifies the office biometric system as official. OfficeTime is presented as a companion tracker.
 7. Approved notification behavior for leave, holidays, weekends, and work-from-home days. Late-login and work-goal notices use device-local notifications; delivery and sound depend on device permission/settings.
 
@@ -131,8 +131,8 @@ Use Apple signing/TestFlight for iOS distribution and a Play Console signing key
 
 ## Known boundaries
 
-- Employees may record multiple punch-in/out sessions on the same local calendar day. Each completed interval is added to the daily total; off-clock gaps never count as worked time. A configured break deduction is reduced by gaps between sessions, so a recorded lunch gap is not deducted twice. A new local calendar day starts with a zero daily total.
-- Existing one-session records migrate as a single session. Supabase deployments must rerun `supabase/schema.sql` to add the `sessions` JSONB column before syncing multi-session days.
+- Employees may record multiple punch-in/out sessions on the same local calendar day. Only punch-in intervals count as net work; off-clock gaps count toward taken break time, and an active break timer runs until the next punch-in. A new local calendar day starts with a zero daily total. The HR policy's nine-hour day and one-hour break interpretation still needs confirmation.
+- Existing one-session records migrate as a single session. Supabase deployments must rerun `supabase/schema.sql` to add the `sessions` JSONB and `office_out_at` columns before syncing multi-session days and Office out status.
 - Offline changes persist and sync as attendance-day upserts. For official payroll use, add server-trusted event timestamps, audited correction requests, retention rules, backups, and policy-approved conflict handling.
 - Reminder delivery is best-effort device-local scheduling and depends on notification permission and OS background behavior.
 - Web work-target reminders are foreground-tab timers and are not push notifications; browser storage is local to that browser unless Supabase sync is configured.

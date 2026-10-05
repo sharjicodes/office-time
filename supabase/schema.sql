@@ -14,6 +14,7 @@ create table if not exists public.attendance_days (
   work_date date not null,
   punch_in_at timestamptz,
   punch_out_at timestamptz,
+  office_out_at timestamptz,
   sessions jsonb not null default '[]'::jsonb check (jsonb_typeof(sessions) = 'array'),
   break_minutes integer not null default 60 check (break_minutes between 0 and 240),
   manager_approved_late_login boolean not null default false,
@@ -50,6 +51,7 @@ create table if not exists public.late_arrival_reviews (
 -- Migration safety for installations that used the starter schema.
 alter table public.attendance_days add column if not exists approval_status text not null default 'not_required';
 alter table public.attendance_days add column if not exists sessions jsonb not null default '[]'::jsonb;
+alter table public.attendance_days add column if not exists office_out_at timestamptz;
 alter table public.late_arrival_reviews add column if not exists reviewed_by uuid references auth.users(id);
 alter table public.late_arrival_reviews add column if not exists reviewed_at timestamptz;
 
@@ -158,8 +160,8 @@ begin
       r.minutes_late, r.review_status,
       case when a.punch_in_at is null then 0
         when jsonb_typeof(a.sessions) = 'array' and jsonb_array_length(a.sessions) > 0 then
-          greatest(0, coalesce(session_totals.elapsed_minutes, 0) - greatest(0, a.break_minutes - coalesce(session_totals.gap_minutes, 0)))
-        else greatest(0, floor(extract(epoch from (coalesce(a.punch_out_at, now()) - a.punch_in_at))/60)::integer - a.break_minutes)
+          greatest(0, coalesce(session_totals.elapsed_minutes, 0))
+        else greatest(0, floor(extract(epoch from (coalesce(a.punch_out_at, now()) - a.punch_in_at))/60)::integer)
       end
     from public.attendance_days a
     join auth.users u on u.id = a.user_id

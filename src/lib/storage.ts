@@ -62,6 +62,7 @@ export async function clearDay(date: string) {
 function fromRemote(row: any): AttendanceDay {
   return { id: row.id, user_id: row.user_id, date: row.work_date,
     punchInAt: row.punch_in_at, punchOutAt: row.punch_out_at,
+    officeOutAt: row.office_out_at ?? null,
     sessions: Array.isArray(row.sessions) && row.sessions.length ? row.sessions : (row.punch_in_at ? [{ punchInAt: row.punch_in_at, punchOutAt: row.punch_out_at }] : []),
     breakMinutes: row.break_minutes ?? DEFAULT_POLICY.defaultBreakMinutes,
     managerApproval: row.manager_approved_late_login ?? false,
@@ -98,7 +99,7 @@ export async function syncPending(days?: AttendanceDay[]) {
   const pending = (days ?? await loadLocalDays()).filter(d => !d.synced);
   for (const day of pending) {
     const payload = { user_id: user.id, work_date: day.date, punch_in_at: day.punchInAt,
-      punch_out_at: day.punchOutAt, sessions: getDaySessions(day), break_minutes: day.breakMinutes,
+      punch_out_at: day.punchOutAt, office_out_at: day.officeOutAt ?? null, sessions: getDaySessions(day), break_minutes: day.breakMinutes,
       manager_approved_late_login: day.managerApproval };
     const { error } = await supabase.from('attendance_days').upsert(payload, { onConflict: 'user_id,work_date' });
     if (!error) {

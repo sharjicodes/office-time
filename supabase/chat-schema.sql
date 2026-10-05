@@ -109,7 +109,7 @@ grant execute on function public.claim_chat_media_view(uuid,uuid) to service_rol
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('chat-media', 'chat-media', false, 52428800,
-  array['image/jpeg','image/png','image/webp','image/gif','image/heic','video/mp4','video/quicktime','video/webm','audio/webm','audio/mp4','audio/mpeg','audio/wav','audio/ogg'])
+  array['image/jpeg','image/png','image/webp','image/gif','image/heic','image/heif','image/avif','video/mp4','video/quicktime','video/webm','audio/webm','audio/mp4','audio/mpeg','audio/wav','audio/ogg'])
 on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
 
 drop policy if exists chat_media_upload_own on storage.objects;

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, ImageSourcePropType, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Easing, Image, ImageSourcePropType, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -24,6 +24,115 @@ const formatTimer = (seconds: number) => {
 
 export default function App() {
   return <SafeAreaProvider><OfficeTimeApp /><DeploymentUpdateNotice /></SafeAreaProvider>;
+}
+
+function PageAmbience() {
+  const [width, setWidth] = useState(0);
+  const spread = useRef(new Animated.Value(0.12)).current;
+  const run = useRef(new Animated.Value(0)).current;
+  const bounce = useRef(new Animated.Value(0)).current;
+  const drift = useRef(new Animated.Value(0)).current;
+  const twinkle = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const web = Animated.loop(Animated.sequence([
+      Animated.timing(spread, { toValue: 1, duration: 3400, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(spread, { toValue: 0.9, duration: 2200, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+    ]));
+    const runner = Animated.loop(Animated.sequence([
+      Animated.timing(run, { toValue: 1, duration: 5200, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      Animated.timing(run, { toValue: 0, duration: 5200, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+    ]));
+    const steps = Animated.loop(Animated.sequence([
+      Animated.timing(bounce, { toValue: 1, duration: 160, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.timing(bounce, { toValue: 0, duration: 160, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+    ]));
+    const drifting = Animated.loop(Animated.sequence([
+      Animated.timing(drift, { toValue: 1, duration: 6500, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      Animated.timing(drift, { toValue: 0, duration: 6500, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+    ]));
+    const twinkling = Animated.loop(Animated.sequence([
+      Animated.timing(twinkle, { toValue: 1, duration: 1200, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      Animated.timing(twinkle, { toValue: 0, duration: 1200, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+    ]));
+    web.start(); runner.start(); steps.start(); drifting.start(); twinkling.start();
+    return () => { web.stop(); runner.stop(); steps.stop(); drifting.stop(); twinkling.stop(); };
+  }, [spread, run, bounce, drift, twinkle]);
+  const webOpacity = spread.interpolate({ inputRange: [0.12, 0.9, 1], outputRange: [0.03, 0.13, 0.2] });
+  const catX = run.interpolate({ inputRange: [0, 1], outputRange: [-48, Math.max(-48, width + 48)] });
+  const catY = bounce.interpolate({ inputRange: [0, 1], outputRange: [0, -7] });
+  const catFlip = run.interpolate({ inputRange: [0, 0.499, 0.5, 1], outputRange: [1, 1, -1, -1] });
+  const driftX = drift.interpolate({ inputRange: [0, 1], outputRange: [-18, 24] });
+  const driftY = drift.interpolate({ inputRange: [0, 1], outputRange: [20, -24] });
+  const sparkleOpacity = twinkle.interpolate({ inputRange: [0, 1], outputRange: [0.1, 0.65] });
+  const pawX = run.interpolate({ inputRange: [0, 1], outputRange: [-22, Math.max(-22, width + 22)] });
+  return <View pointerEvents="none" accessible={false} style={styles.ambienceLayer} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
+    <Animated.View style={[styles.ambientGlow, styles.glowBlue, { transform: [{ translateX: driftX }, { translateY: driftY }, { scale: spread }] }]} />
+    <Animated.View style={[styles.ambientGlow, styles.glowMint, { transform: [{ translateX: Animated.multiply(driftX, -1) }, { translateY: Animated.multiply(driftY, -1) }, { scale: spread }] }]} />
+    <Animated.Text style={[styles.floatPaw, styles.floatPawOne, { opacity: sparkleOpacity, transform: [{ translateY: driftY }] }]}>🐾</Animated.Text>
+    <Animated.Text style={[styles.floatPaw, styles.floatPawTwo, { opacity: sparkleOpacity, transform: [{ translateY: Animated.multiply(driftY, -1) }] }]}>🐾</Animated.Text>
+    <Animated.Text style={[styles.firefly, styles.fireflyOne, { opacity: sparkleOpacity, transform: [{ translateY: driftY }] }]}>✦</Animated.Text>
+    <Animated.Text style={[styles.firefly, styles.fireflyTwo, { opacity: sparkleOpacity, transform: [{ translateY: Animated.multiply(driftY, -1) }] }]}>✧</Animated.Text>
+    <Animated.View style={[styles.spiderWeb, { opacity: webOpacity, transform: [{ scale: spread }] }]}>
+      <View style={[styles.webRing, styles.webRingOuter]} /><View style={[styles.webRing, styles.webRingMiddle]} /><View style={[styles.webRing, styles.webRingInner]} />
+      {[0, 45, 90, 135, 180, 225, 270, 315].map(angle => <View key={angle} style={[styles.webSpoke, { transform: [{ translateX: -62 }, { rotate: `${angle}deg` }] }]} />)}
+      <Text style={styles.webSpider}>🕷️</Text>
+    </Animated.View>
+    <Animated.Text style={[styles.runningPawTrail, { transform: [{ translateX: pawX }] }]}>·　·　·</Animated.Text>
+    <Animated.Text style={[styles.ambientRunner, { transform: [{ translateX: catX }, { translateY: catY }, { scaleX: catFlip }] }]}>🐈</Animated.Text>
+  </View>;
+}
+
+function PassingGlitterGif() {
+  const [width, setWidth] = useState(0);
+  const progress = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const walk = Animated.loop(Animated.sequence([
+      Animated.timing(progress, { toValue: 1, duration: 6500, easing: Easing.linear, useNativeDriver: true }),
+      Animated.timing(progress, { toValue: 0, duration: 0, useNativeDriver: true }),
+      Animated.delay(3500),
+    ]));
+    walk.start();
+    return () => walk.stop();
+  }, [progress]);
+  const gifWidth = Math.min(Math.max(width - 40, 260), 720);
+  const gifHeight = gifWidth * 343 / 498;
+  const travel = progress.interpolate({ inputRange: [0, 1], outputRange: [width + 20, -gifWidth - 20] });
+  return <View pointerEvents="none" accessible={false} style={styles.passingLayer} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
+    <Animated.Image source={require('./assets/walking-man.gif')} resizeMode="contain" accessibilityLabel="Animated stealth graphic walking across the app" style={[styles.passingGif, { width: gifWidth, height: gifHeight, transform: [{ translateX: travel }] }]} />
+  </View>;
+}
+
+
+function FallingSpiderMan() {
+  const [viewport, setViewport] = useState({ width: 0, height: 0 });
+  const progress = useRef(new Animated.Value(0)).current;
+  const swing = useRef(new Animated.Value(0)).current;
+  const imageWidth = Math.min(viewport.width ? viewport.width * 0.76 : 260, 320);
+  const imageHeight = imageWidth * 322 / 236;
+  useEffect(() => {
+    const motion = Animated.loop(Animated.sequence([
+      Animated.delay(6700),
+      Animated.timing(progress, { toValue: 1, duration: 1200, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.delay(500),
+      Animated.timing(progress, { toValue: 0, duration: 1200, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+      Animated.delay(400),
+    ]));
+    const swinging = Animated.loop(Animated.sequence([
+      Animated.timing(swing, { toValue: 1, duration: 820, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      Animated.timing(swing, { toValue: 0, duration: 820, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+    ]));
+    motion.start(); swinging.start();
+    return () => { motion.stop(); swinging.stop(); };
+  }, [progress, swing]);
+  const hangDistance = 36;
+  const translateY = progress.interpolate({ inputRange: [0, 1], outputRange: [-imageHeight, hangDistance] });
+  const rotate = swing.interpolate({ inputRange: [0, 1], outputRange: ['-7deg', '7deg'] });
+  const threadThreshold = imageHeight / (imageHeight + hangDistance);
+  const threadScale = progress.interpolate({ inputRange: [0, threadThreshold, 1], outputRange: [0, 0, 1] });
+  return <View pointerEvents="none" accessible={false} style={styles.fallLayer} onLayout={event => setViewport({ width: event.nativeEvent.layout.width, height: event.nativeEvent.layout.height })}>
+    <Animated.View style={[styles.spiderThread, { left: Math.max(0, viewport.width / 2 - 1), height: hangDistance, transform: [{ scaleY: threadScale }] }]} />
+    <Animated.Image source={require('./assets/spiderman-drop.png')} resizeMode="contain" accessibilityLabel="Spider-Man enters from above the screen, hangs near the top, then retracts upward" style={[styles.fallingSpider, { left: Math.max(0, (viewport.width - imageWidth) / 2), width: imageWidth, height: imageHeight, transform: [{ translateY }, { rotate }] }]} />
+  </View>;
 }
 
 type ReleaseInfo = { buildId: string; summary: string; deployedAt: string };
@@ -77,6 +186,8 @@ function OfficeTimeApp() {
   const [now, setNow] = useState(new Date());
   const [hrRows, setHrRows] = useState<any[]>([]);
   const [correctionTarget, setCorrectionTarget] = useState<{ date: string; add: boolean } | null>(null);
+  const [officeOutSummary, setOfficeOutSummary] = useState<AttendanceDay | null>(null);
+  const [catGreeting, setCatGreeting] = useState<'hi' | 'bye' | null>(null);
   const today = localDateKey(now);
   const day = days.find(item => item.date === today) ?? { date: today, punchInAt: null, punchOutAt: null, breakMinutes: policy.defaultBreakMinutes, managerApproval: false, synced: true };
   const summary = useMemo(() => getAttendanceSummary(day, now, policy), [day, now, policy]);
@@ -84,11 +195,9 @@ function OfficeTimeApp() {
   const activeSession = sessions.slice().reverse().find(session => !session.punchOutAt) ?? null;
   const active = !!activeSession;
   const completed = sessions.length > 0 && !active;
-  const timerSeconds = sessions.reduce((total, item) => {
-    const start = new Date(item.punchInAt).getTime();
-    const end = item.punchOutAt ? new Date(item.punchOutAt).getTime() : now.getTime();
-    return total + Math.max(0, Math.floor((end - start) / 1000));
-  }, 0);
+  // The main timer and net-work total use the same calculation.
+  const timerSeconds = summary.netWorkedSeconds;
+  const breakTimerRunning = !active && !day.officeOutAt && !!sessions[sessions.length - 1]?.punchOutAt;
   const refresh = useCallback(async () => {
     setDays(await loadDays()); setPolicy(await loadPolicy());
   }, []);
@@ -123,6 +232,7 @@ function OfficeTimeApp() {
   }, [tab, role]);
 
   async function punch(kind: 'in' | 'out') {
+    if (kind === 'in' && day.officeOutAt) return Alert.alert('Office day is closed', 'Clear today’s data if you need to correct and restart this workday.');
     if (kind === 'in' && active) return Alert.alert('Already punched in', 'Punch out of your current session before starting another.');
     if (kind === 'out' && !active) return Alert.alert('No active session', 'Punch in before punching out.');
     await prepareAttendanceNotifications();
@@ -158,11 +268,11 @@ function OfficeTimeApp() {
           : `Late login ${monthCount} of ${MONTHLY_LATE_LOGIN_LIMIT}. ${remaining} late login${remaining === 1 ? '' : 's'} left this month.`;
         if (!(await showLateLoginWarning('Late login after 10:00 AM', body))) Alert.alert('Late login after 10:00 AM', body);
       }
-      if (!firstLoginIsLate) Alert.alert('Punched in', `Recorded at ${clock(stamp.toISOString())}.`);
+      setCatGreeting('hi');
     } else {
       await cancelNotice('missing-punch-out');
       await cancelNotice('work-target');
-      if (!targetJustReached) Alert.alert('Punched out', 'Your attendance for today has been saved.');
+      setCatGreeting('bye');
     }
   }
   async function clearAttendanceDay(date: string) {
@@ -172,6 +282,23 @@ function OfficeTimeApp() {
       await cancelNotice('missing-punch-out');
       await cancelNotice('work-target');
     }
+  }
+  async function officeOut() {
+    if (active || !sessions.length) return;
+    if (day.officeOutAt) { setOfficeOutSummary(day); return; }
+    const stamp = new Date();
+    const updated = await saveDay({ ...day, officeOutAt: stamp.toISOString() });
+    setDays(list => [updated, ...list.filter(item => item.date !== updated.date)]);
+    await cancelNotice('missing-punch-out');
+    await cancelNotice('work-target');
+    setOfficeOutSummary(updated);
+  }
+  async function undoOfficeOut() {
+    const target = officeOutSummary ?? day;
+    if (!target.officeOutAt) return;
+    const reopened = await saveDay({ ...target, officeOutAt: null });
+    setDays(list => [reopened, ...list.filter(item => item.date !== reopened.date)]);
+    setOfficeOutSummary(null);
   }
   async function savePunchCorrection(date: string, correctedSessions: AttendanceSession[], addToExisting: boolean) {
     const existing = days.find(item => item.date === date);
@@ -222,11 +349,6 @@ function OfficeTimeApp() {
     if (day.punchInAt && ['recordedWorkTargetMinutes', 'defaultBreakMinutes', 'breakDeductionMode'].includes(key))
       await scheduleWorkTarget(next, getAttendanceSummary(day, now, next), day);
   }
-  async function changeTodayBreak(minutes: number) {
-    const updated = await saveDay({ ...day, breakMinutes: Math.max(0, Math.min(240, minutes)) });
-    setDays(list => [updated, ...list.filter(d => d.date !== updated.date)]);
-    if (updated.punchInAt && policy.breakDeductionMode === 'actual') await scheduleWorkTarget(policy, getAttendanceSummary(updated, now, policy), updated);
-  }
   async function resolveReview(reviewId: string, status: 'approved' | 'rejected') {
     if (!supabase) return;
     const { error } = await supabase.rpc('resolve_late_arrival', { review_id: reviewId, decision: status });
@@ -245,20 +367,27 @@ function OfficeTimeApp() {
   const lateDays = days.filter(d => d.date.startsWith(today.slice(0, 7)) && d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).afterFlexLimit);
   const halfDayToday = isHalfDayDate(days, today, policy);
   return <SafeAreaView style={styles.safe}>
+    <PageAmbience />
     <StatusBar style="dark" />
     <ScrollView contentContainerStyle={styles.page}>
       <View style={styles.header}><View><Text style={styles.eyebrow}>ATTENDANCE, MADE SIMPLE</Text><Text style={styles.title}>OfficeTime</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={styles.avatar}><Text style={styles.avatarText}>{session?.user?.email?.[0]?.toUpperCase() ?? 'OT'}</Text></View></View>
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => session ? void supabase?.auth.signOut() : null}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
       <View style={styles.tabs}>{(['Today', 'History', 'Chat', 'Games', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</View>
+      {tab === 'Today' && <WalkingCat />}
       {tab === 'Today' && <>
         <View style={styles.hero}>
-          <View style={styles.heroTop}><View style={{ flex: 1 }}><Text style={styles.heroLabel}>PUNCH TIMER · {active ? 'RUNNING' : 'STOPPED'}</Text><Text style={styles.timerHero}>{formatTimer(timerSeconds)}</Text><Text style={styles.heroSmall}>Net recorded work: {formatDuration(summary.netWorkedMinutes)}</Text></View><View style={styles.progressBadge}><Text style={styles.progressBadgeText}>{summary.progressPercent}%</Text></View></View>
+          <CatCardGreeting kind={catGreeting} onDone={() => setCatGreeting(null)} />
+          <View style={styles.heroTop}><View style={{ flex: 1 }}><Text style={styles.heroLabel}>NET WORK TIMER · {active ? 'RUNNING' : 'STOPPED'}</Text><Text style={styles.timerHero}>{formatTimer(timerSeconds)}</Text><Text style={styles.heroSmall}>Net recorded work: {formatDuration(summary.netWorkedMinutes)}</Text></View>{catGreeting ? <View style={styles.greetingPill}><Text style={styles.greetingPillText}>{catGreeting === 'hi' ? 'Hi! 👋' : 'Bye! 👋'}</Text></View> : <View style={styles.progressBadge}><Text style={styles.progressBadgeText}>{summary.progressPercent}%</Text></View>}</View>
+          {sessions.length > 0 && <View style={styles.breakTimerCard}><Text style={styles.breakTimerLabel}>BREAK TIMER · {breakTimerRunning ? 'RUNNING' : 'STOPPED'}</Text><Text style={styles.breakTimerValue}>{formatTimer(summary.takenBreakSeconds)}</Text><Text style={styles.breakTimerHint}>Taken break · {formatDuration(summary.takenBreakMinutes)}</Text></View>}
           <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${summary.progressPercent}%` }]} /></View>
           <View style={styles.progressMeta}><Text style={styles.heroSmall}>{summary.targetStatus}</Text><Text style={styles.heroSmall}>Target {formatDuration(policy.recordedWorkTargetMinutes)}</Text></View>
-          <View style={styles.buttonRow}><Pressable style={[styles.action, styles.primary, active && styles.dim]} onPress={() => void punch('in')} disabled={active}><Text style={styles.actionText}>↗  Punch in</Text></Pressable><Pressable style={[styles.action, styles.teal, !active && styles.dim]} onPress={() => void punch('out')} disabled={!active}><Text style={styles.actionText}>↙  Punch out</Text></Pressable></View>
-          <Text style={styles.helper}>{active ? `Started at ${clock(activeSession!.punchInAt)} · don’t forget to punch out` : completed ? 'Off the clock · punch in again to add more time.' : 'Tap once when you begin your workday.'}</Text>
+          <View style={styles.buttonRow}><Pressable style={[styles.action, styles.primary, (active || !!day.officeOutAt) && styles.dim]} onPress={() => void punch('in')} disabled={active || !!day.officeOutAt}><Text style={styles.actionText}>↗  Punch in</Text></Pressable><Pressable style={[styles.action, styles.teal, !active && styles.dim]} onPress={() => void punch('out')} disabled={!active}><Text style={styles.actionText}>↙  Punch out</Text></Pressable></View>
+          {!active && sessions.length > 0 && (day.officeOutAt
+            ? <View style={styles.officeOutActions}><Pressable accessibilityRole="button" style={[styles.officeOutButton, { flex: 1, marginTop: 0 }]} onPress={() => void officeOut()}><Text style={styles.officeOutText}>✓ Office out · View summary</Text></Pressable><Pressable accessibilityRole="button" style={styles.undoOfficeOutButton} onPress={() => void undoOfficeOut()}><Text style={styles.undoOfficeOutText}>Undo office out</Text></Pressable></View>
+            : <Pressable accessibilityRole="button" style={styles.officeOutButton} onPress={() => void officeOut()}><Text style={styles.officeOutText}>Office out · finish today</Text></Pressable>)}
+          <Text style={styles.helper}>{active ? `Started at ${clock(activeSession!.punchInAt)} · don’t forget to punch out` : day.officeOutAt ? `Office day finished at ${clock(day.officeOutAt)}.` : completed ? 'Off the clock · punch in again to add more time or finish the day.' : 'Tap once when you begin your workday.'}</Text>
         </View>
-        <View style={styles.statGrid}><Stat label="Punch in" value={clock(sessions[0]?.punchInAt ?? null)} /><Stat label="Punch out" value={active ? 'In progress' : clock(sessions[sessions.length - 1]?.punchOutAt ?? null)} /><Stat label={active ? 'Timer · running' : 'Timer · stopped'} value={formatTimer(timerSeconds)} /><Stat label="Break deducted" value={formatDuration(summary.deductedBreakMinutes)} /></View>
+        <View style={styles.statGrid}><Stat label="Punch in" value={clock(sessions[0]?.punchInAt ?? null)} /><Stat label="Punch out" value={active ? 'In progress' : clock(sessions[sessions.length - 1]?.punchOutAt ?? null)} /><Stat label={active ? 'Net work · running' : 'Net work · stopped'} value={formatTimer(timerSeconds)} /><Stat label="Break taken" value={formatDuration(summary.takenBreakMinutes)} /></View>
         <View style={styles.card}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>Policy check</Text><Pill text={halfDayToday ? 'Half-day' : summary.afterFlexLimit ? 'Late login' : summary.lateMinutes ? 'Late before flex limit' : day.punchInAt ? 'On time' : 'Awaiting punch'} warning={halfDayToday || summary.lateMinutes > 0} /></View>
           <Row label="Standard start" value="9:00 AM" /><Row label="Flexible login limit" value="10:00 AM" /><Row label="Login status" value={summary.loginStatus} warning={summary.lateMinutes > 0} />
           <Row label="Sessions today" value={`${sessions.length}${active ? ' · active' : ''}`} />
@@ -269,12 +398,10 @@ function OfficeTimeApp() {
         </View>
         <View style={styles.card}><Text style={styles.sectionTitle}>Your workday settings</Text><Text style={styles.muted}>Editable defaults pending HR confirmation</Text>
           <Stepper label="Recorded work target" value={formatDuration(policy.recordedWorkTargetMinutes)} onMinus={() => void changePolicy('recordedWorkTargetMinutes', Math.max(60, policy.recordedWorkTargetMinutes - 30))} onPlus={() => void changePolicy('recordedWorkTargetMinutes', policy.recordedWorkTargetMinutes + 30)} />
-          <Stepper label="Break deduction" value={`${policy.defaultBreakMinutes} min`} onMinus={() => void changePolicy('defaultBreakMinutes', Math.max(0, policy.defaultBreakMinutes - 15))} onPlus={() => void changePolicy('defaultBreakMinutes', Math.min(240, policy.defaultBreakMinutes + 15))} />
-          <SettingChoice label="Deduction mode" value={policy.breakDeductionMode} options={['fixed', 'actual', 'none']} onSelect={value => void changePolicy('breakDeductionMode', value)} />
-          {policy.breakDeductionMode === 'actual' && <Stepper label="Today's actual break" value={`${day.breakMinutes} min`} onMinus={() => void changeTodayBreak(day.breakMinutes - 15)} onPlus={() => void changeTodayBreak(day.breakMinutes + 15)} />}
+          <Stepper label="Expected break" value={`${policy.defaultBreakMinutes} min`} onMinus={() => void changePolicy('defaultBreakMinutes', Math.max(0, policy.defaultBreakMinutes - 15))} onPlus={() => void changePolicy('defaultBreakMinutes', Math.min(240, policy.defaultBreakMinutes + 15))} />
           <Pressable style={styles.outlineButton} onPress={() => void scheduleWorkTarget()}><Text style={styles.outlineText}>Remind me when target is reached</Text></Pressable>
           {Platform.OS === 'web' && <Text style={styles.muted}>Browser reminders need notification permission and this tab open. Use the iOS or Android app for scheduled daily reminders.</Text>}
-          <Text style={styles.policyNote}>The policy mentions both a 9-hour day including breaks and 8 recorded work hours. Defaults display 8 net hours after a fixed 1-hour deduction; adjust above until HR confirms.</Text>
+          <Text style={styles.policyNote}>Punch-in sessions count as recorded work. Each punch-out starts a break timer that stops at the next punch-in. The policy mentions both a 9-hour day including breaks and 8 recorded work hours; confirm the expected break duration with HR.</Text>
         </View>
       </>}
       {tab === 'Today' && <><Pressable style={styles.outlineButton} onPress={() => setCorrectionTarget({ date: today, add: !days.some(item => item.date === today) })}><Text style={styles.outlineText}>{sessions.length ? 'Adjust or add punch times' : 'Add a missed punch'}</Text></Pressable>{sessions.length > 0 && <ClearDayControl date={today} onClear={clearAttendanceDay} />}</>}
@@ -289,13 +416,129 @@ function OfficeTimeApp() {
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. OfficeTime is a companion tracker until HR authorizes it for official use.</Text></View>
       <Text style={styles.footer}>OfficeTime · Secure attendance for your team</Text>
     </ScrollView>
+    <PassingGlitterGif />
+    <FallingSpiderMan />
     {correctionTarget && <PunchCorrectionModal key={`${correctionTarget.date}-${correctionTarget.add}`} date={correctionTarget.date} day={days.find(item => item.date === correctionTarget.date)} addToExisting={correctionTarget.add} onClose={() => setCorrectionTarget(null)} onSave={savePunchCorrection} />}
+    {officeOutSummary && <OfficeOutSummaryModal day={officeOutSummary} policy={policy} onClose={() => { setOfficeOutSummary(null); setCatGreeting('bye'); }} onUndo={undoOfficeOut} />}
   </SafeAreaView>;
+}
+
+function WalkingCat() {
+  const [sceneWidth, setSceneWidth] = useState(0);
+  const walk = useRef(new Animated.Value(0)).current;
+  const bounce = useRef(new Animated.Value(0)).current;
+  const sparkle = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (sceneWidth < 80) return;
+    const walking = Animated.loop(Animated.timing(walk, { toValue: 1, duration: 8200, easing: Easing.linear, useNativeDriver: true }));
+    const steps = Animated.loop(Animated.sequence([
+      Animated.timing(bounce, { toValue: 1, duration: 230, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.timing(bounce, { toValue: 0, duration: 230, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+    ]));
+    const twinkle = Animated.loop(Animated.sequence([
+      Animated.timing(sparkle, { toValue: 1, duration: 1000, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      Animated.timing(sparkle, { toValue: 0, duration: 1000, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+    ]));
+    walking.start(); steps.start(); twinkle.start();
+    return () => { walking.stop(); steps.stop(); twinkle.stop(); };
+  }, [sceneWidth, walk, bounce, sparkle]);
+  const translateX = walk.interpolate({ inputRange: [0, 1], outputRange: [4, Math.max(4, sceneWidth - 54)] });
+  const pawTrailX = walk.interpolate({ inputRange: [0, 1], outputRange: [0, Math.max(0, sceneWidth - 114)] });
+  const translateY = bounce.interpolate({ inputRange: [0, 1], outputRange: [0, -3] });
+  const pawOpacity = sparkle.interpolate({ inputRange: [0, 1], outputRange: [0.2, 0.8] });
+  return <View accessibilityLabel="An animated cat walking across a sunny garden" style={styles.catScene} onLayout={event => setSceneWidth(event.nativeEvent.layout.width)}>
+    <View style={styles.catSun}/><Text style={styles.catCloud}>☁️</Text><Text style={styles.catTitle}>OFFICE COMPANION</Text><Text style={styles.catCaption}>Milo is making the rounds</Text>
+    <View style={styles.catHorizon}/><View style={styles.catGrassLeft}/><View style={styles.catGrassRight}/>
+    <Animated.Text style={[styles.catPaws, { opacity: pawOpacity, transform: [{ translateX: pawTrailX }] }]}>🐾　🐾　🐾</Animated.Text>
+    <Animated.View style={[styles.walkingCat, { transform: [{ translateX }, { translateY }, { scaleX: -1 }] }]}><Text style={styles.catEmoji}>🐈</Text></Animated.View>
+  </View>;
+}
+
+function CatCardGreeting({ kind, onDone }: { kind: 'hi' | 'bye' | null; onDone: () => void }) {
+  const breathe = useRef(new Animated.Value(0)).current;
+  const blink = useRef(new Animated.Value(0)).current;
+  const greetingIn = useRef(new Animated.Value(0)).current;
+  const reveal = useRef(new Animated.Value(0)).current;
+  const pawWave = useRef(new Animated.Value(0)).current;
+  const doneRef = useRef(onDone);
+  doneRef.current = onDone;
+  useEffect(() => {
+    const breathing = Animated.loop(Animated.sequence([
+      Animated.timing(breathe, { toValue: 1, duration: 5200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      Animated.timing(breathe, { toValue: 0, duration: 5200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+    ]));
+    const blinking = Animated.loop(Animated.sequence([
+      Animated.delay(2100), Animated.timing(blink, { toValue: 1, duration: 90, useNativeDriver: true }),
+      Animated.timing(blink, { toValue: 0, duration: 160, useNativeDriver: true }), Animated.delay(110),
+      Animated.timing(blink, { toValue: 1, duration: 90, useNativeDriver: true }), Animated.timing(blink, { toValue: 0, duration: 180, useNativeDriver: true }),
+    ]));
+    breathing.start(); blinking.start();
+    return () => { breathing.stop(); blinking.stop(); };
+  }, [breathe, blink]);
+  useEffect(() => {
+    if (!kind) { greetingIn.setValue(0); return; }
+    greetingIn.setValue(0);
+    reveal.setValue(0);
+    pawWave.setValue(0);
+    Animated.parallel([
+      Animated.timing(reveal, { toValue: 1, duration: 360, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.spring(greetingIn, { toValue: 1, damping: 12, stiffness: 140, useNativeDriver: true }),
+    ]).start();
+    const waving = Animated.loop(Animated.sequence([
+      Animated.timing(pawWave, { toValue: 1, duration: 220, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.timing(pawWave, { toValue: 0, duration: 220, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+    ]), { iterations: 5 });
+    waving.start();
+    const timer = setTimeout(() => {
+      Animated.timing(reveal, { toValue: 0, duration: 460, easing: Easing.in(Easing.quad), useNativeDriver: true }).start(() => doneRef.current());
+    }, 1850);
+    return () => { clearTimeout(timer); waving.stop(); };
+  }, [kind, greetingIn, reveal, pawWave]);
+  const scale = breathe.interpolate({ inputRange: [0, 1], outputRange: [1.03, 1.12] });
+  const shadeOpacity = reveal.interpolate({ inputRange: [0, 1], outputRange: [1, 0.08] });
+  const pawRotate = pawWave.interpolate({ inputRange: [0, 1], outputRange: ['-24deg', '20deg'] });
+  const pawLift = greetingIn.interpolate({ inputRange: [0, 1], outputRange: [90, 0] });
+  return <View pointerEvents="none" accessibilityLabel="Milo reveals the full timer card, raises a paw, blinks, and greets you" style={styles.heroCatLayer}>
+    <Animated.Image source={require('./assets/milo-cat.png')} resizeMode="cover" style={[styles.heroCatImage, { transform: [{ scale }] }]} />
+    <Animated.View style={[styles.heroCatShade, { opacity: shadeOpacity }]} />
+    <Animated.View style={[styles.heroCatBlink, { opacity: blink }]}><View style={styles.heroCatBlinkLine} /></Animated.View>
+    {kind && <Animated.View style={[styles.heroCatPaw, { opacity: reveal, transform: [{ translateY: pawLift }, { rotate: pawRotate }] }]}>
+      <View style={styles.heroCatPawArm} /><View style={styles.heroCatPawPalm} />
+      <View style={[styles.heroCatToe, styles.heroCatToeOne]} /><View style={[styles.heroCatToe, styles.heroCatToeTwo]} /><View style={[styles.heroCatToe, styles.heroCatToeThree]} />
+    </Animated.View>}
+  </View>;
 }
 
 type ChatMessage = { id: string; sender_id: string; sender_name: string; body: string; media_path: string | null; media_type: 'image' | 'video' | 'audio' | null; view_once: boolean; sent_at: string; reply_to?: string | null };
 type ChatReaction = { message_id: string; user_id: string; emoji: string };
 const QUICK_EMOJIS = ['😊', '❤️', '👍', '😂', '🎉', '🙏'];
+
+function uploadExtension(file: File) {
+  return file.name?.split('.').pop()?.toLowerCase() ?? '';
+}
+
+function getUploadMediaType(file: File): ChatMessage['media_type'] {
+  const mime = file.type?.toLowerCase() ?? '';
+  const extension = uploadExtension(file);
+  if (mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif', 'avif'].includes(extension)) return 'image';
+  if (mime.startsWith('video/') || ['mp4', 'mov', 'webm', 'm4v'].includes(extension)) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  return null;
+}
+
+function defaultUploadExtension(mime: string, mediaType: NonNullable<ChatMessage['media_type']>) {
+  if (mediaType === 'image') return mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : mime === 'image/heic' ? 'heic' : 'jpg';
+  if (mediaType === 'video') return mime === 'video/quicktime' ? 'mov' : mime === 'video/webm' ? 'webm' : 'mp4';
+  return mime === 'audio/mp4' ? 'm4a' : mime === 'audio/mpeg' ? 'mp3' : 'webm';
+}
+
+function inferredUploadMime(extension: string, mediaType: NonNullable<ChatMessage['media_type']>) {
+  const mimeByExtension: Record<string, string> = {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif', avif: 'image/avif',
+    mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', m4a: 'audio/mp4', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg',
+  };
+  return mimeByExtension[extension] || `${mediaType}/octet-stream`;
+}
 
 function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) => Promise<string | null> }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -318,6 +561,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   const mediaStream = useRef<MediaStream | null>(null);
   const chunks = useRef<Blob[]>([]);
   const messageScroll = useRef<ScrollView>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
   const isJoined = !!session?.user?.id;
   const isAnonymous = !!session?.user?.is_anonymous;
   const myName = session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')[0] || 'Guest';
@@ -381,16 +625,21 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
 
   function chooseFile() {
     if (Platform.OS !== 'web') return Alert.alert('Use the website', 'Photo and video upload is available in the web chat.');
-    const input = (globalThis as any).document.createElement('input');
-    input.type = 'file'; input.accept = 'image/*,video/*';
-    input.onchange = () => {
-      const selected = input.files?.[0] as File | undefined;
-      if (!selected) return;
-      if (selected.size > 50 * 1024 * 1024) return Alert.alert('File too large', 'Choose a photo or video under 50 MB.');
-      if (!selected.type.startsWith('image/') && !selected.type.startsWith('video/')) return Alert.alert('Unsupported file', 'Choose an image or video.');
-      setFile(selected); setViewOnce(false);
-    };
-    input.click();
+    // Safari (especially iOS Safari) may ignore click() on a detached file input.
+    // Keep a real input in the document and open it directly from the user gesture.
+    fileInput.current?.click();
+  }
+
+  function handleFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const selected = input.files?.[0];
+    // Reset so selecting the same photo again fires change in Safari too.
+    input.value = '';
+    if (!selected) return;
+    if (selected.size > 50 * 1024 * 1024) return Alert.alert('File too large', 'Choose a photo or video under 50 MB.');
+    const mediaType = getUploadMediaType(selected);
+    if (!mediaType || mediaType === 'audio') return Alert.alert('Unsupported file', 'Choose an image or video.');
+    setFile(selected); setViewOnce(false);
   }
 
   async function startVoiceRecording() {
@@ -427,11 +676,12 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       let mediaType: ChatMessage['media_type'] = null;
       if (attachment) {
         if (attachment.size > 50 * 1024 * 1024) throw new Error('Media files must be under 50 MB.');
-        mediaType = attachment.type.startsWith('image/') ? 'image' : attachment.type.startsWith('video/') ? 'video' : attachment.type.startsWith('audio/') ? 'audio' : null;
+        mediaType = getUploadMediaType(attachment);
         if (!mediaType) throw new Error('This file type is not supported.');
-        const extension = attachment.name?.split('.').pop()?.replace(/[^a-z0-9]/gi, '').slice(0, 8) || (mediaType === 'audio' ? 'webm' : mediaType === 'video' ? 'mp4' : 'jpg');
+        const extension = attachment.name?.split('.').pop()?.replace(/[^a-z0-9]/gi, '').slice(0, 8) || defaultUploadExtension(attachment.type, mediaType);
+        const contentType = attachment.type && attachment.type !== 'application/octet-stream' ? attachment.type : inferredUploadMime(extension, mediaType);
         mediaPath = `${session.user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
-        const { error: uploadError } = await supabase.storage.from('chat-media').upload(mediaPath, attachment, { contentType: attachment.type, upsert: false });
+        const { error: uploadError } = await supabase.storage.from('chat-media').upload(mediaPath, attachment, { contentType, upsert: false });
         if (uploadError) throw uploadError;
       }
       const { error } = await supabase.from('chat_messages').insert({ sender_id: session.user.id, sender_name: myName.slice(0, 40), body, media_path: mediaPath, media_type: mediaType, view_once: !!(viewOnce && mediaType === 'image'), reply_to: replyTo?.id ?? null });
@@ -519,7 +769,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       </ScrollView>
       {file && <View style={styles.attachmentPreview}><Text style={styles.attachmentText}>▧  {file.name}</Text><Pressable onPress={() => { setFile(null); setViewOnce(false); }}><Text style={styles.link}>Remove</Text></Pressable></View>}
       {file?.type.startsWith('image/') && <Pressable onPress={() => setViewOnce(value => !value)} style={styles.onceToggle}><Text style={styles.onceCheckbox}>{viewOnce ? '✓' : ''}</Text><Text style={styles.onceText}>View once (each person can open this photo once)</Text></Pressable>}
-      <View style={styles.chatComposer}>{!!replyTo && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#EFF6FF', borderRadius: 10, padding: 9 }}><View style={{ flex: 1 }}><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800' }}>Replying to {replyTo.sender_name}</Text><Text numberOfLines={1} style={styles.muted}>{replyTo.body || (replyTo.media_type ? `${replyTo.media_type} attachment` : '')}</Text></View><Pressable accessibilityLabel="Cancel reply" onPress={() => setReplyTo(null)}><Text style={styles.link}>×</Text></Pressable></View>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>{QUICK_EMOJIS.map(emoji => <Pressable key={emoji} accessibilityLabel={`Insert ${emoji}`} onPress={() => setDraft(current => `${current}${emoji}`)} style={{ paddingHorizontal: 5, paddingVertical: 3 }}><Text style={{ fontSize: 18 }}>{emoji}</Text></Pressable>)}</View><View style={styles.chatTools}><Pressable accessibilityLabel="Add photo or video" onPress={chooseFile} style={styles.chatTool}><Text style={styles.chatToolText}>＋ Media</Text></Pressable><Pressable accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice message'} onPress={recording ? stopVoiceRecording : () => void startVoiceRecording()} style={[styles.chatTool, recording && styles.recordingTool]}><Text style={[styles.chatToolText, recording && styles.recordingText]}>{recording ? '■ Stop' : '● Voice'}</Text></Pressable></View><View style={styles.chatInputRow}><TextInput style={styles.chatInput} multiline maxLength={1000} value={draft} onChangeText={setDraft} placeholder="Message the team…"/><Pressable accessibilityLabel="Send message" disabled={sending || (!draft.trim() && !file)} onPress={() => void sendMessage()} style={[styles.sendButton, (sending || (!draft.trim() && !file)) && styles.dim]}><Text style={styles.sendButtonText}>{sending ? '…' : '↑'}</Text></Pressable></View></View>
+      <View style={styles.chatComposer}>{!!replyTo && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#EFF6FF', borderRadius: 10, padding: 9 }}><View style={{ flex: 1 }}><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800' }}>Replying to {replyTo.sender_name}</Text><Text numberOfLines={1} style={styles.muted}>{replyTo.body || (replyTo.media_type ? `${replyTo.media_type} attachment` : '')}</Text></View><Pressable accessibilityLabel="Cancel reply" onPress={() => setReplyTo(null)}><Text style={styles.link}>×</Text></Pressable></View>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>{QUICK_EMOJIS.map(emoji => <Pressable key={emoji} accessibilityLabel={`Insert ${emoji}`} onPress={() => setDraft(current => `${current}${emoji}`)} style={{ paddingHorizontal: 5, paddingVertical: 3 }}><Text style={{ fontSize: 18 }}>{emoji}</Text></Pressable>)}</View><View style={styles.chatTools}><Pressable accessibilityLabel="Add photo or video" onPress={chooseFile} style={styles.chatTool}><Text style={styles.chatToolText}>＋ Media</Text></Pressable><Pressable accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice message'} onPress={recording ? stopVoiceRecording : () => void startVoiceRecording()} style={[styles.chatTool, recording && styles.recordingTool]}><Text style={[styles.chatToolText, recording && styles.recordingText]}>{recording ? '■ Stop' : '● Voice'}</Text></Pressable></View>{Platform.OS === 'web' && <input ref={fileInput} type="file" accept="image/*,video/*" onChange={handleFileSelection} aria-label="Choose a photo or video" style={{ position: 'fixed', width: 1, height: 1, opacity: 0, overflow: 'hidden', left: -100, bottom: 0 }} />}<View style={styles.chatInputRow}><TextInput style={styles.chatInput} multiline maxLength={1000} value={draft} onChangeText={setDraft} placeholder="Message the team…"/><Pressable accessibilityLabel="Send message" disabled={sending || (!draft.trim() && !file)} onPress={() => void sendMessage()} style={[styles.sendButton, (sending || (!draft.trim() && !file)) && styles.dim]}><Text style={styles.sendButtonText}>{sending ? '…' : '↑'}</Text></Pressable></View></View>
     </>}
     <Modal visible={!!mediaView} transparent animationType="fade" onRequestClose={() => setMediaView(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{mediaView?.once ? 'View-once photo' : 'Shared media'}</Text><Pressable onPress={() => setMediaView(null)}><Text style={styles.link}>Close</Text></Pressable></View>{mediaView?.type === 'image' ? <Image source={{ uri: mediaView.url }} resizeMode="contain" style={styles.mediaImage}/> : Platform.OS === 'web' && mediaView ? React.createElement(mediaView.type === 'video' ? 'video' : 'audio', { src: mediaView.url, controls: true, playsInline: true, style: { width: '100%', maxHeight: 420 } }) : <Text style={styles.muted}>Open this media in the web app to play it.</Text>}{mediaView?.once && <Text style={styles.onceFootnote}>This view is now used. Close this window to hide the photo.</Text>}</View></View></Modal>
     <Modal visible={!!deleteAllTarget} transparent animationType="fade" onRequestClose={() => setDeleteAllTarget(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><Text style={styles.sectionTitle}>Delete for everyone?</Text><Text style={styles.muted}>This removes the message from the shared chat for all participants.</Text><View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}><Pressable style={styles.outlineButton} onPress={() => setDeleteAllTarget(null)}><Text style={styles.outlineText}>Cancel</Text></Pressable><Pressable disabled={!!deletingId} onPress={() => deleteAllTarget && void deleteForEveryone(deleteAllTarget)} style={[styles.action, { backgroundColor: '#B91C1C', paddingHorizontal: 14 }]}><Text style={styles.actionText}>{deletingId === deleteAllTarget?.id ? 'Deleting…' : 'Delete for everyone'}</Text></Pressable></View></View></View></Modal>
@@ -699,7 +949,32 @@ function PunchCorrectionModal({ date: initialDate, day, addToExisting, onClose, 
     finally { setSaving(false); }
   }
   const field = (index: number, kind: keyof PunchTimeDraft, label: string) => <View style={{ flex: 1, gap: 5 }}><Text style={styles.rowLabel}>{label}</Text><View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><Pressable accessibilityLabel={`Subtract 15 minutes from ${label}`} onPress={() => updateRow(index, kind, shiftClock(rows[index][kind], -15))} style={{ paddingHorizontal: 5, paddingVertical: 9 }}><Text style={styles.link}>−15</Text></Pressable><TextInput accessibilityLabel={`${label} time`} style={[styles.input, { flex: 1, minWidth: 60, padding: 9, textAlign: 'center' }]} value={rows[index][kind]} onChangeText={value => updateRow(index, kind, value)} placeholder="HH:MM" keyboardType="numbers-and-punctuation" maxLength={5}/><Pressable accessibilityLabel={`Add 15 minutes to ${label}`} onPress={() => updateRow(index, kind, shiftClock(rows[index][kind], 15))} style={{ paddingHorizontal: 5, paddingVertical: 9 }}><Text style={styles.link}>+15</Text></Pressable></View></View>;
-  return <Modal visible transparent animationType="fade" onRequestClose={onClose}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{addToExisting ? 'Add missed punches' : 'Correct punch times'}</Text><Pressable onPress={onClose}><Text style={styles.link}>Close</Text></Pressable></View><Text style={styles.muted}>Enter local 24-hour times, or adjust them in 15-minute steps. Corrections update your daily hours.</Text>{addToExisting ? <TextInput accessibilityLabel="Attendance date" style={styles.input} value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" keyboardType="numbers-and-punctuation"/> : <Text style={styles.historySub}>Date: {date}</Text>}{rows.map((row, index) => <View key={index} style={{ gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }}><View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><Text style={styles.historyTitle}>Session {index + 1}</Text>{rows.length > 1 && <Pressable onPress={() => setRows(current => current.filter((_, rowIndex) => rowIndex !== index))}><Text style={styles.clearDanger}>Remove</Text></Pressable>}</View><View style={{ flexDirection: 'row', gap: 8 }}>{field(index, 'punchIn', 'Punch in')}{field(index, 'punchOut', 'Punch out')}</View></View>)}<Pressable style={styles.outlineButton} onPress={() => setRows(current => [...current, { punchIn: '', punchOut: '' }])}><Text style={styles.outlineText}>＋ Add missed session</Text></Pressable>{!!error && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{error}</Text>}<Pressable disabled={saving} style={[styles.action, styles.primary, saving && styles.dim]} onPress={() => void save()}><Text style={styles.actionText}>{saving ? 'Saving…' : 'Save corrected punches'}</Text></Pressable></View></View></Modal>;
+  return <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+    <View style={styles.correctionOverlay}>
+      <View style={styles.correctionModal}>
+        <View style={styles.cardHeading}>
+          <Text style={styles.sectionTitle}>{addToExisting ? 'Add missed punches' : 'Correct punch times'}</Text>
+          <Pressable accessibilityRole="button" onPress={onClose}><Text style={styles.link}>Close</Text></Pressable>
+        </View>
+        <ScrollView style={styles.correctionScroll} contentContainerStyle={styles.correctionContent} keyboardShouldPersistTaps="handled">
+          <Text style={styles.muted}>Enter local 24-hour times, or adjust them in 15-minute steps. Corrections update your daily hours.</Text>
+          {addToExisting
+            ? <TextInput accessibilityLabel="Attendance date" style={styles.input} value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" keyboardType="numbers-and-punctuation" />
+            : <Text style={styles.historySub}>Date: {date}</Text>}
+          {rows.map((row, index) => <View key={index} style={styles.correctionRow}>
+            <View style={styles.cardHeading}>
+              <Text style={styles.historyTitle}>Session {index + 1}</Text>
+              {rows.length > 1 && <Pressable accessibilityRole="button" onPress={() => setRows(current => current.filter((_, rowIndex) => rowIndex !== index))}><Text style={styles.clearDanger}>Remove</Text></Pressable>}
+            </View>
+            <View style={styles.correctionFields}>{field(index, 'punchIn', 'Punch in')}{field(index, 'punchOut', 'Punch out')}</View>
+          </View>)}
+          <Pressable style={styles.outlineButton} onPress={() => setRows(current => [...current, { punchIn: '', punchOut: '' }])}><Text style={styles.outlineText}>＋ Add missed session</Text></Pressable>
+          {!!error && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{error}</Text>}
+        </ScrollView>
+        <Pressable accessibilityRole="button" disabled={saving} style={[styles.action, styles.primary, saving && styles.dim]} onPress={() => void save()}><Text style={styles.actionText}>{saving ? 'Saving…' : 'Save corrected punches'}</Text></Pressable>
+      </View>
+    </View>
+  </Modal>;
 }
 
 function History({ days, policy, onClear, onCorrect, onAddMissed }: { days: AttendanceDay[]; policy: PolicyConfig; onClear: (date: string) => Promise<void>; onCorrect: (date: string) => void; onAddMissed: (date: string) => void }) {
@@ -721,9 +996,9 @@ function History({ days, policy, onClear, onCorrect, onAddMissed }: { days: Atte
         const sessions = getDaySessions(d);
         const summary = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy);
         const punches = sessions.map((session, index) => `<div class="session">Session ${index + 1}: ${escapeHtml(clock(session.punchInAt))} → ${session.punchOutAt ? escapeHtml(clock(session.punchOutAt)) : 'In progress'}</div>`).join('');
-        return `<tr><td>${escapeHtml(d.date)}</td><td>${punches || '—'}</td><td>${escapeHtml(formatDuration(summary.deductedBreakMinutes))}</td><td><strong>${escapeHtml(formatDuration(summary.netWorkedMinutes))}</strong></td><td>${halfDayDates.has(d.date) ? 'Half-day applied' : escapeHtml(summary.loginStatus)}</td></tr>`;
+        return `<tr><td>${escapeHtml(d.date)}</td><td>${punches || '—'}</td><td>${escapeHtml(formatDuration(summary.takenBreakMinutes))}</td><td><strong>${escapeHtml(formatDuration(summary.netWorkedMinutes))}</strong></td><td>${halfDayDates.has(d.date) ? 'Half-day applied' : escapeHtml(summary.loginStatus)}</td></tr>`;
       }).join('');
-      const html = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:#172033;padding:28px}h1{font-size:24px;margin:0 0 6px}.meta{color:#64748b;margin:0 0 22px}.summary{display:flex;gap:32px;background:#eff6ff;padding:14px 18px;border-radius:10px;margin-bottom:20px}.summary strong{display:block;font-size:18px;margin-top:4px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;vertical-align:top;padding:10px 8px;border-bottom:1px solid #e2e8f0}th{background:#f8fafc}.session{margin-bottom:5px}.foot{margin-top:20px;color:#64748b;font-size:10px}@media print{body{padding:0}tr{break-inside:avoid}}</style></head><body><h1>Attendance report</h1><p class="meta">${escapeHtml(monthName(month))} · Generated ${escapeHtml(new Date().toLocaleString())}</p><div class="summary"><div>Days recorded<strong>${rows.length}</strong></div><div>Net work hours<strong>${escapeHtml(formatDuration(total))}</strong></div><div>Late logins<strong>${lateDates.length}</strong></div></div><table><thead><tr><th>Date</th><th>Punch history</th><th>Break deducted</th><th>Worked</th><th>Status</th></tr></thead><tbody>${reportRows}</tbody></table><p class="foot">Work hours are calculated using the attendance settings active in this app. In-progress sessions include time up to report generation.</p></body></html>`;
+      const html = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:#172033;padding:28px}h1{font-size:24px;margin:0 0 6px}.meta{color:#64748b;margin:0 0 22px}.summary{display:flex;gap:32px;background:#eff6ff;padding:14px 18px;border-radius:10px;margin-bottom:20px}.summary strong{display:block;font-size:18px;margin-top:4px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;vertical-align:top;padding:10px 8px;border-bottom:1px solid #e2e8f0}th{background:#f8fafc}.session{margin-bottom:5px}.foot{margin-top:20px;color:#64748b;font-size:10px}@media print{body{padding:0}tr{break-inside:avoid}}</style></head><body><h1>Attendance report</h1><p class="meta">${escapeHtml(monthName(month))} · Generated ${escapeHtml(new Date().toLocaleString())}</p><div class="summary"><div>Days recorded<strong>${rows.length}</strong></div><div>Net work hours<strong>${escapeHtml(formatDuration(total))}</strong></div><div>Late logins<strong>${lateDates.length}</strong></div></div><table><thead><tr><th>Date</th><th>Punch history</th><th>Break taken</th><th>Worked</th><th>Status</th></tr></thead><tbody>${reportRows}</tbody></table><p class="foot">Only punch-in sessions count as net work. Time between punch-out and the next punch-in is reported as break time.</p></body></html>`;
       if (Platform.OS === 'web') await Print.printAsync({ html });
       else {
         const file = await Print.printToFileAsync({ html });
@@ -733,7 +1008,7 @@ function History({ days, policy, onClear, onCorrect, onAddMissed }: { days: Atte
     } catch { Alert.alert('Export failed', 'The attendance PDF could not be created. Please try again.'); }
     finally { setExporting(false); }
   }
-  return <><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><Pressable accessibilityRole="button" onPress={() => onAddMissed(`${month}-01`)} style={styles.outlineButton}><Text style={styles.outlineText}>＋ Add missed attendance</Text></Pressable><Pressable accessibilityRole="button" disabled={exporting || !rows.length} onPress={() => void exportPdf()} style={[styles.exportButton, (!rows.length || exporting) && styles.exportDisabled]}><Text style={styles.exportButtonText}>{exporting ? 'Preparing PDF…' : 'Export month as PDF'}</Text></Pressable><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{lateDates.length}</Text></View></View>{rows.length ? [...rows].sort((a, b) => b.date.localeCompare(a.date)).map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; const expanded = expandedDates.includes(d.date); return <View key={d.date} style={styles.historyDayCard}><View style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? 'Hide' : 'Show'} punches for ${d.date}`} onPress={() => setExpandedDates(current => expanded ? current.filter(date => date !== d.date) : [...current, d.date])} style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{halfDayDates.has(d.date) ? 'Half-day applied · ' : ''}{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text><Text style={styles.sessionToggle}>{expanded ? 'Hide punch details' : 'View punch details'}</Text></Pressable><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text><ClearDayControl date={d.date} onClear={onClear} compact /></View>{expanded && <View style={styles.sessionList}>{daySessions.map((session, index) => { const end = session.punchOutAt ? new Date(session.punchOutAt) : new Date(); const elapsed = Math.max(0, Math.floor((end.getTime() - new Date(session.punchInAt).getTime()) / 60000)); return <View key={`${session.punchInAt}-${index}`} style={styles.sessionEntry}><Text style={styles.sessionLabel}>Session {index + 1}</Text><Text style={styles.sessionTime}>{clock(session.punchInAt)} → {session.punchOutAt ? clock(session.punchOutAt) : 'In progress'}</Text><Text style={styles.sessionDuration}>{formatDuration(elapsed)}</Text></View>; })}<Pressable style={styles.outlineButton} onPress={() => onCorrect(d.date)}><Text style={styles.outlineText}>Correct punch times</Text></Pressable></View>}</View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
+  return <><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><Pressable accessibilityRole="button" onPress={() => onAddMissed(`${month}-01`)} style={styles.outlineButton}><Text style={styles.outlineText}>＋ Add missed attendance</Text></Pressable><Pressable accessibilityRole="button" disabled={exporting || !rows.length} onPress={() => void exportPdf()} style={[styles.exportButton, (!rows.length || exporting) && styles.exportDisabled]}><Text style={styles.exportButtonText}>{exporting ? 'Preparing PDF…' : 'Export month as PDF'}</Text></Pressable><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{lateDates.length}</Text></View></View>{rows.length ? [...rows].sort((a, b) => b.date.localeCompare(a.date)).map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; const expanded = expandedDates.includes(d.date); return <View key={d.date} style={styles.historyDayCard}><View style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? 'Hide' : 'Show'} punches for ${d.date}`} onPress={() => setExpandedDates(current => expanded ? current.filter(date => date !== d.date) : [...current, d.date])} style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{halfDayDates.has(d.date) ? 'Half-day applied · ' : ''}{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · Break {formatDuration(s.takenBreakMinutes)} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text><Text style={styles.sessionToggle}>{expanded ? 'Hide punch details' : 'View punch details'}</Text></Pressable><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text><ClearDayControl date={d.date} onClear={onClear} compact /></View>{expanded && <View style={styles.sessionList}>{daySessions.map((session, index) => { const end = session.punchOutAt ? new Date(session.punchOutAt) : new Date(); const elapsed = Math.max(0, Math.floor((end.getTime() - new Date(session.punchInAt).getTime()) / 60000)); return <View key={`${session.punchInAt}-${index}`} style={styles.sessionEntry}><Text style={styles.sessionLabel}>Session {index + 1}</Text><Text style={styles.sessionTime}>{clock(session.punchInAt)} → {session.punchOutAt ? clock(session.punchOutAt) : 'In progress'}</Text><Text style={styles.sessionDuration}>{formatDuration(elapsed)}</Text></View>; })}<Pressable style={styles.outlineButton} onPress={() => onCorrect(d.date)}><Text style={styles.outlineText}>Correct punch times</Text></Pressable></View>}</View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
 }
 
 function ClearDayControl({ date, onClear, compact = false }: { date: string; onClear: (date: string) => Promise<void>; compact?: boolean }) {
@@ -741,6 +1016,30 @@ function ClearDayControl({ date, onClear, compact = false }: { date: string; onC
   return <View style={compact ? styles.clearCompact : styles.clearCard}>
     {confirm ? <><Text style={styles.clearText}>Clear all punches and hours for {date}?</Text><View style={styles.clearActions}><Pressable onPress={() => setConfirm(false)}><Text style={styles.link}>Cancel</Text></Pressable><Pressable onPress={() => void onClear(date).then(() => setConfirm(false))}><Text style={styles.clearDanger}>Clear day</Text></Pressable></View></> : <Pressable onPress={() => setConfirm(true)}><Text style={styles.clearDanger}>{compact ? 'Clear' : 'Clear today’s data'}</Text></Pressable>}
   </View>;
+}
+
+function OfficeOutSummaryModal({ day, policy, onClose, onUndo }: { day: AttendanceDay; policy: PolicyConfig; onClose: () => void; onUndo: () => void }) {
+  const sessions = getDaySessions(day);
+  const finishedAt = day.officeOutAt ? new Date(day.officeOutAt) : new Date();
+  const summary = getAttendanceSummary(day, finishedAt, policy);
+  const intervalMinutes = (from: string, to: string) => Math.max(0, Math.floor((new Date(to).getTime() - new Date(from).getTime()) / 60_000));
+  return <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+    <View style={styles.mediaOverlay}><View style={styles.officeSummaryModal}>
+      <View style={styles.cardHeading}><View><Text style={styles.sectionTitle}>Office out summary</Text><Text style={styles.muted}>Finished at {clock(day.officeOutAt ?? null)}</Text></View><Pressable onPress={onClose}><Text style={styles.link}>Close</Text></Pressable></View>
+      <View style={styles.officeSummaryTotals}><View style={{ flex: 1 }}><Text style={styles.statLabel}>NET WORKED</Text><Text style={styles.officeSummaryWork}>{formatDuration(summary.netWorkedMinutes)}</Text></View><View style={{ flex: 1 }}><Text style={styles.statLabel}>BREAK TAKEN</Text><Text style={styles.officeSummaryBreak}>{formatDuration(summary.takenBreakMinutes)}</Text></View></View>
+      <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ gap: 8 }}>
+        {sessions.map((item, index) => <React.Fragment key={`${item.punchInAt}-${index}`}>
+          <View style={styles.officeSummaryRow}><Text style={styles.sessionLabel}>WORK {index + 1}</Text><View style={{ flex: 1 }}><Text style={styles.officeSummaryText}>{clock(item.punchInAt)} → {clock(item.punchOutAt)}</Text><Text style={styles.historySub}>{formatDuration(intervalMinutes(item.punchInAt, item.punchOutAt ?? day.officeOutAt ?? new Date().toISOString()))} recorded</Text></View></View>
+          {!!item.punchOutAt && (() => {
+            const breakEnd = sessions[index + 1]?.punchInAt ?? day.officeOutAt;
+            if (!breakEnd) return null;
+            return <View style={styles.officeSummaryRow}><Text style={[styles.sessionLabel, { color: '#B91C1C' }]}>BREAK {index + 1}</Text><View style={{ flex: 1 }}><Text style={[styles.officeSummaryText, { color: '#B91C1C' }]}>{clock(item.punchOutAt)} → {clock(breakEnd)}</Text><Text style={styles.historySub}>{formatDuration(intervalMinutes(item.punchOutAt!, breakEnd))} taken</Text></View></View>;
+          })()}
+        </React.Fragment>)}
+      </ScrollView>
+      <View style={{ flexDirection: 'row', gap: 9 }}><Pressable style={[styles.outlineButton, { flex: 1 }]} onPress={onUndo}><Text style={styles.outlineText}>Undo Office out</Text></Pressable><Pressable style={[styles.action, styles.primary]} onPress={onClose}><Text style={styles.actionText}>Done</Text></Pressable></View>
+    </View></View>
+  </Modal>;
 }
 
 function HRDashboard({ rows, loading, onRefresh, onResolve }: { rows: any[]; loading: boolean; onRefresh: () => void; onResolve: (id: string, status: 'approved' | 'rejected') => void }) {
@@ -753,14 +1052,16 @@ function Stepper({ label, value, onMinus, onPlus }: { label: string; value: stri
 function SettingChoice({ label, value, options, onSelect }: { label: string; value: string; options: string[]; onSelect: (value: string) => void }) { return <View style={styles.settingChoice}><Text style={styles.rowLabel}>{label}</Text><View style={styles.choiceRow}>{options.map(option => <Pressable key={option} onPress={() => onSelect(option)} style={[styles.choice, value === option && styles.choiceSelected]}><Text style={[styles.choiceText, value === option && styles.choiceTextSelected]}>{option}</Text></Pressable>)}</View></View>; }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.background }, page: { width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 38, gap: 16 }, center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  safe: { flex: 1, backgroundColor: colors.background }, ambienceLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden', zIndex: 0 }, correctionOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.58)', alignItems: 'center', justifyContent: 'center', padding: 12 }, correctionModal: { width: '100%', maxWidth: 620, height: '92%', maxHeight: 780, backgroundColor: colors.card, borderRadius: 18, padding: 15, gap: 12 }, correctionScroll: { flex: 1, minHeight: 0 }, correctionContent: { gap: 12, paddingBottom: 8 }, correctionRow: { gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }, correctionFields: { flexDirection: 'row', gap: 8 }, passingLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, overflow: 'hidden' }, fallLayer: { position: 'absolute', top: -36, left: 0, right: 0, bottom: 0, zIndex: 51, overflow: 'hidden' }, spiderThread: { position: 'absolute', top: 0, width: 2, backgroundColor: '#E2E8F0', opacity: 0.95, transformOrigin: 'top center' }, fallingSpider: { position: 'absolute', top: 0 }, passingGif: { position: 'absolute', top: '42%', left: 0 }, ambientGlow: { position: 'absolute', width: 260, height: 260, borderRadius: 140, opacity: 0.16 }, glowBlue: { top: '18%', left: -140, backgroundColor: '#BFDBFE' }, glowMint: { top: '54%', right: -145, backgroundColor: '#A7F3D0' }, floatPaw: { position: 'absolute', fontSize: 21, opacity: 0.15 }, floatPawOne: { top: '26%', left: '12%' }, floatPawTwo: { top: '66%', right: '14%' }, firefly: { position: 'absolute', color: '#F59E0B', fontSize: 23, fontWeight: '900' }, fireflyOne: { top: '38%', right: '23%' }, fireflyTwo: { top: '72%', left: '28%' }, runningPawTrail: { position: 'absolute', left: 0, bottom: 14, fontSize: 22, color: '#60A5FA', opacity: 0.25 }, spiderWeb: { position: 'absolute', width: 142, height: 142, top: -42, right: -42, borderRadius: 100 }, webRing: { position: 'absolute', borderWidth: 1, borderColor: '#60A5FA', borderRadius: 100 }, webRingOuter: { width: 128, height: 128, left: 7, top: 7 }, webRingMiddle: { width: 88, height: 88, left: 27, top: 27 }, webRingInner: { width: 48, height: 48, left: 47, top: 47 }, webSpoke: { position: 'absolute', width: 124, height: 1, top: 70, left: 70, backgroundColor: '#60A5FA' }, webSpider: { position: 'absolute', left: 57, top: 55, fontSize: 18 }, ambientRunner: { position: 'absolute', left: 0, bottom: 13, fontSize: 28, opacity: 0.38 }, page: { width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 38, gap: 16 }, center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  catScene: { height: 88, width: '100%', borderRadius: 18, overflow: 'hidden', backgroundColor: '#DFF4F3', borderWidth: 1, borderColor: '#C5E8E5' }, catSun: { position: 'absolute', right: 24, top: 13, width: 25, height: 25, borderRadius: 20, backgroundColor: '#FDE68A' }, catCloud: { position: 'absolute', right: 56, top: 9, fontSize: 15, opacity: 0.75 }, catTitle: { position: 'absolute', left: 13, top: 12, color: '#0F766E', fontSize: 8, fontWeight: '900', letterSpacing: 1.1 }, catCaption: { position: 'absolute', left: 13, top: 26, color: '#365F66', fontSize: 11, fontWeight: '700' }, catHorizon: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, backgroundColor: '#A7D9AC' }, catGrassLeft: { position: 'absolute', left: '30%', bottom: 8, height: 13, width: 55, borderTopLeftRadius: 35, borderTopRightRadius: 20, backgroundColor: '#86C694', transform: [{ rotate: '-5deg' }] }, catGrassRight: { position: 'absolute', right: '8%', bottom: 6, height: 16, width: 70, borderTopLeftRadius: 40, borderTopRightRadius: 25, backgroundColor: '#8BCB9A', transform: [{ rotate: '4deg' }] }, catPaws: { position: 'absolute', left: '42%', bottom: 13, fontSize: 11, letterSpacing: 4 }, walkingCat: { position: 'absolute', left: 0, bottom: 7 }, catEmoji: { fontSize: 31, lineHeight: 37 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 7 }, eyebrow: { color: colors.blue, fontSize: 10, fontWeight: '800', letterSpacing: 1.5 }, title: { color: colors.text, fontSize: 30, fontWeight: '800', marginTop: 4 }, subtitle: { color: colors.muted, fontSize: 14, marginTop: 4, lineHeight: 20 }, avatar: { width: 48, height: 48, borderRadius: 16, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center' }, avatarLarge: { width: 56, height: 56, borderRadius: 18, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center', alignSelf: 'center' }, avatarText: { color: colors.blue, fontWeight: '800', fontSize: 17 },
   connection: { backgroundColor: '#F0FDF4', padding: 11, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }, offline: { backgroundColor: '#FFFBEB' }, dot: { width: 7, height: 7, borderRadius: 5 }, connectionText: { fontSize: 11, color: colors.muted, flex: 1 }, link: { color: colors.blue, fontWeight: '700', fontSize: 12 }, tabs: { flexDirection: 'row', gap: 8, backgroundColor: '#E9EEF5', padding: 4, borderRadius: 14 }, tab: { flex: 1, paddingVertical: 10, borderRadius: 11, alignItems: 'center' }, tabActive: { backgroundColor: '#FFFFFF', elevation: 1 }, tabText: { fontSize: 13, fontWeight: '700', color: colors.muted }, tabTextActive: { color: colors.text },
-  hero: { backgroundColor: colors.navy, borderRadius: 25, padding: 22, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 9 }, shadowOpacity: 0.13, shadowRadius: 17, elevation: 3 }, heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }, heroLabel: { color: '#BFDBFE', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, timerHero: { color: '#FFF', fontSize: 44, fontWeight: '800', fontVariant: ['tabular-nums'], letterSpacing: 1, marginTop: 5, marginBottom: 5 }, progressBadge: { backgroundColor: '#263A56', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, progressBadgeText: { color: '#DCEBFF', fontSize: 14, fontWeight: '800' }, progressTrack: { height: 8, backgroundColor: '#334155', borderRadius: 99, overflow: 'hidden', marginTop: 16 }, progressFill: { height: 8, backgroundColor: '#60A5FA', borderRadius: 99 }, progressMeta: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 9 }, heroSmall: { color: '#CBD5E1', fontSize: 11 }, buttonRow: { flexDirection: 'row', gap: 10, marginTop: 21 }, action: { flex: 1, borderRadius: 13, paddingVertical: 14, alignItems: 'center' }, primary: { backgroundColor: colors.blue }, teal: { backgroundColor: '#0F766E' }, dim: { opacity: 0.45 }, actionText: { color: '#FFF', fontWeight: '800', fontSize: 14 }, helper: { color: '#CBD5E1', fontSize: 12, marginTop: 12, lineHeight: 18 },
+  hero: { position: 'relative', overflow: 'hidden', backgroundColor: colors.navy, borderRadius: 25, padding: 22, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 9 }, shadowOpacity: 0.13, shadowRadius: 17, elevation: 3 }, heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }, heroLabel: { color: '#BFDBFE', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, timerHero: { color: '#FFF', fontSize: 44, fontWeight: '800', fontVariant: ['tabular-nums'], letterSpacing: 1, marginTop: 5, marginBottom: 5 }, breakTimerCard: { marginTop: 12, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#451A1A', borderRadius: 12, borderWidth: 1, borderColor: '#7F1D1D' }, breakTimerLabel: { color: '#FCA5A5', fontSize: 9, fontWeight: '900', letterSpacing: 1 }, breakTimerValue: { color: '#F87171', fontSize: 23, fontWeight: '900', fontVariant: ['tabular-nums'], marginTop: 3 }, breakTimerHint: { color: '#FECACA', fontSize: 10, marginTop: 2 }, progressBadge: { backgroundColor: '#263A56', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, progressBadgeText: { color: '#DCEBFF', fontSize: 14, fontWeight: '800' }, progressTrack: { height: 8, backgroundColor: '#334155', borderRadius: 99, overflow: 'hidden', marginTop: 16 }, progressFill: { height: 8, backgroundColor: '#60A5FA', borderRadius: 99 }, progressMeta: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 9 }, heroSmall: { color: '#CBD5E1', fontSize: 11 }, buttonRow: { flexDirection: 'row', gap: 10, marginTop: 21 }, action: { flex: 1, borderRadius: 13, paddingVertical: 14, alignItems: 'center' }, primary: { backgroundColor: colors.blue }, teal: { backgroundColor: '#0F766E' }, dim: { opacity: 0.45 }, actionText: { color: '#FFF', fontWeight: '800', fontSize: 14 }, helper: { color: '#CBD5E1', fontSize: 12, marginTop: 12, lineHeight: 18 },
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, statCard: { flexBasis: '47%', flexGrow: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 14, gap: 8 }, statLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 }, statValue: { color: colors.text, fontSize: 16, fontWeight: '800' }, card: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 17, gap: 13 }, cardHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, sectionTitle: { color: colors.text, fontSize: 17, fontWeight: '800' }, row: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 }, rowLabel: { color: colors.muted, fontSize: 12, flex: 1 }, rowValue: { color: colors.text, fontSize: 12, fontWeight: '700', textAlign: 'right', flex: 1 }, pill: { backgroundColor: '#DCFCE7', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 99 }, pillWarn: { backgroundColor: '#FEF3C7' }, pillText: { color: '#15803D', fontSize: 10, fontWeight: '800' }, policyNote: { color: '#854D0E', fontSize: 11, lineHeight: 17, backgroundColor: '#FFFBEB', padding: 10, borderRadius: 10 }, outlineButton: { borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 11, padding: 11, alignItems: 'center', backgroundColor: '#F8FBFF' }, outlineText: { color: colors.blue, fontSize: 12, fontWeight: '800' }, muted: { color: colors.muted, fontSize: 12, lineHeight: 18 }, stepper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, stepActions: { flexDirection: 'row', alignItems: 'center', gap: 10 }, stepButton: { width: 30, height: 30, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }, stepText: { fontSize: 20, color: colors.text }, stepValue: { minWidth: 64, textAlign: 'center', fontWeight: '800', color: colors.text, fontSize: 12 }, settingChoice: { gap: 8 }, choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, choice: { backgroundColor: '#F1F5F9', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 99 }, choiceSelected: { backgroundColor: '#DBEAFE' }, choiceText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, choiceTextSelected: { color: colors.blue },
   gameCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 18, gap: 15 }, gameHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, gameEyebrow: { color: colors.blue, fontWeight: '800', fontSize: 10, letterSpacing: 1.2 }, gameTitle: { color: colors.text, fontSize: 24, fontWeight: '800', marginTop: 3 }, gameIcon: { fontSize: 34 }, gameDescription: { color: colors.muted, fontSize: 12, lineHeight: 18 }, difficultyRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 7 }, difficultyLabel: { color: colors.muted, fontSize: 11, fontWeight: '700', marginRight: 3 }, difficultyButton: { borderRadius: 99, paddingVertical: 7, paddingHorizontal: 10, backgroundColor: '#F1F5F9' }, difficultySelected: { backgroundColor: '#DBEAFE' }, difficultyText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, difficultyTextSelected: { color: colors.blue }, playerRow: { flexDirection: 'row', gap: 10 }, playerCard: { flex: 1, alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 10 }, playerTurn: { borderColor: colors.blue, backgroundColor: '#EFF6FF' }, playerName: { width: '100%', color: colors.text, textAlign: 'center', fontWeight: '700', fontSize: 12, paddingVertical: 4 }, playerScore: { color: colors.blue, fontWeight: '800', fontSize: 25, marginTop: 4 }, playerPairs: { color: colors.muted, fontSize: 10 }, turnLabel: { textAlign: 'center', color: colors.text, fontWeight: '800', fontSize: 14 }, memoryBoard: { width: '100%', maxWidth: 460, alignSelf: 'center', gap: 8 }, memoryRow: { flexDirection: 'row', gap: 8 }, memoryTile: { flex: 1, aspectRatio: 1, borderRadius: 13, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: colors.navy, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }, memoryFaceImage: { width: '100%', height: '100%' }, memoryTileOpen: { backgroundColor: '#EFF6FF', borderColor: '#93C5FD' }, memoryTileMatched: { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }, memoryTileText: { fontSize: 29, fontWeight: '800' }, memoryTileHidden: { color: '#BFDBFE', fontSize: 31 }, gameFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, gameHint: { flex: 1, color: colors.muted, fontSize: 11 }, newGameButton: { backgroundColor: colors.blue, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 11 }, newGameText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   exportButton: { backgroundColor: colors.blue, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, alignItems: 'center' }, exportDisabled: { opacity: 0.45 }, exportButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' }, historyDayCard: { backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' }, sessionToggle: { color: colors.blue, fontSize: 10, fontWeight: '700' }, sessionList: { borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#F8FAFC' }, sessionEntry: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border }, sessionLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', width: 58 }, sessionTime: { color: colors.text, fontSize: 11, fontWeight: '700', flex: 1 }, sessionDuration: { color: colors.muted, fontSize: 10 },
   chatJoinDivider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }, chatDividerLine: { flex: 1, height: 1, backgroundColor: colors.border }, guestAction: { backgroundColor: '#0F766E' }, guestActionText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  heroCatLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }, heroCatImage: { position: 'absolute', width: '100%', height: '100%' }, heroCatShade: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.navy }, heroCatPaw: { position: 'absolute', left: '55%', bottom: '15%', width: 45, height: 88, transformOrigin: 'bottom center' }, heroCatPawArm: { position: 'absolute', left: 15, bottom: 0, width: 15, height: 62, borderRadius: 10, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatPawPalm: { position: 'absolute', left: 3, top: 8, width: 40, height: 34, borderRadius: 20, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatToe: { position: 'absolute', top: 2, width: 12, height: 17, borderRadius: 9, backgroundColor: '#E8953D', borderWidth: 1, borderColor: '#FFD17A' }, heroCatToeOne: { left: 5 }, heroCatToeTwo: { left: 17, top: -1 }, heroCatToeThree: { left: 29 }, heroCatBlink: { position: 'absolute', left: '31%', top: '24%', width: '9%', height: '4%', borderRadius: 99, backgroundColor: '#EAA34B', alignItems: 'center', justifyContent: 'center' }, heroCatBlinkLine: { width: '72%', height: 1.5, borderRadius: 2, backgroundColor: '#60351E', transform: [{ rotate: '-5deg' }] }, greetingPill: { backgroundColor: 'rgba(15, 118, 110, 0.92)', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, greetingPillText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' }, catGreetingCard: { width: '100%', maxWidth: 420, backgroundColor: '#FFFFFF', borderRadius: 26, paddingHorizontal: 24, paddingVertical: 27, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#CFECE8' }, catSpeech: { backgroundColor: '#DCFCE7', paddingHorizontal: 18, paddingVertical: 9, borderRadius: 16, borderBottomLeftRadius: 4 }, catSpeechText: { color: '#166534', fontSize: 15, fontWeight: '900' }, catGreetingTitle: { color: colors.text, fontSize: 23, fontWeight: '900', textAlign: 'center' }, catGreetingBody: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', maxWidth: 280 }, actionPrimarySmall: { backgroundColor: colors.blue, borderRadius: 12, paddingVertical: 11, paddingHorizontal: 20, marginTop: 7 }, officeByeRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F0FDF4', borderRadius: 13, padding: 10 }, officeOutActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }, officeOutButton: { backgroundColor: '#B91C1C', borderRadius: 13, paddingVertical: 12, paddingHorizontal: 9, alignItems: 'center', marginTop: 12 }, officeOutText: { color: '#FFFFFF', fontWeight: '900', fontSize: 12, textAlign: 'center' }, undoOfficeOutButton: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#B91C1C', borderRadius: 13, paddingVertical: 11, paddingHorizontal: 12 }, undoOfficeOutText: { color: '#B91C1C', fontWeight: '800', fontSize: 11 }, officeSummaryModal: { width: '100%', maxWidth: 560, maxHeight: '90%', backgroundColor: colors.card, borderRadius: 18, padding: 16, gap: 13 }, officeSummaryTotals: { flexDirection: 'row', gap: 10, padding: 12, backgroundColor: '#F1F5F9', borderRadius: 12 }, officeSummaryWork: { color: colors.blue, fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryBreak: { color: '#B91C1C', fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F8FAFC', borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 10 }, officeSummaryText: { color: colors.text, fontSize: 12, fontWeight: '800' },
   chatCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 16, gap: 13 }, chatHeading: { flexDirection: 'row', alignItems: 'center', gap: 11 }, chatAvatar: { width: 43, height: 43, borderRadius: 15, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center' }, chatAvatarText: { color: colors.blue, fontSize: 22, fontWeight: '800' }, chatPresence: { color: colors.muted, fontSize: 10, marginTop: 3 }, onlineBadge: { color: '#15803D', fontSize: 9, fontWeight: '900', backgroundColor: '#DCFCE7', overflow: 'hidden', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 6 }, chatJoin: { gap: 12, paddingVertical: 12 }, chatWelcome: { color: colors.text, fontSize: 17, fontWeight: '800' }, chatIdentity: { borderRadius: 10, backgroundColor: '#F8FAFC', padding: 9 }, chatIdentityText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, chatMessages: { maxHeight: 430, minHeight: 220, backgroundColor: '#F8FAFC', borderRadius: 16 }, chatMessagesContent: { flexGrow: 1, justifyContent: 'flex-end', padding: 12, gap: 9 }, chatEmpty: { flex: 1, minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: 7 }, chatEmptyIcon: { fontSize: 30 }, chatBubble: { maxWidth: '88%', borderRadius: 15, paddingHorizontal: 12, paddingVertical: 9, gap: 5 }, chatBubbleMine: { alignSelf: 'flex-end', backgroundColor: '#DBEAFE', borderBottomRightRadius: 5 }, chatBubbleOther: { alignSelf: 'flex-start', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderBottomLeftRadius: 5 }, chatSender: { color: colors.blue, fontSize: 10, fontWeight: '800' }, chatBody: { color: colors.text, fontSize: 13, lineHeight: 19 }, chatTime: { color: colors.muted, fontSize: 9, alignSelf: 'flex-end' }, mediaButton: { minWidth: 185, flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: 11, padding: 10, backgroundColor: 'rgba(255,255,255,0.75)', borderWidth: 1, borderColor: colors.border }, mediaIcon: { color: colors.blue, fontSize: 19, fontWeight: '800' }, mediaTitle: { color: colors.text, fontSize: 11, fontWeight: '800' }, mediaHint: { color: colors.muted, fontSize: 9, marginTop: 2 }, mediaChevron: { color: colors.blue, fontSize: 21 }, chatComposer: { gap: 9 }, chatTools: { flexDirection: 'row', gap: 8 }, chatTool: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingHorizontal: 11, paddingVertical: 8 }, chatToolText: { color: colors.blue, fontSize: 10, fontWeight: '800' }, recordingTool: { backgroundColor: '#FEE2E2' }, recordingText: { color: '#B91C1C' }, chatInputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 }, chatInput: { flex: 1, maxHeight: 110, minHeight: 43, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 13, paddingHorizontal: 12, paddingVertical: 11, color: colors.text, fontSize: 13 }, sendButton: { width: 43, height: 43, borderRadius: 13, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' }, sendButtonText: { color: '#FFFFFF', fontSize: 24, lineHeight: 28, fontWeight: '800' }, attachmentPreview: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#EFF6FF', borderRadius: 10, padding: 10 }, attachmentText: { color: colors.text, fontSize: 10, fontWeight: '700', flex: 1 }, onceToggle: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 3 }, onceCheckbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 1, borderColor: colors.blue, backgroundColor: '#EFF6FF', textAlign: 'center', overflow: 'hidden', color: colors.blue, fontSize: 12, fontWeight: '900' }, onceText: { color: colors.muted, fontSize: 10, flex: 1 }, mediaOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.82)', padding: 18 }, mediaModal: { width: '100%', maxWidth: 620, maxHeight: '90%', backgroundColor: colors.card, borderRadius: 18, padding: 15, gap: 12 }, mediaImage: { width: '100%', height: 420 }, onceFootnote: { color: colors.muted, fontSize: 10, textAlign: 'center' },
   updateOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.58)', alignItems: 'center', justifyContent: 'center', padding: 22 }, updateCard: { width: '100%', maxWidth: 420, backgroundColor: colors.card, borderRadius: 24, padding: 25, gap: 13, borderWidth: 1, borderColor: colors.border, shadowColor: '#0F172A', shadowOpacity: 0.2, shadowRadius: 24, elevation: 8 }, updateBadge: { alignSelf: 'flex-start', backgroundColor: '#DBEAFE', borderRadius: 99, paddingHorizontal: 10, paddingVertical: 6 }, updateBadgeText: { color: colors.blue, fontSize: 10, fontWeight: '900', letterSpacing: 1 }, updateTitle: { color: colors.text, fontSize: 24, lineHeight: 30, fontWeight: '900' }, updateSummary: { color: colors.muted, fontSize: 14, lineHeight: 21 }, updateMeta: { color: colors.muted, fontSize: 11 }, updatePrimary: { backgroundColor: colors.blue, paddingVertical: 14, borderRadius: 13, alignItems: 'center', marginTop: 4 }, updatePrimaryText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 }, updateLater: { paddingVertical: 9, alignItems: 'center' }, updateLaterText: { color: colors.muted, fontWeight: '700', fontSize: 12 },
   monthBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 }, monthArrow: { fontSize: 28, color: colors.blue, paddingHorizontal: 10 }, monthTitle: { color: colors.text, fontSize: 18, fontWeight: '800' }, summaryStrip: { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: '#EFF6FF', borderRadius: 15, padding: 16 }, monthStat: { color: colors.text, fontSize: 18, fontWeight: '800', marginTop: 5 }, historyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, padding: 12 }, historyDate: { width: 43, height: 48, borderRadius: 11, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' }, historyDay: { color: colors.blue, fontSize: 9, fontWeight: '700' }, historyNum: { color: colors.text, fontSize: 16, fontWeight: '800' }, historyMain: { flex: 1, gap: 5 }, historyTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, historySub: { color: colors.muted, fontSize: 10 }, historyHours: { color: colors.text, fontSize: 12, fontWeight: '800' }, clearCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 14, flexDirection: 'row', justifyContent: 'flex-end' }, clearCompact: { alignItems: 'flex-end', gap: 5 }, clearText: { color: colors.text, fontSize: 12, flex: 1 }, clearActions: { flexDirection: 'row', gap: 14, alignItems: 'center' }, clearDanger: { color: '#B91C1C', fontWeight: '800', fontSize: 12 }, empty: { padding: 26, alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: 15, gap: 6 }, emptyTitle: { color: colors.text, fontWeight: '800', fontSize: 14 }, hrRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderTopWidth: 1, borderTopColor: colors.border, gap: 10 }, hrActions: { gap: 9 }, approve: { color: '#15803D', fontWeight: '800', fontSize: 11 }, reject: { color: '#B91C1C', fontWeight: '800', fontSize: 11 },

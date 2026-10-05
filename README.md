@@ -131,8 +131,8 @@ Use Apple signing/TestFlight for iOS distribution and a Play Console signing key
 
 ## Known boundaries
 
-- Employees may record multiple punch-in/out sessions on the same local calendar day. Only punch-in intervals count as net work; off-clock gaps count toward taken break time, and an active break timer runs until the next punch-in. A new local calendar day starts with a zero daily total. The HR policy's nine-hour day and one-hour break interpretation still needs confirmation.
-- Existing one-session records migrate as a single session. Supabase deployments must rerun `supabase/schema.sql` to add the `sessions` JSONB and `office_out_at` columns before syncing multi-session days and Office out status.
+- Employees may record multiple punch-in/out sessions on the same local calendar day. Optional break hours/minutes entered on a session are deducted from that session's net work; off-clock gaps count toward taken break time, and an active break timer runs until the next punch-in. A new local calendar day starts with a zero daily total. The HR policy's nine-hour day and one-hour break interpretation still needs confirmation.
+- Existing one-session records migrate as a single session. Supabase deployments must rerun `supabase/schema.sql` to add the `sessions` JSONB and `office_out_at` columns before syncing multi-session days and Office out status, and to refresh the HR report's net-work calculation for session-level breaks.
 - Offline changes persist and sync as attendance-day upserts. For official payroll use, add server-trusted event timestamps, audited correction requests, retention rules, backups, and policy-approved conflict handling.
 - Reminder delivery is best-effort device-local scheduling and depends on notification permission and OS background behavior.
 - Web work-target reminders are foreground-tab timers and are not push notifications; browser storage is local to that browser unless Supabase sync is configured.

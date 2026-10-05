@@ -15,7 +15,7 @@ export const DEFAULT_POLICY: PolicyConfig = {
 };
 export const MONTHLY_LATE_LOGIN_LIMIT = 4;
 
-export type AttendanceSession = { punchInAt: string; punchOutAt: string | null };
+export type AttendanceSession = { punchInAt: string; punchOutAt: string | null; breakMinutes?: number };
 
 export type AttendanceDay = {
   id?: string;
@@ -53,11 +53,16 @@ export function getAttendanceSummary(day: AttendanceDay, now = new Date(), polic
   const start = sessions[0] ? new Date(sessions[0].punchInAt) : null;
   let elapsedSeconds = 0;
   let takenBreakSeconds = 0;
+  let deductedSessionBreakSeconds = 0;
   for (let i = 0; i < sessions.length; i++) {
     const session = sessions[i];
     const sessionStart = new Date(session.punchInAt);
     const sessionEnd = session.punchOutAt ? new Date(session.punchOutAt) : now;
-    elapsedSeconds += Math.max(0, Math.floor((sessionEnd.getTime() - sessionStart.getTime()) / 1000));
+    const sessionSeconds = Math.max(0, Math.floor((sessionEnd.getTime() - sessionStart.getTime()) / 1000));
+    const sessionBreakSeconds = Math.min(sessionSeconds, Math.max(0, session.breakMinutes ?? 0) * 60);
+    elapsedSeconds += sessionSeconds - sessionBreakSeconds;
+    deductedSessionBreakSeconds += sessionBreakSeconds;
+    takenBreakSeconds += sessionBreakSeconds;
     const next = sessions[i + 1];
     if (session.punchOutAt && next) takenBreakSeconds += Math.max(0, Math.floor((new Date(next.punchInAt).getTime() - new Date(session.punchOutAt).getTime()) / 1000));
   }
@@ -67,9 +72,9 @@ export function getAttendanceSummary(day: AttendanceDay, now = new Date(), polic
     const breakEnd = day.officeOutAt ? new Date(day.officeOutAt).getTime() : day.date === localDateKey(now) ? now.getTime() : new Date(lastSession!.punchOutAt!).getTime();
     takenBreakSeconds += Math.max(0, Math.floor((breakEnd - new Date(lastSession!.punchOutAt!).getTime()) / 1000));
   }
-  // Punch intervals are the recorded work; time between sessions is tracked
-  // separately as break time and must not be deducted a second time.
-  const deducted = 0;
+  // User-entered breaks within a session are deducted from that interval;
+  // gaps between separate sessions are counted as breaks and excluded from work.
+  const deducted = Math.floor(deductedSessionBreakSeconds / 60);
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const netWorkedSeconds = elapsedSeconds;
   const netWorkedMinutes = Math.floor(netWorkedSeconds / 60);

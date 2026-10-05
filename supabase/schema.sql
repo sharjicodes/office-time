@@ -169,7 +169,13 @@ begin
     full join public.late_arrival_reviews r on r.user_id = a.user_id and r.work_date = a.work_date
     left join lateral (
       select
-        coalesce(sum(floor(extract(epoch from (coalesce((s.value->>'punchOutAt')::timestamptz, now()) - (s.value->>'punchInAt')::timestamptz))/60)::integer), 0)::integer as elapsed_minutes,
+        coalesce(sum(greatest(0,
+          floor(extract(epoch from (coalesce((s.value->>'punchOutAt')::timestamptz, now()) - (s.value->>'punchInAt')::timestamptz))/60)::integer
+          - least(
+            floor(extract(epoch from (coalesce((s.value->>'punchOutAt')::timestamptz, now()) - (s.value->>'punchInAt')::timestamptz))/60)::integer,
+            greatest(0, coalesce((s.value->>'breakMinutes')::integer, 0))
+          )
+        )), 0)::integer as elapsed_minutes,
         coalesce(sum(case when s.previous_value->>'punchOutAt' is not null
           then greatest(0, floor(extract(epoch from ((s.value->>'punchInAt')::timestamptz - (s.previous_value->>'punchOutAt')::timestamptz))/60)::integer)
           else 0 end), 0)::integer as gap_minutes

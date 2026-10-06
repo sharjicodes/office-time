@@ -279,6 +279,23 @@ begin
     where id = room_id_in;
 end; $$;
 
+create or replace function public.rename_chat_room(room_id_in uuid, name_in text)
+returns void language plpgsql security definer set search_path = '' as $$
+declare owner_id uuid; target_type text; clean_name text;
+begin
+  select created_by, room_type into owner_id, target_type
+  from public.chat_rooms where id = room_id_in;
+  if not found then raise exception 'Room not found.'; end if;
+  if auth.uid() is null or owner_id is distinct from auth.uid() or target_type <> 'group' then
+    raise exception 'Only the group creator can change its name.';
+  end if;
+  clean_name := btrim(name_in);
+  if clean_name is null or char_length(clean_name) < 1 or char_length(clean_name) > 50 then
+    raise exception 'Lobby name must be between 1 and 50 characters.';
+  end if;
+  update public.chat_rooms set name = clean_name where id = room_id_in;
+end; $$;
+
 create or replace function public.kick_chat_room_member(room_id_in uuid, member_id_in uuid)
 returns boolean language plpgsql security definer set search_path = '' as $$
 declare owner_id uuid; target_type text; removed_count integer;
@@ -387,6 +404,7 @@ revoke all on function public.create_chat_room(text,text) from public, anon;
 revoke all on function public.join_chat_room(uuid,text) from public, anon;
 revoke all on function public.list_chat_room_members(uuid) from public, anon;
 revoke all on function public.set_chat_room_password(uuid,text) from public, anon;
+revoke all on function public.rename_chat_room(uuid,text) from public, anon;
 revoke all on function public.kick_chat_room_member(uuid,uuid) from public, anon;
 revoke all on function public.list_chat_room_media_paths(uuid) from public, anon;
 revoke all on function public.delete_chat_room(uuid) from public, anon;
@@ -402,6 +420,7 @@ grant execute on function public.create_chat_room(text,text) to authenticated;
 grant execute on function public.join_chat_room(uuid,text) to authenticated;
 grant execute on function public.list_chat_room_members(uuid) to authenticated;
 grant execute on function public.set_chat_room_password(uuid,text) to authenticated;
+grant execute on function public.rename_chat_room(uuid,text) to authenticated;
 grant execute on function public.kick_chat_room_member(uuid,uuid) to authenticated;
 grant execute on function public.list_chat_room_media_paths(uuid) to authenticated;
 grant execute on function public.delete_chat_room(uuid) to authenticated;

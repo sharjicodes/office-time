@@ -44,6 +44,45 @@ function playWebNoticeTone(isLate: boolean) {
   });
 }
 
+function playWebFireworksSound() {
+  if (Platform.OS !== 'web' || !webAudioContext || webAudioContext.state !== 'running') return;
+  const context = webAudioContext;
+  // Twelve quick reports follow the staggered screen-wide bursts.
+  for (let burst = 0; burst < 12; burst += 1) {
+    const start = context.currentTime + burst * 0.34;
+    const length = Math.floor(context.sampleRate * 0.14);
+    const noise = context.createBuffer(1, length, context.sampleRate);
+    const samples = noise.getChannelData(0);
+    for (let sample = 0; sample < length; sample += 1) samples[sample] = Math.random() * 2 - 1;
+    const crackle = context.createBufferSource();
+    const filter = context.createBiquadFilter();
+    const gain = context.createGain();
+    crackle.buffer = noise;
+    filter.type = 'highpass';
+    filter.frequency.value = 950;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.18, start + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.14);
+    crackle.connect(filter).connect(gain).connect(context.destination);
+    crackle.start(start);
+
+    // Add sharp pops over each short noise burst for a cracker-like report.
+    for (let pop = 0; pop < 3; pop += 1) {
+      const popAt = start + 0.012 + pop * 0.031;
+      const oscillator = context.createOscillator();
+      const popGain = context.createGain();
+      oscillator.type = pop % 2 ? 'square' : 'triangle';
+      oscillator.frequency.value = 520 + ((burst * 179 + pop * 317) % 1200);
+      popGain.gain.setValueAtTime(0.0001, popAt);
+      popGain.gain.exponentialRampToValueAtTime(0.085, popAt + 0.005);
+      popGain.gain.exponentialRampToValueAtTime(0.0001, popAt + 0.045);
+      oscillator.connect(popGain).connect(context.destination);
+      oscillator.start(popAt);
+      oscillator.stop(popAt + 0.05);
+    }
+  }
+}
+
 async function configureSoundChannels() {
   if (Platform.OS !== 'android') return;
   await Notifications.setNotificationChannelAsync(LATE_CHANNEL, {
@@ -136,7 +175,7 @@ export async function showLateLoginWarning(title: string, body: string): Promise
 }
 
 export async function showWorkHourCongratulations(title: string, body: string): Promise<boolean> {
-  playWebNoticeTone(false);
+  playWebFireworksSound();
   return showAttendanceNotice('work-target', title, body);
 }
 

@@ -135,6 +135,60 @@ function FallingSpiderMan() {
   </View>;
 }
 
+function FireworksCelebration({ onDone }: { onDone: () => void }) {
+  const [viewport, setViewport] = useState({ width: 0, height: 0 });
+  const message = useRef(new Animated.Value(0)).current;
+  const doneRef = useRef(onDone);
+  useEffect(() => { doneRef.current = onDone; }, [onDone]);
+  useEffect(() => {
+    Animated.sequence([
+      Animated.spring(message, { toValue: 1, damping: 11, stiffness: 115, useNativeDriver: true }),
+      Animated.delay(4900),
+      Animated.timing(message, { toValue: 0, duration: 650, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+    ]).start(({ finished }) => { if (finished) doneRef.current(); });
+    return () => message.stopAnimation();
+  }, [message]);
+  const textOpacity = message.interpolate({ inputRange: [0, 0.18, 0.8, 1], outputRange: [0, 1, 1, 0] });
+  const textScale = message.interpolate({ inputRange: [0, 0.55, 1], outputRange: [0.72, 1, 0.92] });
+  return <View pointerEvents="none" accessible={false} style={styles.fireworksLayer} onLayout={event => setViewport({ width: event.nativeEvent.layout.width, height: event.nativeEvent.layout.height })}>
+    {viewport.width > 0 && viewport.height > 0 && [
+      [0.12, 0.12], [0.48, 0.1], [0.86, 0.13], [0.27, 0.28], [0.7, 0.32],
+      [0.08, 0.48], [0.91, 0.49], [0.38, 0.62], [0.64, 0.67], [0.19, 0.82], [0.82, 0.85], [0.5, 0.91],
+    ].map(([x, y], index) => <FireworkBurst key={index} x={viewport.width * x} y={viewport.height * y} delay={index * 340} seed={index + 1} />)}
+    <Animated.View style={[styles.fireworksMessage, { opacity: textOpacity, transform: [{ scale: textScale }] }]}>
+      <Text style={styles.fireworksEmoji}>🎆 🎉 🎆</Text>
+      <Text style={styles.fireworksTitle}>8 hours complete!</Text>
+      <Text style={styles.fireworksSubtitle}>Fantastic work today</Text>
+    </Animated.View>
+  </View>;
+}
+
+function FireworkBurst({ x, y, delay, seed }: { x: number; y: number; delay: number; seed: number }) {
+  const progress = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const animation = Animated.sequence([
+      Animated.delay(delay),
+      Animated.timing(progress, { toValue: 1, duration: 1500, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+    ]);
+    animation.start();
+    return () => animation.stop();
+  }, [delay, progress]);
+  const palette = ['#FBBF24', '#FB7185', '#60A5FA', '#A78BFA', '#34D399', '#FFFFFF'];
+  const radius = 74 + (seed % 3) * 18;
+  return <View style={{ position: 'absolute', left: x, top: y, width: 1, height: 1 }}>
+    {Array.from({ length: 18 }, (_, index) => {
+      const angle = (Math.PI * 2 * index) / 18 + seed * 0.34;
+      const distance = radius * (index % 3 === 0 ? 1 : 0.76);
+      const translateX = progress.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(angle) * distance] });
+      const translateY = progress.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(angle) * distance] });
+      const opacity = progress.interpolate({ inputRange: [0, 0.12, 0.72, 1], outputRange: [0, 1, 0.9, 0] });
+      const scale = progress.interpolate({ inputRange: [0, 0.16, 1], outputRange: [0.2, 1, 0.35] });
+      return <Animated.View key={index} style={[styles.fireworkParticle, { backgroundColor: palette[(index + seed) % palette.length], opacity, transform: [{ translateX }, { translateY }, { rotate: `${(angle * 180) / Math.PI + 90}deg` }, { scale }] }]} />;
+    })}
+    <Animated.View style={[styles.fireworkFlash, { opacity: progress.interpolate({ inputRange: [0, 0.08, 0.28, 1], outputRange: [0, 0.9, 0.18, 0] }), transform: [{ scale: progress.interpolate({ inputRange: [0, 0.1, 1], outputRange: [0.1, 1.4, 0.2] }) }] }]} />
+  </View>;
+}
+
 type ReleaseInfo = { buildId: string; summary: string; deployedAt: string };
 
 function DeploymentUpdateNotice() {
@@ -179,7 +233,7 @@ function OfficeTimeApp() {
   const [booting, setBooting] = useState(true);
   const [days, setDays] = useState<AttendanceDay[]>([]);
   const [policy, setPolicy] = useState<PolicyConfig>(DEFAULT_POLICY);
-  const [tab, setTab] = useState<Tab>(() => typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('match') ? 'Games' : 'Today');
+  const [tab, setTab] = useState<Tab>(() => typeof window !== 'undefined' && (new URL(window.location.href).searchParams.has('match') || new URL(window.location.href).searchParams.has('ludo')) ? 'Games' : 'Today');
   const [online, setOnline] = useState(true);
   const [offlineContinue, setOfflineContinue] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -192,6 +246,8 @@ function OfficeTimeApp() {
   const [correctionTarget, setCorrectionTarget] = useState<{ date: string; add: boolean } | null>(null);
   const [officeOutSummary, setOfficeOutSummary] = useState<AttendanceDay | null>(null);
   const [catGreeting, setCatGreeting] = useState<'hi' | 'bye' | null>(null);
+  const [fireworksId, setFireworksId] = useState(0);
+  const previousTargetState = useRef<{ date: string; reached: boolean } | null>(null);
   const today = localDateKey(now);
   const day = days.find(item => item.date === today) ?? { date: today, punchInAt: null, punchOutAt: null, breakMinutes: policy.defaultBreakMinutes, managerApproval: false, synced: true };
   const summary = useMemo(() => getAttendanceSummary(day, now, policy), [day, now, policy]);
@@ -205,6 +261,20 @@ function OfficeTimeApp() {
   const estimatedTargetTime = new Date(now.getTime() + remainingTargetSeconds * 1000)
     .toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
   const breakTimerRunning = !active && !day.officeOutAt && !!sessions[sessions.length - 1]?.punchOutAt;
+
+  useEffect(() => {
+    if (booting) return;
+    const previous = previousTargetState.current;
+    previousTargetState.current = { date: today, reached: summary.targetReached };
+    if (!previous || previous.date !== today || previous.reached || !summary.targetReached) return;
+    setFireworksId(id => id + 1);
+    void (async () => {
+      await cancelNotice('work-target');
+      const body = `${formatDuration(policy.recordedWorkTargetMinutes)} of recorded work reached. Congratulations — fantastic work today!`;
+      if (!(await showWorkHourCongratulations('Daily work goal reached! 🎉', body))) Alert.alert('Daily work goal reached! 🎉', body);
+    })();
+  }, [booting, today, summary.targetReached, policy.recordedWorkTargetMinutes]);
+
   const refresh = useCallback(async () => {
     setDays(await loadDays()); setPolicy(await loadPolicy());
   }, []);
@@ -257,13 +327,7 @@ function OfficeTimeApp() {
     const updatedSummary = getAttendanceSummary(draft, stamp, policy);
     const updated = await saveDay(draft);
     setDays(list => [updated, ...list.filter(d => d.date !== updated.date)]);
-    const targetJustReached = !summary.targetReached && updatedSummary.targetReached;
     const firstLoginIsLate = kind === 'in' && sessions.length === 0 && updatedSummary.afterFlexLimit;
-    if (targetJustReached) {
-      await cancelNotice('work-target');
-      const body = `${formatDuration(policy.recordedWorkTargetMinutes)} of recorded work reached. Congratulations — fantastic work today!`;
-      if (!(await showWorkHourCongratulations('Daily work goal reached! 🎉', body))) Alert.alert('Daily work goal reached! 🎉', body);
-    }
     if (kind === 'in') {
       await scheduleTimedNotice('missing-punch-out', 'Don’t forget to punch out', 'Your attendance session is still open.', 9 * 60 * 60 * 1000);
       if (!updatedSummary.targetReached) await scheduleWorkTarget(policy, updatedSummary, updated);
@@ -455,7 +519,7 @@ function OfficeTimeApp() {
         const { error } = await supabase.auth.signInAnonymously({ options: { data: { full_name: name } } });
         return error?.message ?? null;
       }} />}
-      {tab === 'Games' && <MemoryMatchGame session={session} />}
+      {tab === 'Games' && <GamesHub session={session} />}
       {tab === 'HR' && <HRDashboard rows={hrRows} loading={busy} role={role} policyUploadBusy={policyUploadBusy} policyUploadedName={policyUploadedName} onUploadPolicy={uploadMiloPolicy} onRefresh={async () => { setBusy(true); const { data } = await supabase!.rpc('hr_attendance_report'); setHrRows(data ?? []); setBusy(false); }} onResolve={resolveReview} />}
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. OfficeTime is a companion tracker until HR authorizes it for official use.</Text></View>
       <Text style={styles.footer}>OfficeTime · Secure attendance for your team</Text>
@@ -473,6 +537,7 @@ function OfficeTimeApp() {
     </Modal>
     {correctionTarget && <PunchCorrectionModal key={`${correctionTarget.date}-${correctionTarget.add}`} date={correctionTarget.date} day={days.find(item => item.date === correctionTarget.date)} addToExisting={correctionTarget.add} onClose={() => setCorrectionTarget(null)} onSave={savePunchCorrection} />}
     {officeOutSummary && <OfficeOutSummaryModal day={officeOutSummary} policy={policy} onClose={() => { setOfficeOutSummary(null); setCatGreeting('bye'); }} onUndo={undoOfficeOut} />}
+    {fireworksId > 0 && <FireworksCelebration key={fireworksId} onDone={() => setFireworksId(0)} />}
   </SafeAreaView>;
 }
 
@@ -1124,6 +1189,280 @@ function newMemoryDeck(pairCount: number): MemoryTile[] {
   return deck;
 }
 
+function GamesHub({ session }: { session: any }) {
+  const [selectedGame, setSelectedGame] = useState<'memory' | 'ludo'>(() => typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('ludo') ? 'ludo' : 'memory');
+  return <View style={{ gap: 12 }}>
+    <View style={styles.difficultyRow}>
+      <Pressable onPress={() => setSelectedGame('memory')} style={[styles.difficultyButton, selectedGame === 'memory' && styles.difficultySelected]}><Text style={[styles.difficultyText, selectedGame === 'memory' && styles.difficultyTextSelected]}>Memory Match</Text></Pressable>
+      <Pressable onPress={() => setSelectedGame('ludo')} style={[styles.difficultyButton, selectedGame === 'ludo' && styles.difficultySelected]}><Text style={[styles.difficultyText, selectedGame === 'ludo' && styles.difficultyTextSelected]}>Ludo</Text></Pressable>
+    </View>
+    {selectedGame === 'memory' ? <MemoryMatchGame session={session}/> : <LudoGame session={session}/>}
+  </View>;
+}
+
+const ludoColors = ['#E74C3C', '#27AE60', '#F1C40F', '#3498DB', '#9B59B6', '#E67E22'];
+// Player order follows the board bases: red (bottom-left), green (bottom-right),
+// yellow (top-right), blue (top-left). These are their entry squares on the track.
+const ludoStarts: Record<number, number[]> = { 4: [41, 32, 15, 2], 6: [41, 32, 15, 2, 47, 21] };
+const ludoSafeSquares = [2, 8, 15, 21, 28, 34, 41, 47];
+const ludoProgressLabel = (position: number) => position < 0 ? 'Yard' : position >= 52 ? `Home ${position - 51}/6` : `Track ${position + 1}/52`;
+const ludoTrackCoords: [number, number][] = [
+  [7,0],[6,0],[6,1],[6,2],[6,3],[6,4],[6,5],[5,6],[4,6],[3,6],[2,6],[1,6],[0,6],
+  [0,7],[0,8],[1,8],[2,8],[3,8],[4,8],[5,8],[6,9],[6,10],[6,11],[6,12],[6,13],[6,14],
+  [7,14],[8,14],[8,13],[8,12],[8,11],[8,10],[8,9],[9,8],[10,8],[11,8],[12,8],[13,8],[14,8],
+  [14,7],[14,6],[13,6],[12,6],[11,6],[10,6],[9,6],[8,5],[8,4],[8,3],[8,2],[8,1],[8,0],
+];
+const ludoYardCoords: [number, number][][] = [
+  [[11,1],[11,4],[13,1],[13,4]], [[11,10],[11,13],[13,10],[13,13]],
+  [[1,10],[1,13],[4,10],[4,13]], [[1,1],[1,4],[4,1],[4,4]],
+  [[1,6],[1,8],[4,6],[4,8]], [[10,6],[10,8],[13,6],[13,8]],
+];
+const ludoHomeLanes: [number, number][][] = [
+  [[13,7],[12,7],[11,7],[10,7],[9,7],[8,7]], [[7,13],[7,12],[7,11],[7,10],[7,9],[7,8]],
+  [[1,7],[2,7],[3,7],[4,7],[5,7],[6,7]], [[7,1],[7,2],[7,3],[7,4],[7,5],[7,6]],
+  [[6,13],[6,12],[6,11],[6,10],[6,9],[6,8]], [[8,1],[8,2],[8,3],[8,4],[8,5],[8,6]],
+];
+
+type LudoBoardPlayer = { id: string; username: string; tokens: number[]; index: number };
+function LudoBoard({ playerCount, players, legalTokenIndices, selectablePlayerId, diceValue, onMove }: { playerCount: 4 | 6; players: LudoBoardPlayer[]; legalTokenIndices: number[]; selectablePlayerId: string; diceValue: number | null; onMove: (playerId: string, tokenIndex: number) => void }) {
+  const baseColor = (row: number, col: number) => row < 6 && col < 6 ? ludoColors[3] : row < 6 && col > 8 ? ludoColors[2] : row > 8 && col < 6 ? ludoColors[0] : row > 8 && col > 8 ? ludoColors[1] : null;
+  const cellColor = (row: number, col: number) => {
+    if (row === 7 && col >= 1 && col <= 5) return ludoColors[3];
+    if (row === 7 && col >= 9 && col <= 13) return ludoColors[1];
+    if (col === 7 && row >= 1 && row <= 5) return ludoColors[2];
+    if (col === 7 && row >= 9 && row <= 13) return ludoColors[0];
+    if (row === 6 && col === 6) return ludoColors[3];
+    if (row === 6 && col >= 7 && col <= 8) return ludoColors[2];
+    if (row === 7 && col === 6) return ludoColors[3];
+    if (row === 7 && col === 8) return ludoColors[1];
+    if (row === 8 && col >= 6 && col <= 8) return ludoColors[0];
+    return baseColor(row, col);
+  };
+  const yards = playerCount === 4 ? ludoYardCoords.slice(0, 4) : ludoYardCoords;
+  const homeLanes = playerCount === 4 ? ludoHomeLanes.slice(0, 4) : ludoHomeLanes;
+  const coordinates = (player: LudoBoardPlayer, position: number, tokenIndex: number): [number, number] => {
+    if (position < 0) return yards[player.index]?.[tokenIndex] ?? [7,7];
+    if (position >= 52) return homeLanes[player.index]?.[position - 52] ?? [7,7];
+    const pathIndex = (ludoStarts[playerCount][player.index] + position) % 52;
+    return ludoTrackCoords[pathIndex];
+  };
+  const baseBoxes = [
+    { row: 9, col: 0, color: ludoColors[0] }, { row: 9, col: 9, color: ludoColors[1] },
+    { row: 0, col: 9, color: ludoColors[2] }, { row: 0, col: 0, color: ludoColors[3] },
+  ];
+  return <View style={styles.ludoBoard}>
+    <View style={styles.ludoGrid}>{Array.from({ length: 15 }, (_, row) => <View key={`row-${row}`} style={styles.ludoGridRow}>{Array.from({ length: 15 }, (_, col) => {
+      const color = cellColor(row, col); const pathIndex = ludoTrackCoords.findIndex(([r,c]) => r === row && c === col); const isSafe = pathIndex >= 0 && ludoSafeSquares.includes(pathIndex);
+      return <View key={`cell-${row}-${col}`} style={[styles.ludoGridCell, color ? { backgroundColor: color } : styles.ludoGridBlank, pathIndex >= 0 && !color && styles.ludoPathCell, isSafe && styles.ludoSafeCell]}/>;
+    })}</View>)}</View>
+    <View pointerEvents="none" style={styles.ludoCenterMark}><Text style={{ color: ludoColors[3] }}>◀</Text><Text style={{ color: ludoColors[2] }}>▲</Text><Text style={{ color: ludoColors[0] }}>▼</Text><Text style={{ color: ludoColors[1] }}>▶</Text></View>
+    {baseBoxes.map((box, index) => <View key={`base-${index}`} pointerEvents="none" style={[styles.ludoHomeBox, { left: `${box.col/15*100}%`, top: `${box.row/15*100}%`, backgroundColor: box.color }]}><View style={styles.ludoHomeInner}>{[0,1,2,3].map(i => <View key={i} style={[styles.ludoHomeDot, { backgroundColor: box.color }]}/>)}</View></View>)}
+    {players.flatMap(player => player.tokens.map((position, tokenIndex) => {
+      const [row, col] = coordinates(player, position, tokenIndex);
+      const x = (col + 0.5) / 15 * 100; const y = (row + 0.5) / 15 * 100;
+      const selectable = player.id === selectablePlayerId && legalTokenIndices.includes(tokenIndex);
+      return <Pressable key={`${player.id}-${tokenIndex}`} disabled={!selectable} onPress={() => onMove(player.id, tokenIndex)} style={[styles.ludoPiece, { left: `${x}%`, top: `${y}%`, backgroundColor: ludoColors[player.index % ludoColors.length] }, selectable && styles.ludoPieceSelectable]}><Text style={styles.ludoPieceText}>{tokenIndex + 1}</Text></Pressable>;
+    }))}
+    <View style={styles.ludoCenter}><Text style={styles.ludoDice}>{diceValue ?? '🎲'}</Text></View>
+  </View>;
+}
+
+function freshLocalLudo(playerCount: 4 | 6, names?: string[], forfeitTripleSix = true) {
+  return { playerCount, names: Array.from({ length: playerCount }, (_, index) => names?.[index] || `Player ${index + 1}`), tokens: Array.from({ length: playerCount }, () => [-1, -1, -1, -1]), turnIndex: 0, diceValue: null as number | null, winnerIndex: null as number | null, sixStreak: 0, forfeitTripleSix };
+}
+
+function LudoGame({ session }: { session: any }) {
+  const [playMode, setPlayMode] = useState<'offline' | 'online'>('offline');
+  const [playerCount, setPlayerCount] = useState<4 | 6>(4);
+  const [forfeitTripleSix, setForfeitTripleSix] = useState(true);
+  const [localGame, setLocalGame] = useState(() => freshLocalLudo(4));
+  const [inviteText, setInviteText] = useState('');
+  const [myUsername, setMyUsername] = useState('');
+  const [receivedInvites, setReceivedInvites] = useState<any[]>([]);
+  const [ludoMatch, setLudoMatch] = useState<any>(null);
+  const [ludoMessage, setLudoMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const pendingLudoAction = useRef(false);
+
+  const localLegalMoves = localGame.diceValue === null ? [] : localGame.tokens[localGame.turnIndex].map((position, index) => (position < 0 ? localGame.diceValue === 6 : position + localGame.diceValue! <= 57) ? index : -1).filter(index => index >= 0);
+
+  function startLocalGame(count: 4 | 6) {
+    setLocalGame(current => freshLocalLudo(count, current.names, forfeitTripleSix));
+  }
+
+  function rollLocalDice() {
+    if (localGame.diceValue !== null || localGame.winnerIndex !== null) return;
+    const rolled = Math.floor(Math.random() * 6) + 1;
+    if (rolled === 6 && localGame.forfeitTripleSix && localGame.sixStreak >= 2) {
+      setLocalGame(current => ({ ...current, turnIndex: (current.turnIndex + 1) % current.playerCount, diceValue: null, sixStreak: 0 }));
+      setLudoMessage('Third consecutive six forfeited · turn passes.');
+      return;
+    }
+    const legal = localGame.tokens[localGame.turnIndex].some(position => position < 0 ? rolled === 6 : position + rolled <= 57);
+    setLocalGame(current => ({ ...current, diceValue: rolled, sixStreak: rolled === 6 ? current.sixStreak + 1 : 0 }));
+    if (!legal) setLudoMessage(`Player ${localGame.turnIndex + 1} rolled ${rolled} · no legal move.`);
+    else setLudoMessage('');
+  }
+
+  function moveLocalToken(tokenIndex: number) {
+    if (localGame.diceValue === null || !localLegalMoves.includes(tokenIndex)) return;
+    setLocalGame(current => {
+      const tokens = current.tokens.map(playerTokens => [...playerTokens]);
+      const dice = current.diceValue!; const playerIndex = current.turnIndex; const oldPosition = tokens[playerIndex][tokenIndex];
+      const destination = oldPosition < 0 ? 0 : oldPosition + dice;
+      tokens[playerIndex][tokenIndex] = destination;
+      let captured = false;
+      if (destination < 52) {
+        const globalSquare = (ludoStarts[current.playerCount][playerIndex] + destination) % 52;
+        if (!ludoSafeSquares.includes(globalSquare)) {
+          tokens.forEach((opponent, otherIndex) => {
+            if (otherIndex === playerIndex) return;
+            opponent.forEach((position, otherToken) => {
+              if (position >= 0 && position < 52 && (ludoStarts[current.playerCount][otherIndex] + position) % 52 === globalSquare) { tokens[otherIndex][otherToken] = -1; captured = true; }
+            });
+          });
+        }
+      }
+      const wins = tokens[playerIndex].every(position => position === 57);
+      return { ...current, tokens, diceValue: null, winnerIndex: wins ? playerIndex : null, turnIndex: wins || dice === 6 || captured ? playerIndex : (playerIndex + 1) % current.playerCount, sixStreak: dice === 6 ? current.sixStreak : 0 };
+    });
+    setLudoMessage('');
+  }
+
+  function skipLocalTurn() {
+    if (localGame.diceValue === null || localLegalMoves.length) return;
+    setLocalGame(current => ({ ...current, turnIndex: current.diceValue === 6 ? current.turnIndex : (current.turnIndex + 1) % current.playerCount, diceValue: null, sixStreak: current.diceValue === 6 ? current.sixStreak : 0 }));
+  }
+
+  const loadMatch = useCallback(async (id: string) => {
+    if (!supabase) return;
+    const { data, error } = await supabase.from('ludo_matches').select('*').eq('id', id).maybeSingle();
+    if (error) { setLudoMessage(error.message); return; }
+    if (!data) { setLudoMessage('That Ludo invite link is invalid or you are not invited.'); return; }
+    setLudoMatch(data); setForfeitTripleSix(data.forfeit_triple_six ?? true); setLudoMessage('');
+    if (typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('ludo')) {
+      const url = new URL(window.location.href); url.searchParams.delete('ludo'); window.history.replaceState({}, '', url.toString());
+    }
+  }, []);
+
+  const refreshInvites = useCallback(async () => {
+    if (!supabase || !session) return;
+    const { data } = await supabase.from('ludo_matches').select('*').eq('status', 'waiting').order('created_at', { ascending: false });
+    setReceivedInvites((data ?? []).filter((item: any) => item.invitee_ids?.includes(session.user.id) && !item.accepted_ids?.includes(session.user.id) && !item.declined_ids?.includes(session.user.id)));
+  }, [session]);
+
+  useEffect(() => {
+    if (!supabase || !session) return;
+    void supabase.from('profiles').select('username').eq('id', session.user.id).maybeSingle().then(({ data }) => setMyUsername(data?.username ?? ''));
+    void refreshInvites();
+    const channel = supabase.channel(`ludo-invites-${session.user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ludo_matches' }, () => void refreshInvites()).subscribe();
+    const url = typeof window !== 'undefined' ? new URL(window.location.href) : null;
+    const matchId = url?.searchParams.get('ludo');
+    if (matchId) void loadMatch(matchId);
+    return () => { void supabase?.removeChannel(channel); };
+  }, [session, refreshInvites, loadMatch]);
+
+  useEffect(() => {
+    if (!supabase || !ludoMatch?.id) return;
+    const channel = supabase.channel(`ludo-match-${ludoMatch.id}`).on('postgres_changes', { event: '*', schema: 'public', table: 'ludo_matches', filter: `id=eq.${ludoMatch.id}` }, () => void loadMatch(ludoMatch.id)).subscribe();
+    return () => { void supabase?.removeChannel(channel); };
+  }, [ludoMatch?.id, loadMatch]);
+
+  async function createGuest() {
+    if (!supabase) { setLudoMessage('Connect Supabase before creating a guest username.'); return; }
+    setBusy(true);
+    const { error } = await supabase.auth.signInAnonymously({ options: { data: { full_name: `Guest ${Math.random().toString(36).slice(2, 6)}` } } });
+    setBusy(false); setLudoMessage(error?.message ?? 'Guest profile created. Loading your unique username…');
+  }
+
+  async function createRoom() {
+    if (!supabase || !session) { setLudoMessage('Create a guest username or sign in before inviting players.'); return; }
+    const usernames = inviteText.split(/[\s,;]+/).map(item => item.trim().replace(/^@/, '')).filter(Boolean);
+    if (usernames.length !== playerCount - 1) { setLudoMessage(`Enter exactly ${playerCount - 1} usernames for a ${playerCount}-player game.`); return; }
+    setBusy(true); setLudoMessage('Sending Ludo invitations…');
+    const { data, error } = await supabase.rpc('create_ludo_invite', { username_list_in: usernames, player_count_in: playerCount, forfeit_triple_six_in: forfeitTripleSix });
+    setBusy(false);
+    if (error) { setLudoMessage(error.message); return; }
+    setInviteText(''); setLudoMessage('Invitations sent. The game starts when all players accept.');
+    if (data) void loadMatch(data as string);
+  }
+
+  async function replyInvite(matchId: string, accept: boolean) {
+    const { error } = await supabase!.rpc('respond_ludo_invite', { match_id_in: matchId, accept_in: accept });
+    if (error) { setLudoMessage(error.message); return; }
+    await refreshInvites(); if (accept) void loadMatch(matchId);
+  }
+
+  async function gameAction(functionName: string, args: Record<string, unknown>) {
+    if (!supabase || !ludoMatch || pendingLudoAction.current) return;
+    pendingLudoAction.current = true;
+    const { data, error } = await supabase.rpc(functionName, args);
+    pendingLudoAction.current = false;
+    if (error) setLudoMessage(error.message);
+    else {
+      await loadMatch(ludoMatch.id);
+      if (functionName === 'roll_ludo_dice' && data === 0) setLudoMessage('Third consecutive six forfeited · turn passes.');
+      else if (functionName === 'move_ludo_token') setLudoMessage('');
+    }
+  }
+
+  function openLudoLink(matchId: string) {
+    if (typeof window !== 'undefined') { const url = new URL(window.location.href); url.searchParams.set('ludo', matchId); window.history.pushState({}, '', url.toString()); }
+    void loadMatch(matchId);
+  }
+
+  const players = ludoMatch?.player_user_ids?.map((id: string, index: number) => ({ id, username: ludoMatch.player_usernames[index], tokens: ludoMatch.tokens?.[id] ?? [-1, -1, -1, -1], index })) ?? [];
+  const currentPlayerId = players[ludoMatch?.turn_index ?? 0]?.id;
+  const myTurn = !!session && currentPlayerId === session.user.id && ludoMatch?.status === 'active';
+  const legalTokenIndices = myTurn && ludoMatch?.dice_value ? players.find((player: any) => player.id === session.user.id)?.tokens.map((position: number, index: number) => position < 0 ? (ludoMatch.dice_value === 6 ? index : -1) : (position + ludoMatch.dice_value <= 57 ? index : -1)).filter((index: number) => index >= 0) ?? [] : [];
+
+  return <View style={styles.gameCard}>
+    <View style={styles.gameHeader}><View style={{ flex: 1 }}><Text style={styles.gameEyebrow}>PLAY TOGETHER</Text><Text style={styles.gameTitle}>Ludo</Text></View><Text style={styles.gameIcon}>🎲</Text></View>
+    <Text style={styles.gameDescription}>Play pass-and-play on one device or invite friends by username. Roll a six to leave the yard; land on an opponent to send them back. Get all four pieces home to win.</Text>
+    <View style={styles.difficultyRow}><Pressable onPress={() => { setPlayMode('offline'); setLudoMessage(''); }} style={[styles.difficultyButton, playMode === 'offline' && styles.difficultySelected]}><Text style={[styles.difficultyText, playMode === 'offline' && styles.difficultyTextSelected]}>Offline play</Text></Pressable><Pressable onPress={() => { setPlayMode('online'); setLudoMessage(''); }} style={[styles.difficultyButton, playMode === 'online' && styles.difficultySelected]}><Text style={[styles.difficultyText, playMode === 'online' && styles.difficultyTextSelected]}>Online play</Text></Pressable></View>
+    {playMode === 'offline' ? <View style={styles.onlineGamePanel}>
+      <Text style={styles.sectionTitle}>Pass-and-play · one device</Text>
+      <Text style={styles.muted}>Choose 4 or 6 local players. Each player rolls and moves when their name is highlighted.</Text>
+      <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Players</Text>{([4, 6] as const).map(count => <Pressable key={count} onPress={() => startLocalGame(count)} style={[styles.difficultyButton, localGame.playerCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, localGame.playerCount === count && styles.difficultyTextSelected]}>{count} players</Text></Pressable>)}</View>
+      <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: forfeitTripleSix }} onPress={() => { const next = !forfeitTripleSix; setForfeitTripleSix(next); setLocalGame(current => ({ ...current, forfeitTripleSix: next, sixStreak: 0 })); }} style={styles.ludoRuleToggle}><Text style={styles.ludoRuleCheck}>{forfeitTripleSix ? '✓' : ''}</Text><Text style={styles.muted}>Forfeit the third consecutive six</Text></Pressable>
+      <View style={styles.ludoNameGrid}>{localGame.names.map((name, index) => <TextInput key={`local-name-${index}`} accessibilityLabel={`Player ${index + 1} name`} style={[styles.input, styles.ludoNameInput]} value={name} onChangeText={value => setLocalGame(current => ({ ...current, names: current.names.map((item, i) => i === index ? value : item) }))} maxLength={18}/>)}</View>
+      <View style={styles.ludoPlayerList}>{localGame.names.map((name, index) => <View key={`local-player-${index}`} style={[styles.ludoPlayerBadge, localGame.turnIndex === index && localGame.winnerIndex === null && styles.playerTurn]}><Text style={[styles.ludoPlayerName, { color: ludoColors[index] }]}>{name || `Player ${index + 1}`}</Text><Text style={styles.muted}>{localGame.tokens[index].filter(position => position === 57).length}/4 home</Text></View>)}</View>
+      <LudoBoard playerCount={localGame.playerCount} players={localGame.names.map((username, index) => ({ id: String(index), username, tokens: localGame.tokens[index], index }))} legalTokenIndices={localLegalMoves} selectablePlayerId={String(localGame.turnIndex)} diceValue={localGame.diceValue} onMove={(_id, tokenIndex) => moveLocalToken(tokenIndex)}/>
+      <Text style={styles.turnLabel}>{localGame.winnerIndex !== null ? `${localGame.names[localGame.winnerIndex] || `Player ${localGame.winnerIndex + 1}`} wins!` : `${localGame.names[localGame.turnIndex] || `Player ${localGame.turnIndex + 1}`}’s turn`}</Text>
+      {!!ludoMessage && <Text style={styles.muted}>{ludoMessage}</Text>}
+      {localGame.winnerIndex === null && localGame.diceValue === null && <Pressable style={[styles.action, styles.primary]} onPress={rollLocalDice}><Text style={styles.actionText}>Roll dice</Text></Pressable>}
+      {localGame.winnerIndex === null && localGame.diceValue !== null && localLegalMoves.length === 0 && <Pressable style={styles.outlineButton} onPress={skipLocalTurn}><Text style={styles.outlineText}>No legal move · Pass turn</Text></Pressable>}
+      {localGame.winnerIndex === null && localLegalMoves.length > 0 && <Text style={styles.muted}>Tap one of the highlighted pieces to move it {localGame.diceValue} spaces.</Text>}
+      <Pressable style={styles.outlineButton} onPress={() => startLocalGame(localGame.playerCount)}><Text style={styles.outlineText}>Start a new game</Text></Pressable>
+    </View> : !session ? <><Text style={styles.muted}>Create a guest username or sign in to invite players and join online rooms.</Text><Pressable disabled={busy} style={[styles.newGameButton, { alignSelf: 'flex-start' }]} onPress={() => void createGuest()}><Text style={styles.newGameText}>{busy ? 'Creating…' : 'Create guest username'}</Text></Pressable></> : <>
+      {!!myUsername && <Text style={styles.onlineUsername}>Your username: <Text style={styles.onlineUsernameValue}>@{myUsername}</Text></Text>}
+      <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Players</Text>{([4, 6] as const).map(count => <Pressable key={count} onPress={() => setPlayerCount(count)} style={[styles.difficultyButton, playerCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, playerCount === count && styles.difficultyTextSelected]}>{count} players</Text></Pressable>)}</View>
+      <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: forfeitTripleSix }} onPress={() => setForfeitTripleSix(value => !value)} style={styles.ludoRuleToggle}><Text style={styles.ludoRuleCheck}>{forfeitTripleSix ? '✓' : ''}</Text><Text style={styles.muted}>Forfeit the third consecutive six</Text></Pressable>
+      <Text style={styles.muted}>Enter {playerCount - 1} usernames, separated by commas.</Text>
+      <TextInput accessibilityLabel="Ludo invite usernames" style={styles.input} value={inviteText} onChangeText={setInviteText} autoCapitalize="none" autoCorrect={false} placeholder={playerCount === 4 ? '@alex, @sam, @mira' : '@alex, @sam, @mira, @lee, @jo'}/>
+      <Pressable disabled={busy} style={[styles.action, styles.primary, busy && styles.dim]} onPress={() => void createRoom()}><Text style={styles.actionText}>{busy ? 'Please wait…' : `Create ${playerCount}-player room`}</Text></Pressable>
+      {!!ludoMessage && <Text accessibilityRole="alert" style={styles.muted}>{ludoMessage}</Text>}
+      {receivedInvites.map(invite => <View key={invite.id} style={styles.onlineInviteCard}><View style={{ flex: 1 }}><Text style={styles.onlineInviteTitle}>Ludo invitation · {invite.player_count} players</Text><Text style={styles.muted}>From @{invite.creator_username}</Text></View><Pressable onPress={() => void replyInvite(invite.id, true)} style={styles.newGameButton}><Text style={styles.newGameText}>Join</Text></Pressable><Pressable onPress={() => void replyInvite(invite.id, false)}><Text style={styles.link}>Decline</Text></Pressable></View>)}
+      {ludoMatch && <View style={styles.onlineGamePanel}>
+        <View style={styles.onlineMatchHeader}><Text style={styles.sectionTitle}>{ludoMatch.status === 'waiting' ? 'Waiting for players' : ludoMatch.status === 'completed' ? 'Game over' : ludoMatch.status === 'cancelled' ? 'Room closed' : 'Ludo room'}</Text><Pressable onPress={() => openLudoLink(ludoMatch.id)}><Text style={styles.link}>Open invite link</Text></Pressable></View>
+        <Text selectable style={styles.muted}>{typeof window !== 'undefined' ? `${window.location.origin}/?ludo=${ludoMatch.id}` : `Room code: ${ludoMatch.id}`}</Text>
+        <Text style={styles.muted}>Players joined: {players.length} / {ludoMatch.player_count}</Text>
+        <View style={styles.ludoPlayerList}>{(ludoMatch.invitee_usernames ?? []).map((username: string, index: number) => <Text key={`${username}-${index}`} style={styles.ludoPlayerName}>{players.some((player: any) => player.username === username) ? '✓' : '◷'} @{username}</Text>)}</View>
+        {ludoMatch.status === 'cancelled' && <Text style={styles.muted}>An invitation was declined. Create a new room to invite a different player.</Text>}
+        {ludoMatch.status === 'active' || ludoMatch.status === 'completed' ? <>
+          <LudoBoard playerCount={ludoMatch.player_count} players={players} legalTokenIndices={legalTokenIndices} selectablePlayerId={session.user.id} diceValue={ludoMatch.dice_value} onMove={(_id, tokenIndex) => void gameAction('move_ludo_token', { match_id_in: ludoMatch.id, token_index_in: tokenIndex})}/>
+          <View style={styles.ludoPlayerList}>{players.map((player: any) => <View key={player.id} style={[styles.ludoPlayerBadge, player.id === currentPlayerId && styles.playerTurn]}><Text style={[styles.ludoPlayerName, { color: ludoColors[player.index % ludoColors.length] }]}>{player.id === session.user.id ? 'You' : `@${player.username}`}</Text><Text style={styles.muted}>{player.tokens.filter((token: number) => token === 57).length}/4 home</Text></View>)}</View>
+          <Text style={styles.turnLabel}>{ludoMatch.status === 'completed' ? `${players.find((player: any) => player.id === ludoMatch.winner_user_id)?.username === myUsername ? 'You win!' : `@${players.find((player: any) => player.id === ludoMatch.winner_user_id)?.username} wins!`}` : myTurn ? 'Your turn' : `Waiting for @${players.find((player: any) => player.id === currentPlayerId)?.username ?? 'player'}`}</Text>
+          {myTurn && !ludoMatch.dice_value && <Pressable style={[styles.action, styles.primary]} onPress={() => void gameAction('roll_ludo_dice', { match_id_in: ludoMatch.id })}><Text style={styles.actionText}>Roll dice</Text></Pressable>}
+          {myTurn && !!ludoMatch.dice_value && legalTokenIndices.length === 0 && <Pressable style={styles.outlineButton} onPress={() => void gameAction('skip_ludo_turn', { match_id_in: ludoMatch.id })}><Text style={styles.outlineText}>No legal move · Pass turn</Text></Pressable>}
+          {myTurn && legalTokenIndices.length > 0 && <Text style={styles.muted}>Tap one of your highlighted pieces to move it {ludoMatch.dice_value} spaces.</Text>}
+        </> : null}
+      </View>}
+    </>}
+  </View>;
+}
+
 function MemoryMatchGame({ session }: { session: any }) {
   const [mode, setMode] = useState<'offline' | 'online'>('offline');
   const [inviteUsername, setInviteUsername] = useState('');
@@ -1599,6 +1938,7 @@ function Stepper({ label, value, onMinus, onPlus }: { label: string; value: stri
 function SettingChoice({ label, value, options, onSelect }: { label: string; value: string; options: string[]; onSelect: (value: string) => void }) { return <View style={styles.settingChoice}><Text style={styles.rowLabel}>{label}</Text><View style={styles.choiceRow}>{options.map(option => <Pressable key={option} onPress={() => onSelect(option)} style={[styles.choice, value === option && styles.choiceSelected]}><Text style={[styles.choiceText, value === option && styles.choiceTextSelected]}>{option}</Text></Pressable>)}</View></View>; }
 
 const styles = StyleSheet.create({
+  fireworksLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1000, elevation: 1000, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.10)' }, fireworkParticle: { position: 'absolute', left: -3, top: -3, width: 7, height: 7, borderRadius: 5 }, fireworkFlash: { position: 'absolute', left: -11, top: -11, width: 22, height: 22, borderRadius: 12, backgroundColor: '#FFF7C2' }, fireworksMessage: { position: 'absolute', alignSelf: 'center', top: '42%', minWidth: 230, borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.72)', backgroundColor: 'rgba(15,23,42,0.88)', paddingHorizontal: 26, paddingVertical: 22, alignItems: 'center', shadowColor: '#000000', shadowOpacity: 0.24, shadowRadius: 24, elevation: 12 }, fireworksEmoji: { fontSize: 32, marginBottom: 7 }, fireworksTitle: { color: '#FFFFFF', fontSize: 22, fontWeight: '900', textAlign: 'center' }, fireworksSubtitle: { color: '#DBEAFE', fontSize: 13, fontWeight: '700', marginTop: 5 },
   safe: { flex: 1, backgroundColor: colors.background }, ambienceLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden', zIndex: 0 }, correctionOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.58)', alignItems: 'center', justifyContent: 'center', padding: 12 }, correctionModal: { width: '100%', maxWidth: 620, height: '92%', maxHeight: 780, backgroundColor: colors.card, borderRadius: 18, padding: 15, gap: 12, overflow: 'hidden' }, correctionScroll: { flex: 1, minHeight: 0 }, correctionContent: { gap: 12, paddingBottom: 8 }, correctionRow: { gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }, correctionFields: { flexDirection: 'row', gap: 8 }, sessionBreakEditor: { gap: 6, backgroundColor: '#F8FAFC', padding: 9, borderRadius: 10 }, sessionBreakFields: { flexDirection: 'row', gap: 8 }, sessionBreakField: { flex: 1, gap: 4 }, correctionFooter: { flexShrink: 0, paddingTop: 2, backgroundColor: colors.card }, correctionSave: { flex: 0, alignSelf: 'stretch', height: 46, justifyContent: 'center' }, passingLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, overflow: 'hidden' }, fallLayer: { position: 'absolute', top: -36, left: 0, right: 0, bottom: 0, zIndex: 51, overflow: 'hidden' }, spiderThread: { position: 'absolute', top: 0, width: 2, backgroundColor: '#E2E8F0', opacity: 0.95, transformOrigin: 'top center' }, fallingSpider: { position: 'absolute', top: 0 }, passingGif: { position: 'absolute', top: '42%', left: 0 }, ambientGlow: { position: 'absolute', width: 260, height: 260, borderRadius: 140, opacity: 0.16 }, glowBlue: { top: '18%', left: -140, backgroundColor: '#BFDBFE' }, glowMint: { top: '54%', right: -145, backgroundColor: '#A7F3D0' }, floatPaw: { position: 'absolute', fontSize: 21, opacity: 0.15 }, floatPawOne: { top: '26%', left: '12%' }, floatPawTwo: { top: '66%', right: '14%' }, firefly: { position: 'absolute', color: '#F59E0B', fontSize: 23, fontWeight: '900' }, fireflyOne: { top: '38%', right: '23%' }, fireflyTwo: { top: '72%', left: '28%' }, runningPawTrail: { position: 'absolute', left: 0, bottom: 14, fontSize: 22, color: '#60A5FA', opacity: 0.25 }, spiderWeb: { position: 'absolute', width: 142, height: 142, top: -42, right: -42, borderRadius: 100 }, webRing: { position: 'absolute', borderWidth: 1, borderColor: '#60A5FA', borderRadius: 100 }, webRingOuter: { width: 128, height: 128, left: 7, top: 7 }, webRingMiddle: { width: 88, height: 88, left: 27, top: 27 }, webRingInner: { width: 48, height: 48, left: 47, top: 47 }, webSpoke: { position: 'absolute', width: 124, height: 1, top: 70, left: 70, backgroundColor: '#60A5FA' }, webSpider: { position: 'absolute', left: 57, top: 55, fontSize: 18 }, ambientRunner: { position: 'absolute', left: 0, bottom: 13, fontSize: 28, opacity: 0.38 }, page: { width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 38, gap: 16 }, center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   catScene: { height: 88, width: '100%', borderRadius: 18, overflow: 'hidden', backgroundColor: '#DFF4F3', borderWidth: 1, borderColor: '#C5E8E5' }, catSun: { position: 'absolute', right: 24, top: 13, width: 25, height: 25, borderRadius: 20, backgroundColor: '#FDE68A' }, catCloud: { position: 'absolute', right: 56, top: 9, fontSize: 15, opacity: 0.75 }, catTitle: { position: 'absolute', left: 13, top: 12, color: '#0F766E', fontSize: 8, fontWeight: '900', letterSpacing: 1.1 }, catCaption: { position: 'absolute', left: 13, top: 26, color: '#365F66', fontSize: 11, fontWeight: '700' }, catHorizon: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, backgroundColor: '#A7D9AC' }, catGrassLeft: { position: 'absolute', left: '30%', bottom: 8, height: 13, width: 55, borderTopLeftRadius: 35, borderTopRightRadius: 20, backgroundColor: '#86C694', transform: [{ rotate: '-5deg' }] }, catGrassRight: { position: 'absolute', right: '8%', bottom: 6, height: 16, width: 70, borderTopLeftRadius: 40, borderTopRightRadius: 25, backgroundColor: '#8BCB9A', transform: [{ rotate: '4deg' }] }, catPaws: { position: 'absolute', left: '42%', bottom: 13, fontSize: 11, letterSpacing: 4 }, walkingCat: { position: 'absolute', left: 0, bottom: 7 }, catEmoji: { fontSize: 31, lineHeight: 37 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 7 }, eyebrow: { color: colors.blue, fontSize: 10, fontWeight: '800', letterSpacing: 1.5 }, title: { color: colors.text, fontSize: 30, fontWeight: '800', marginTop: 4 }, subtitle: { color: colors.muted, fontSize: 14, marginTop: 4, lineHeight: 20 }, avatar: { width: 48, height: 48, borderRadius: 16, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center' }, avatarLarge: { width: 56, height: 56, borderRadius: 18, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center', alignSelf: 'center' }, avatarText: { color: colors.blue, fontWeight: '800', fontSize: 17 },
@@ -1608,6 +1948,7 @@ const styles = StyleSheet.create({
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, statCard: { flexBasis: '47%', flexGrow: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 14, gap: 8 }, statLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 }, statValue: { color: colors.text, fontSize: 16, fontWeight: '800' }, card: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 17, gap: 13 }, cardHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, sectionTitle: { color: colors.text, fontSize: 17, fontWeight: '800' }, row: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 }, rowLabel: { color: colors.muted, fontSize: 12, flex: 1 }, rowValue: { color: colors.text, fontSize: 12, fontWeight: '700', textAlign: 'right', flex: 1 }, pill: { backgroundColor: '#DCFCE7', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 99 }, pillWarn: { backgroundColor: '#FEF3C7' }, pillText: { color: '#15803D', fontSize: 10, fontWeight: '800' }, policyNote: { color: '#854D0E', fontSize: 11, lineHeight: 17, backgroundColor: '#FFFBEB', padding: 10, borderRadius: 10 }, outlineButton: { borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 11, padding: 11, alignItems: 'center', backgroundColor: '#F8FBFF' }, outlineText: { color: colors.blue, fontSize: 12, fontWeight: '800' }, lobbySubmit: { width: 46, height: 46, borderRadius: 14, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' }, lobbySubmitText: { color: '#FFFFFF', fontSize: 23, lineHeight: 27, fontWeight: '900' }, muted: { color: colors.muted, fontSize: 12, lineHeight: 18 }, stepper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, stepActions: { flexDirection: 'row', alignItems: 'center', gap: 10 }, stepButton: { width: 30, height: 30, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }, stepText: { fontSize: 20, color: colors.text }, stepValue: { minWidth: 64, textAlign: 'center', fontWeight: '800', color: colors.text, fontSize: 12 }, settingChoice: { gap: 8 }, choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, choice: { backgroundColor: '#F1F5F9', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 99 }, choiceSelected: { backgroundColor: '#DBEAFE' }, choiceText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, choiceTextSelected: { color: colors.blue },
   gameCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 18, gap: 15 }, gameHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, gameEyebrow: { color: colors.blue, fontWeight: '800', fontSize: 10, letterSpacing: 1.2 }, gameTitle: { color: colors.text, fontSize: 24, fontWeight: '800', marginTop: 3 }, gameIcon: { fontSize: 34 }, gameDescription: { color: colors.muted, fontSize: 12, lineHeight: 18 }, difficultyRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 7 }, difficultyLabel: { color: colors.muted, fontSize: 11, fontWeight: '700', marginRight: 3 }, difficultyButton: { borderRadius: 99, paddingVertical: 7, paddingHorizontal: 10, backgroundColor: '#F1F5F9' }, difficultySelected: { backgroundColor: '#DBEAFE' }, difficultyText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, difficultyTextSelected: { color: colors.blue }, playerRow: { flexDirection: 'row', gap: 10 }, playerCard: { flex: 1, alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 10 }, playerTurn: { borderColor: colors.blue, backgroundColor: '#EFF6FF' }, playerName: { width: '100%', color: colors.text, textAlign: 'center', fontWeight: '700', fontSize: 12, paddingVertical: 4 }, playerScore: { color: colors.blue, fontWeight: '800', fontSize: 25, marginTop: 4 }, playerPairs: { color: colors.muted, fontSize: 10 }, turnLabel: { textAlign: 'center', color: colors.text, fontWeight: '800', fontSize: 14 }, memoryBoard: { width: '100%', maxWidth: 460, alignSelf: 'center', gap: 8 }, memoryRow: { flexDirection: 'row', gap: 8 }, memoryTile: { flex: 1, aspectRatio: 1, borderRadius: 13, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: colors.navy, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }, memoryFaceImage: { width: '100%', height: '100%' }, memoryTileOpen: { backgroundColor: '#EFF6FF', borderColor: '#93C5FD' }, memoryTileMatched: { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }, memoryTileText: { fontSize: 29, fontWeight: '800' }, memoryTileHidden: { color: '#BFDBFE', fontSize: 31 }, gameFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, gameHint: { flex: 1, color: colors.muted, fontSize: 11 }, newGameButton: { backgroundColor: colors.blue, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 11 }, newGameText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   onlineGamePanel: { padding: 13, borderRadius: 16, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, gap: 11 }, onlineInviteRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, onlineInviteInput: { flex: 1, minWidth: 0, marginBottom: 0 }, onlineInviteButton: { minHeight: 46, justifyContent: 'center' }, onlineInviteCard: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 12, padding: 10, backgroundColor: '#EFF6FF' }, onlineInviteTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, onlineUsername: { color: colors.muted, fontSize: 12 }, onlineUsernameValue: { color: colors.blue, fontWeight: '800' }, onlineMatchHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
+  ludoPlayerList: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, ludoPlayerName: { color: colors.text, fontSize: 11, fontWeight: '700' }, ludoPlayerBadge: { minWidth: 74, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 11, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, alignItems: 'center' }, ludoNameGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 7 }, ludoNameInput: { width: '48%', flexGrow: 1, marginBottom: 0 }, ludoRuleToggle: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 5 }, ludoRuleCheck: { width: 20, height: 20, borderRadius: 5, overflow: 'hidden', textAlign: 'center', textAlignVertical: 'center', backgroundColor: '#DBEAFE', color: colors.blue, fontWeight: '900', borderWidth: 1, borderColor: colors.blue }, ludoBoard: { width: '100%', maxWidth: 420, aspectRatio: 1, alignSelf: 'center', position: 'relative', borderRadius: 4, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#64748B', overflow: 'hidden' }, ludoGrid: { position: 'absolute', width: '100%', height: '100%' }, ludoGridRow: { flexDirection: 'row', flex: 1 }, ludoGridCell: { flex: 1, aspectRatio: 1, borderWidth: 0.5, borderColor: '#94A3B8', alignItems: 'center', justifyContent: 'center' }, ludoGridBlank: { backgroundColor: '#FFFFFF' }, ludoPathCell: { backgroundColor: '#FFFFFF' }, ludoSafeCell: { backgroundColor: '#F8FAFC', borderColor: '#64748B' }, ludoHomeBox: { position: 'absolute', width: '40%', height: '40%', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#475569' }, ludoHomeInner: { width: '76%', height: '76%', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#334155', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-evenly' }, ludoHomeDot: { width: '35%', aspectRatio: 1, borderRadius: 100, borderWidth: 1.5, borderColor: '#475569', elevation: 2 }, ludoCenterMark: { position: 'absolute', left: '40%', top: '40%', width: '20%', height: '20%', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center' }, ludoTrackCell: { borderColor: '#334155', borderWidth: 1 }, ludoCellNumber: { fontSize: 8, color: colors.blue }, ludoPiece: { position: 'absolute', width: '6%', height: '6%', marginLeft: -9, marginTop: -9, borderRadius: 100, borderWidth: 1.5, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', elevation: 3 }, ludoPieceSelectable: { borderColor: '#111827', borderWidth: 2.5, transform: [{ scale: 1.2 }] }, ludoPieceText: { color: '#FFFFFF', fontSize: 9, fontWeight: '900' }, ludoCenter: { position: 'absolute', left: '50%', top: '50%', width: 30, height: 30, marginLeft: -15, marginTop: -15, borderRadius: 6, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, ludoDice: { fontSize: 18, fontWeight: '900', color: colors.text },
   exportButton: { backgroundColor: colors.blue, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, alignItems: 'center' }, exportDisabled: { opacity: 0.45 }, exportButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' }, historyDayCard: { backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' }, sessionToggle: { color: colors.blue, fontSize: 10, fontWeight: '700' }, sessionList: { borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#F8FAFC' }, sessionEntry: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border }, sessionLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', width: 58 }, sessionTime: { color: colors.text, fontSize: 11, fontWeight: '700', flex: 1 }, sessionDuration: { color: colors.muted, fontSize: 10 },
   chatJoinDivider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }, chatDividerLine: { flex: 1, height: 1, backgroundColor: colors.border }, guestAction: { backgroundColor: '#0F766E' }, guestActionText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   heroCatLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }, heroCatImage: { position: 'absolute', width: '100%', height: '100%' }, heroCatShade: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.navy }, heroCatPaw: { position: 'absolute', left: '55%', bottom: '15%', width: 45, height: 88, transformOrigin: 'bottom center' }, heroCatPawArm: { position: 'absolute', left: 15, bottom: 0, width: 15, height: 62, borderRadius: 10, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatPawPalm: { position: 'absolute', left: 3, top: 8, width: 40, height: 34, borderRadius: 20, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatToe: { position: 'absolute', top: 2, width: 12, height: 17, borderRadius: 9, backgroundColor: '#E8953D', borderWidth: 1, borderColor: '#FFD17A' }, heroCatToeOne: { left: 5 }, heroCatToeTwo: { left: 17, top: -1 }, heroCatToeThree: { left: 29 }, heroCatBlink: { position: 'absolute', left: '31%', top: '24%', width: '9%', height: '4%', borderRadius: 99, backgroundColor: '#EAA34B', alignItems: 'center', justifyContent: 'center' }, heroCatBlinkLine: { width: '72%', height: 1.5, borderRadius: 2, backgroundColor: '#60351E', transform: [{ rotate: '-5deg' }] }, greetingPill: { backgroundColor: 'rgba(15, 118, 110, 0.92)', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, greetingPillText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' }, catGreetingCard: { width: '100%', maxWidth: 420, backgroundColor: '#FFFFFF', borderRadius: 26, paddingHorizontal: 24, paddingVertical: 27, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#CFECE8' }, catSpeech: { backgroundColor: '#DCFCE7', paddingHorizontal: 18, paddingVertical: 9, borderRadius: 16, borderBottomLeftRadius: 4 }, catSpeechText: { color: '#166534', fontSize: 15, fontWeight: '900' }, catGreetingTitle: { color: colors.text, fontSize: 23, fontWeight: '900', textAlign: 'center' }, catGreetingBody: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', maxWidth: 280 }, actionPrimarySmall: { backgroundColor: colors.blue, borderRadius: 12, paddingVertical: 11, paddingHorizontal: 20, marginTop: 7 }, officeByeRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F0FDF4', borderRadius: 13, padding: 10 }, officeOutActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }, officeOutButton: { backgroundColor: '#B91C1C', borderRadius: 13, paddingVertical: 12, paddingHorizontal: 9, alignItems: 'center', marginTop: 12 }, officeOutText: { color: '#FFFFFF', fontWeight: '900', fontSize: 12, textAlign: 'center' }, undoOfficeOutButton: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#B91C1C', borderRadius: 13, paddingVertical: 11, paddingHorizontal: 12 }, undoOfficeOutText: { color: '#B91C1C', fontWeight: '800', fontSize: 11 }, officeSummaryModal: { width: '100%', maxWidth: 560, maxHeight: '90%', backgroundColor: colors.card, borderRadius: 18, padding: 16, gap: 13 }, officeSummaryTotals: { flexDirection: 'row', gap: 10, padding: 12, backgroundColor: '#F1F5F9', borderRadius: 12 }, officeSummaryWork: { color: colors.blue, fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryBreak: { color: '#B91C1C', fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F8FAFC', borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 10 }, officeSummaryText: { color: colors.text, fontSize: 12, fontWeight: '800' },

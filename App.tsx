@@ -179,7 +179,7 @@ function OfficeTimeApp() {
   const [booting, setBooting] = useState(true);
   const [days, setDays] = useState<AttendanceDay[]>([]);
   const [policy, setPolicy] = useState<PolicyConfig>(DEFAULT_POLICY);
-  const [tab, setTab] = useState<Tab>('Today');
+  const [tab, setTab] = useState<Tab>(() => typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('match') ? 'Games' : 'Today');
   const [online, setOnline] = useState(true);
   const [offlineContinue, setOfflineContinue] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -455,7 +455,7 @@ function OfficeTimeApp() {
         const { error } = await supabase.auth.signInAnonymously({ options: { data: { full_name: name } } });
         return error?.message ?? null;
       }} />}
-      {tab === 'Games' && <MemoryMatchGame />}
+      {tab === 'Games' && <MemoryMatchGame session={session} />}
       {tab === 'HR' && <HRDashboard rows={hrRows} loading={busy} role={role} policyUploadBusy={policyUploadBusy} policyUploadedName={policyUploadedName} onUploadPolicy={uploadMiloPolicy} onRefresh={async () => { setBusy(true); const { data } = await supabase!.rpc('hr_attendance_report'); setHrRows(data ?? []); setBusy(false); }} onResolve={resolveReview} />}
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. OfficeTime is a companion tracker until HR authorizes it for official use.</Text></View>
       <Text style={styles.footer}>OfficeTime · Secure attendance for your team</Text>
@@ -1106,11 +1106,14 @@ const gameFaceImages: ImageSourcePropType[] = [
   require('./assets/game-faces/face-07.jpeg'),
 ];
 const memoryAnimals = ['🐼', '🦊', '🐸', '🐳', '🦁', '🐵', '🐧', '🐢', '🐨', '🦉', '🐰', '🦒', '🦋', '🐙', '🦓', '🐝', '🐬'];
-function newMemoryDeck(pairCount: number): MemoryTile[] {
-  const pairs = [
+function memoryPairCatalog() {
+  return [
     ...gameFaceImages.map((faceSource, index) => ({ pairKey: `face-${index}`, faceSource })),
     ...memoryAnimals.map(symbol => ({ pairKey: `animal-${symbol}`, symbol })),
-  ].slice(0, pairCount);
+  ];
+}
+function newMemoryDeck(pairCount: number): MemoryTile[] {
+  const pairs = memoryPairCatalog().slice(0, pairCount);
   const deck = pairs.flatMap((pair, index) => [
     { ...pair, id: index * 2, matched: false }, { ...pair, id: index * 2 + 1, matched: false },
   ]);
@@ -1121,7 +1124,14 @@ function newMemoryDeck(pairCount: number): MemoryTile[] {
   return deck;
 }
 
-function MemoryMatchGame() {
+function MemoryMatchGame({ session }: { session: any }) {
+  const [mode, setMode] = useState<'offline' | 'online'>('offline');
+  const [inviteUsername, setInviteUsername] = useState('');
+  const [onlineMatch, setOnlineMatch] = useState<any>(null);
+  const [pendingInvites, setPendingInvites] = useState<any[]>([]);
+  const [myGameUsername, setMyGameUsername] = useState('');
+  const [gameMessage, setGameMessage] = useState('');
+  const onlineBusy = useRef(false);
   const [pairCount, setPairCount] = useState(8);
   const [tiles, setTiles] = useState<MemoryTile[]>(() => newMemoryDeck(8));
   const [opened, setOpened] = useState<number[]>([]);
@@ -1132,6 +1142,105 @@ function MemoryMatchGame() {
   const timeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finished = tiles.every(tile => tile.matched);
   const winner = scores[0] === scores[1] ? null : scores[0] > scores[1] ? 0 : 1;
+
+  const loadOnlineMatch = useCallback(async (id: string) => {
+    if (!supabase) return;
+    const { data, error } = await supabase.from('memory_game_matches').select('*').eq('id', id).maybeSingle();
+    if (error) { setGameMessage(error.message); return; }
+    if (!data) { setGameMessage('That match link is invalid or you are not a participant.'); return; }
+    setOnlineMatch(data); setMode('online'); setGameMessage('');
+    if (typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('match')) {
+      const url = new URL(window.location.href); url.searchParams.delete('match'); window.history.replaceState({}, '', url.toString());
+    }
+  }, []);
+
+  const refreshInvites = useCallback(async () => {
+    if (!supabase || !session) return;
+    const { data } = await supabase.from('memory_game_matches').select('*').eq('invitee_id', session.user.id).eq('status', 'waiting').order('created_at', { ascending: false });
+    setPendingInvites(data ?? []);
+  }, [session]);
+
+  useEffect(() => {
+    if (!supabase || !session) return;
+    void supabase.from('profiles').select('username').eq('id', session.user.id).maybeSingle()
+      .then(({ data }) => setMyGameUsername(data?.username ?? ''));
+    void refreshInvites();
+    const channel = supabase.channel(`memory-games-${session.user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'memory_game_matches', filter: `invitee_id=eq.${session.user.id}` }, () => void refreshInvites())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'memory_game_matches', filter: `creator_id=eq.${session.user.id}` }, payload => {
+        if (onlineMatch?.id && (payload.new as any)?.id === onlineMatch.id) void loadOnlineMatch(onlineMatch.id);
+      }).subscribe();
+    const url = typeof window !== 'undefined' ? new URL(window.location.href) : null;
+    const matchId = url?.searchParams.get('match');
+    if (matchId) void loadOnlineMatch(matchId);
+    return () => { void supabase?.removeChannel(channel); };
+  }, [session, refreshInvites, loadOnlineMatch, onlineMatch?.id]);
+
+  useEffect(() => {
+    if (!supabase || !onlineMatch?.id) return;
+    const channel = supabase.channel(`memory-match-${onlineMatch.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'memory_game_matches', filter: `id=eq.${onlineMatch.id}` }, () => void loadOnlineMatch(onlineMatch.id)).subscribe();
+    return () => { void supabase?.removeChannel(channel); };
+  }, [onlineMatch?.id, loadOnlineMatch]);
+
+  useEffect(() => {
+    if (!onlineMatch || onlineMatch.status !== 'active') return;
+    const openTiles = onlineMatch.opened_tiles as number[];
+    if (openTiles?.length === 2 && onlineMatch.pending_miss) {
+      const timer = setTimeout(async () => {
+        await supabase?.rpc('settle_memory_game_miss', { match_id_in: onlineMatch.id });
+        void loadOnlineMatch(onlineMatch.id);
+      }, 900);
+      return () => clearTimeout(timer);
+    }
+  }, [onlineMatch, loadOnlineMatch]);
+
+  const onlineTiles: MemoryTile[] = useMemo(() => {
+    if (!onlineMatch) return [];
+    const catalog = new Map(memoryPairCatalog().map(item => [item.pairKey, item]));
+    const matches = new Set<number>(onlineMatch.matched_tiles ?? []);
+    return (onlineMatch.deck as string[]).map((pairKey, id) => ({ ...catalog.get(pairKey), id, pairKey, matched: matches.has(id) } as MemoryTile));
+  }, [onlineMatch]);
+
+  async function invitePlayer() {
+    if (!supabase || !session) { setGameMessage('Create a guest profile or sign in to invite a player.'); return; }
+    if (!inviteUsername.trim()) { setGameMessage('Enter the player’s username.'); return; }
+    setGameMessage('Sending invitation…');
+    const deck = newMemoryDeck(pairCount).map(tile => tile.pairKey);
+    const { data, error } = await supabase.rpc('create_memory_game_invite', { username_in: inviteUsername.trim(), pair_count_in: pairCount, deck_in: deck });
+    if (error) { setGameMessage(error.message); return; }
+    setInviteUsername(''); setGameMessage('Invitation sent. The match will start when they accept.');
+    if (data) void loadOnlineMatch(data as string);
+  }
+
+  async function startGuestOnline() {
+    if (!supabase) { setGameMessage('Connect Supabase before creating an online guest profile.'); return; }
+    const guestName = `Guest ${Math.random().toString(36).slice(2, 6)}`;
+    const { error } = await supabase.auth.signInAnonymously({ options: { data: { full_name: guestName } } });
+    setGameMessage(error ? `Could not create guest profile: ${error.message}` : 'Guest profile created. Your unique username is being set up…');
+  }
+
+  async function respondInvite(invite: any, accept: boolean) {
+    const { error } = await supabase!.rpc('respond_memory_game_invite', { match_id_in: invite.id, accept_in: accept });
+    if (error) { setGameMessage(error.message); return; }
+    await refreshInvites();
+    if (accept) void loadOnlineMatch(invite.id);
+  }
+
+  async function revealOnline(index: number) {
+    if (!supabase || !onlineMatch || onlineBusy.current || onlineMatch.status !== 'active') return;
+    onlineBusy.current = true;
+    const { error } = await supabase.rpc('play_memory_game_tile', { match_id_in: onlineMatch.id, tile_index_in: index });
+    onlineBusy.current = false;
+    if (error) setGameMessage(error.message); else void loadOnlineMatch(onlineMatch.id);
+  }
+
+  function openMatchLink(matchId: string) {
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href); url.searchParams.set('match', matchId); window.history.pushState({}, '', url.toString());
+    }
+    void loadOnlineMatch(matchId);
+  }
 
   useEffect(() => () => { if (timeout.current) clearTimeout(timeout.current); }, []);
 
@@ -1170,6 +1279,29 @@ function MemoryMatchGame() {
   return <View style={styles.gameCard}>
     <View style={styles.gameHeader}><View style={{ flex: 1 }}><Text style={styles.gameEyebrow}>QUICK BREAK</Text><Text style={styles.gameTitle}>Memory Match</Text></View><Text style={styles.gameIcon}>🧠</Text></View>
     <Text style={styles.gameDescription}>Match the same team face or animal twice. A match scores a point and keeps your turn; a miss passes the turn. Most pairs wins.</Text>
+    <View style={styles.difficultyRow}><Pressable onPress={() => { setMode('offline'); setOnlineMatch(null); setGameMessage(''); }} style={[styles.difficultyButton, mode === 'offline' && styles.difficultySelected]}><Text style={[styles.difficultyText, mode === 'offline' && styles.difficultyTextSelected]}>Offline play</Text></Pressable><Pressable onPress={() => { setMode('online'); setGameMessage(''); }} style={[styles.difficultyButton, mode === 'online' && styles.difficultySelected]}><Text style={[styles.difficultyText, mode === 'online' && styles.difficultyTextSelected]}>Online play</Text></Pressable></View>
+    {mode === 'online' && <View style={styles.onlineGamePanel}>
+      {!session
+        ? <><Text style={styles.muted}>Create a lightweight guest profile to get a unique username and play online. Your local attendance history stays on this device.</Text><Pressable style={[styles.newGameButton, { alignSelf: 'flex-start' }]} onPress={() => void startGuestOnline()}><Text style={styles.newGameText}>Create guest username</Text></Pressable>{!!gameMessage && <Text accessibilityRole="alert" style={styles.muted}>{gameMessage}</Text>}</>
+        : <>
+          {!!myGameUsername && <Text style={styles.onlineUsername}>Your username: <Text style={styles.onlineUsernameValue}>@{myGameUsername}</Text></Text>}
+          <Text style={styles.difficultyLabel}>Invite a player by username</Text>
+          <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Board size</Text>{[8, 16, 24].map(count => <Pressable key={count} onPress={() => setPairCount(count)} style={[styles.difficultyButton, pairCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, pairCount === count && styles.difficultyTextSelected]}>{count} pairs</Text></Pressable>)}</View>
+          <View style={styles.onlineInviteRow}><TextInput accessibilityLabel="Username to invite" autoCapitalize="none" autoCorrect={false} style={[styles.input, styles.onlineInviteInput]} placeholder="e.g. alex_01" value={inviteUsername} onChangeText={setInviteUsername}/><Pressable style={[styles.newGameButton, styles.onlineInviteButton]} onPress={() => void invitePlayer()}><Text style={styles.newGameText}>Invite</Text></Pressable></View>
+          {pendingInvites.map(invite => <View key={invite.id} style={styles.onlineInviteCard}><View style={{ flex: 1 }}><Text style={styles.onlineInviteTitle}>Game invitation</Text><Text style={styles.muted}>{invite.creator_username ?? 'A teammate'} · {invite.pair_count} pairs</Text></View><Pressable onPress={() => void respondInvite(invite, true)} style={styles.newGameButton}><Text style={styles.newGameText}>Accept</Text></Pressable><Pressable onPress={() => void respondInvite(invite, false)}><Text style={styles.link}>Decline</Text></Pressable></View>)}
+          {!!gameMessage && <Text accessibilityRole="alert" style={styles.muted}>{gameMessage}</Text>}
+          {onlineMatch && <>
+            <View style={styles.onlineMatchHeader}><Text style={styles.sectionTitle}>{onlineMatch.status === 'waiting' ? 'Waiting for acceptance' : onlineMatch.status === 'completed' ? 'Match complete' : 'Live match'}</Text><Pressable onPress={() => openMatchLink(onlineMatch.id)}><Text style={styles.link}>Open match link</Text></Pressable></View>
+            <Text selectable style={styles.muted}>{typeof window !== 'undefined' ? `${window.location.origin}/?match=${onlineMatch.id}` : `Match code: ${onlineMatch.id}`}</Text>
+            {onlineMatch.status === 'active' || onlineMatch.status === 'completed' ? <>
+              <View style={styles.playerRow}>{[onlineMatch.creator_id, onlineMatch.invitee_id].map((id: string, player: number) => <View key={id} style={[styles.playerCard, onlineMatch.turn_user_id === id && onlineMatch.status === 'active' && styles.playerTurn]}><Text style={styles.playerName}>{id === session.user.id ? 'You' : onlineMatch.creator_id === id ? `@${onlineMatch.creator_username}` : `@${onlineMatch.invitee_username}`}</Text><Text style={styles.playerScore}>{onlineMatch.scores?.[id] ?? 0}</Text><Text style={styles.playerPairs}>pairs</Text></View>)}</View>
+              <Text style={styles.turnLabel}>{onlineMatch.status === 'completed' ? (onlineMatch.winner_user_id ? (onlineMatch.winner_user_id === session.user.id ? 'You win!' : 'Your opponent wins!') : 'It’s a tie!') : onlineMatch.turn_user_id === session.user.id ? 'Your turn' : 'Waiting for your opponent…'}</Text>
+              <View style={styles.memoryBoard}>{Array.from({ length: Math.ceil(onlineTiles.length / 4) }, (_, row) => <View key={row} style={styles.memoryRow}>{onlineTiles.slice(row * 4, row * 4 + 4).map((tile, column) => { const index = row * 4 + column; const faceUp = tile.matched || (onlineMatch.opened_tiles as number[]).includes(index); return <Pressable key={tile.id} accessibilityRole="button" accessibilityLabel={faceUp ? 'Revealed tile' : 'Hidden tile'} onPress={() => void revealOnline(index)} style={[styles.memoryTile, faceUp && styles.memoryTileOpen, tile.matched && styles.memoryTileMatched]}>{faceUp && tile.faceSource ? <Image source={tile.faceSource} style={styles.memoryFaceImage} resizeMode="cover"/> : <Text style={[styles.memoryTileText, !faceUp && styles.memoryTileHidden]}>{faceUp ? tile.symbol : '?'}</Text>}</Pressable>;})}</View>)}</View>
+            </> : null}
+          </>}
+        </>}
+    </View>}
+    {mode === 'offline' && <>
     <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Board size</Text>{[8, 16, 24].map(count => <Pressable key={count} onPress={() => choosePairCount(count)} style={[styles.difficultyButton, pairCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, pairCount === count && styles.difficultyTextSelected]}>{count} pairs</Text></Pressable>)}</View>
     <View style={styles.playerRow}>{([0, 1] as const).map(player => <View key={player} style={[styles.playerCard, turn === player && !finished && styles.playerTurn]}>
       <TextInput accessibilityLabel={`Player ${player + 1} name`} style={styles.playerName} value={names[player]} onChangeText={value => setNames(current => current.map((name, index) => index === player ? value : name) as [string, string])} maxLength={16} />
@@ -1183,6 +1315,7 @@ function MemoryMatchGame() {
       </Pressable>;
     })}</View>)}</View>
     <View style={styles.gameFooter}><Text style={styles.gameHint}>{finished ? 'Play another round and see who takes the lead.' : `${tiles.filter(tile => tile.matched).length / 2} of ${pairCount} pairs found`}</Text><Pressable style={styles.newGameButton} onPress={resetGame}><Text style={styles.newGameText}>{finished ? 'Play again' : 'New game'}</Text></Pressable></View>
+    </>}
   </View>;
 }
 
@@ -1474,6 +1607,7 @@ const styles = StyleSheet.create({
   calcFields: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 }, calcButton: { flexGrow: 0, flexShrink: 0, flexBasis: 'auto', width: '100%', minHeight: 46, marginTop: 2, justifyContent: 'center' }, calcField: { flex: 1, minWidth: 90, gap: 6 }, calcResult: { backgroundColor: '#EFF6FF', borderRadius: 12, padding: 13, gap: 4 }, calcWorked: { color: colors.text, fontSize: 19, fontWeight: '800' }, calcStatus: { fontSize: 12, fontWeight: '700' }, calcMet: { color: '#15803D' }, calcPending: { color: colors.blue }, calcHint: { color: colors.muted, fontSize: 11, lineHeight: 16 },
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, statCard: { flexBasis: '47%', flexGrow: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 14, gap: 8 }, statLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 }, statValue: { color: colors.text, fontSize: 16, fontWeight: '800' }, card: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 17, gap: 13 }, cardHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, sectionTitle: { color: colors.text, fontSize: 17, fontWeight: '800' }, row: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 }, rowLabel: { color: colors.muted, fontSize: 12, flex: 1 }, rowValue: { color: colors.text, fontSize: 12, fontWeight: '700', textAlign: 'right', flex: 1 }, pill: { backgroundColor: '#DCFCE7', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 99 }, pillWarn: { backgroundColor: '#FEF3C7' }, pillText: { color: '#15803D', fontSize: 10, fontWeight: '800' }, policyNote: { color: '#854D0E', fontSize: 11, lineHeight: 17, backgroundColor: '#FFFBEB', padding: 10, borderRadius: 10 }, outlineButton: { borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 11, padding: 11, alignItems: 'center', backgroundColor: '#F8FBFF' }, outlineText: { color: colors.blue, fontSize: 12, fontWeight: '800' }, lobbySubmit: { width: 46, height: 46, borderRadius: 14, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' }, lobbySubmitText: { color: '#FFFFFF', fontSize: 23, lineHeight: 27, fontWeight: '900' }, muted: { color: colors.muted, fontSize: 12, lineHeight: 18 }, stepper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, stepActions: { flexDirection: 'row', alignItems: 'center', gap: 10 }, stepButton: { width: 30, height: 30, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }, stepText: { fontSize: 20, color: colors.text }, stepValue: { minWidth: 64, textAlign: 'center', fontWeight: '800', color: colors.text, fontSize: 12 }, settingChoice: { gap: 8 }, choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, choice: { backgroundColor: '#F1F5F9', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 99 }, choiceSelected: { backgroundColor: '#DBEAFE' }, choiceText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, choiceTextSelected: { color: colors.blue },
   gameCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 18, gap: 15 }, gameHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, gameEyebrow: { color: colors.blue, fontWeight: '800', fontSize: 10, letterSpacing: 1.2 }, gameTitle: { color: colors.text, fontSize: 24, fontWeight: '800', marginTop: 3 }, gameIcon: { fontSize: 34 }, gameDescription: { color: colors.muted, fontSize: 12, lineHeight: 18 }, difficultyRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 7 }, difficultyLabel: { color: colors.muted, fontSize: 11, fontWeight: '700', marginRight: 3 }, difficultyButton: { borderRadius: 99, paddingVertical: 7, paddingHorizontal: 10, backgroundColor: '#F1F5F9' }, difficultySelected: { backgroundColor: '#DBEAFE' }, difficultyText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, difficultyTextSelected: { color: colors.blue }, playerRow: { flexDirection: 'row', gap: 10 }, playerCard: { flex: 1, alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 10 }, playerTurn: { borderColor: colors.blue, backgroundColor: '#EFF6FF' }, playerName: { width: '100%', color: colors.text, textAlign: 'center', fontWeight: '700', fontSize: 12, paddingVertical: 4 }, playerScore: { color: colors.blue, fontWeight: '800', fontSize: 25, marginTop: 4 }, playerPairs: { color: colors.muted, fontSize: 10 }, turnLabel: { textAlign: 'center', color: colors.text, fontWeight: '800', fontSize: 14 }, memoryBoard: { width: '100%', maxWidth: 460, alignSelf: 'center', gap: 8 }, memoryRow: { flexDirection: 'row', gap: 8 }, memoryTile: { flex: 1, aspectRatio: 1, borderRadius: 13, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: colors.navy, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }, memoryFaceImage: { width: '100%', height: '100%' }, memoryTileOpen: { backgroundColor: '#EFF6FF', borderColor: '#93C5FD' }, memoryTileMatched: { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }, memoryTileText: { fontSize: 29, fontWeight: '800' }, memoryTileHidden: { color: '#BFDBFE', fontSize: 31 }, gameFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, gameHint: { flex: 1, color: colors.muted, fontSize: 11 }, newGameButton: { backgroundColor: colors.blue, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 11 }, newGameText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+  onlineGamePanel: { padding: 13, borderRadius: 16, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, gap: 11 }, onlineInviteRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, onlineInviteInput: { flex: 1, minWidth: 0, marginBottom: 0 }, onlineInviteButton: { minHeight: 46, justifyContent: 'center' }, onlineInviteCard: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 12, padding: 10, backgroundColor: '#EFF6FF' }, onlineInviteTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, onlineUsername: { color: colors.muted, fontSize: 12 }, onlineUsernameValue: { color: colors.blue, fontWeight: '800' }, onlineMatchHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
   exportButton: { backgroundColor: colors.blue, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, alignItems: 'center' }, exportDisabled: { opacity: 0.45 }, exportButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' }, historyDayCard: { backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' }, sessionToggle: { color: colors.blue, fontSize: 10, fontWeight: '700' }, sessionList: { borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#F8FAFC' }, sessionEntry: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border }, sessionLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', width: 58 }, sessionTime: { color: colors.text, fontSize: 11, fontWeight: '700', flex: 1 }, sessionDuration: { color: colors.muted, fontSize: 10 },
   chatJoinDivider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }, chatDividerLine: { flex: 1, height: 1, backgroundColor: colors.border }, guestAction: { backgroundColor: '#0F766E' }, guestActionText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   heroCatLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }, heroCatImage: { position: 'absolute', width: '100%', height: '100%' }, heroCatShade: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.navy }, heroCatPaw: { position: 'absolute', left: '55%', bottom: '15%', width: 45, height: 88, transformOrigin: 'bottom center' }, heroCatPawArm: { position: 'absolute', left: 15, bottom: 0, width: 15, height: 62, borderRadius: 10, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatPawPalm: { position: 'absolute', left: 3, top: 8, width: 40, height: 34, borderRadius: 20, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatToe: { position: 'absolute', top: 2, width: 12, height: 17, borderRadius: 9, backgroundColor: '#E8953D', borderWidth: 1, borderColor: '#FFD17A' }, heroCatToeOne: { left: 5 }, heroCatToeTwo: { left: 17, top: -1 }, heroCatToeThree: { left: 29 }, heroCatBlink: { position: 'absolute', left: '31%', top: '24%', width: '9%', height: '4%', borderRadius: 99, backgroundColor: '#EAA34B', alignItems: 'center', justifyContent: 'center' }, heroCatBlinkLine: { width: '72%', height: 1.5, borderRadius: 2, backgroundColor: '#60351E', transform: [{ rotate: '-5deg' }] }, greetingPill: { backgroundColor: 'rgba(15, 118, 110, 0.92)', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, greetingPillText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' }, catGreetingCard: { width: '100%', maxWidth: 420, backgroundColor: '#FFFFFF', borderRadius: 26, paddingHorizontal: 24, paddingVertical: 27, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#CFECE8' }, catSpeech: { backgroundColor: '#DCFCE7', paddingHorizontal: 18, paddingVertical: 9, borderRadius: 16, borderBottomLeftRadius: 4 }, catSpeechText: { color: '#166534', fontSize: 15, fontWeight: '900' }, catGreetingTitle: { color: colors.text, fontSize: 23, fontWeight: '900', textAlign: 'center' }, catGreetingBody: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', maxWidth: 280 }, actionPrimarySmall: { backgroundColor: colors.blue, borderRadius: 12, paddingVertical: 11, paddingHorizontal: 20, marginTop: 7 }, officeByeRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F0FDF4', borderRadius: 13, padding: 10 }, officeOutActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }, officeOutButton: { backgroundColor: '#B91C1C', borderRadius: 13, paddingVertical: 12, paddingHorizontal: 9, alignItems: 'center', marginTop: 12 }, officeOutText: { color: '#FFFFFF', fontWeight: '900', fontSize: 12, textAlign: 'center' }, undoOfficeOutButton: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#B91C1C', borderRadius: 13, paddingVertical: 11, paddingHorizontal: 12 }, undoOfficeOutText: { color: '#B91C1C', fontWeight: '800', fontSize: 11 }, officeSummaryModal: { width: '100%', maxWidth: 560, maxHeight: '90%', backgroundColor: colors.card, borderRadius: 18, padding: 16, gap: 13 }, officeSummaryTotals: { flexDirection: 'row', gap: 10, padding: 12, backgroundColor: '#F1F5F9', borderRadius: 12 }, officeSummaryWork: { color: colors.blue, fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryBreak: { color: '#B91C1C', fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F8FAFC', borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 10 }, officeSummaryText: { color: colors.text, fontSize: 12, fontWeight: '800' },

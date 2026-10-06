@@ -23,7 +23,7 @@ Responsive office attendance app built with React Native, Expo SDK 57, TypeScrip
 - Supabase RLS, trusted role provisioning, server-checked HR RPCs, and protected approval fields.
 - Responsive Expo Web build configured for Vercel static hosting.
 - While the web app is open, it checks for deployments once per minute and shows a reload prompt with the deployment's commit title when a newer build is available.
-- Team chat for visitors and employees with live text, quick emoji insertion, emoji reactions, threaded replies, private photo/video uploads, browser-recorded voice notes, and per-viewer view-once photos.
+- Team chat supports email/password accounts with unique usernames; users can discover groups, create password-protected rooms, and enter with the password. Room creators can invite users by username, manage passwords and members, moderate messages, or delete their room and shared media. A guest’s created groups and uploaded media are cleaned up when that guest signs out. Signed-in users can start private one-to-one chats by username. Room and direct messages stay private to their members and support live text, emoji reactions, replies, private media, voice notes, and view-once photos.
 - Chat messages can be hidden for the current user or removed for everyone by their sender; row-level security enforces the sender-only removal rule.
 
 ## HR policy interpretation
@@ -66,7 +66,7 @@ No policy PDF was copied into the repository. The app and docs reflect the sourc
    The public anon key is safe for the client only because RLS is enabled. Never place the service-role key in the app.
 
 4. In Supabase SQL Editor, run [`supabase/schema.sql`](supabase/schema.sql). This creates tables, profile provisioning, row-level policies, and protected HR report/approval functions.
-5. To enable chat, enable **Anonymous sign-ins** in Supabase Authentication → Providers, then run [`supabase/chat-schema.sql`](supabase/chat-schema.sql). Rerun this idempotent script after chat database changes to install policy updates. Install the Supabase CLI, run `npx supabase link --project-ref YOUR_PROJECT_REF`, then deploy the protected media-link function with `npx supabase functions deploy chat-media-url`. The function uses Supabase's server-side service-role secret; never add it to the app or Vercel client environment.
+5. To enable chat, enable **Anonymous sign-ins** in Supabase Authentication → Providers, then run [`supabase/chat-schema.sql`](supabase/chat-schema.sql) in the Supabase SQL Editor. It adds unique usernames to profiles, creates the chat lobby, password-protected groups, group invitations and private-chat RPCs, and migrates existing shared messages into the open Office Lobby. Existing accounts receive a generated `user_…` username. Rerun this idempotent script after chat database changes to install policy updates. Install the Supabase CLI, run `npx supabase link --project-ref YOUR_PROJECT_REF`, then deploy the protected media-link function with `npx supabase functions deploy chat-media-url`. The function uses Supabase's server-side service-role secret; never add it to the app or Vercel client environment.
 6. Start the app:
 
    ```sh

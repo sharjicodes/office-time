@@ -359,9 +359,27 @@ function OfficeTimeApp() {
     else { setHrRows(rows => rows.map(row => row.review_id === reviewId ? { ...row, review_status: status } : row)); }
   }
 
+  async function signOut() {
+    if (!supabase || !session) return;
+    if (session.user?.is_anonymous) {
+      const { data: mediaRows, error: listError } = await supabase.rpc('list_my_guest_group_media_paths');
+      if (listError) return Alert.alert('Could not clean up guest groups', `${listError.message}\nRun the latest chat-schema.sql in Supabase, then try signing out again.`);
+      const mediaPaths = ((mediaRows ?? []) as { media_path: string }[]).map(row => row.media_path);
+      for (let offset = 0; offset < mediaPaths.length; offset += 100) {
+        const { error } = await supabase.storage.from('chat-media').remove(mediaPaths.slice(offset, offset + 100));
+        if (error) return Alert.alert('Could not clean up guest groups', `Some group media could not be deleted: ${error.message}. You are still signed in; retry when online.`);
+      }
+      const { error: cleanupError } = await supabase.rpc('delete_my_guest_groups');
+      if (cleanupError) return Alert.alert('Could not clean up guest groups', `${cleanupError.message}\nYou are still signed in; try again after the database is updated.`);
+    }
+    const { error } = await supabase.auth.signOut();
+    if (error) Alert.alert('Could not sign out', error.message);
+  }
+
   if (booting) return <SafeAreaView style={styles.safe}><View style={styles.center}><ActivityIndicator color={colors.blue} /><Text style={styles.muted}>Loading OfficeTime…</Text></View></SafeAreaView>;
   if (!session && isSupabaseConfigured && !offlineContinue) return <AuthScreen onContinue={() => setOfflineContinue(true)} onJoinChat={async name => {
-    const { error } = await supabase!.auth.signInAnonymously({ options: { data: { full_name: name } } });
+    const guestUsername = `guest_${Math.random().toString(36).slice(2, 12)}`;
+    const { error } = await supabase!.auth.signInAnonymously({ options: { data: { full_name: name, username: guestUsername } } });
     if (error) return error.message;
     setOfflineContinue(true);
     return null;
@@ -369,12 +387,13 @@ function OfficeTimeApp() {
 
   const lateDays = days.filter(d => d.date.startsWith(today.slice(0, 7)) && d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).afterFlexLimit);
   const halfDayToday = isHalfDayDate(days, today, policy);
+  const showPageAnimations = tab !== 'Chat' && tab !== 'Games';
   return <SafeAreaView style={styles.safe}>
-    <PageAmbience />
+    {showPageAnimations && <PageAmbience />}
     <StatusBar style="dark" />
     <ScrollView contentContainerStyle={styles.page}>
       <View style={styles.header}><View><Text style={styles.eyebrow}>ATTENDANCE, MADE SIMPLE</Text><Text style={styles.title}>OfficeTime</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={styles.avatar}><Text style={styles.avatarText}>{session?.user?.email?.[0]?.toUpperCase() ?? 'OT'}</Text></View></View>
-      <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => session ? void supabase?.auth.signOut() : null}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
+      <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => { if (session) void signOut(); }}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
       <View style={styles.tabs}>{(['Today', 'History', 'Chat', 'Games', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</View>
       {tab === 'Today' && <WalkingCat />}
       {tab === 'Today' && <>
@@ -419,8 +438,8 @@ function OfficeTimeApp() {
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. OfficeTime is a companion tracker until HR authorizes it for official use.</Text></View>
       <Text style={styles.footer}>OfficeTime · Secure attendance for your team</Text>
     </ScrollView>
-    <PassingGlitterGif />
-    <FallingSpiderMan />
+    {showPageAnimations && <PassingGlitterGif />}
+    {showPageAnimations && <FallingSpiderMan />}
     {correctionTarget && <PunchCorrectionModal key={`${correctionTarget.date}-${correctionTarget.add}`} date={correctionTarget.date} day={days.find(item => item.date === correctionTarget.date)} addToExisting={correctionTarget.add} onClose={() => setCorrectionTarget(null)} onSave={savePunchCorrection} />}
     {officeOutSummary && <OfficeOutSummaryModal day={officeOutSummary} policy={policy} onClose={() => { setOfficeOutSummary(null); setCatGreeting('bye'); }} onUndo={undoOfficeOut} />}
   </SafeAreaView>;
@@ -512,7 +531,10 @@ function CatCardGreeting({ kind, onDone }: { kind: 'hi' | 'bye' | null; onDone: 
   </View>;
 }
 
-type ChatMessage = { id: string; sender_id: string; sender_name: string; body: string; media_path: string | null; media_type: 'image' | 'video' | 'audio' | null; view_once: boolean; sent_at: string; reply_to?: string | null };
+type ChatRoom = { room_id: string; room_name: string; creator_name: string; created_at: string; member_count: number; password_protected: boolean; joined: boolean; is_creator: boolean; room_type: 'group' | 'direct' };
+type ChatRoomMember = { member_id: string; member_name: string; joined_at: string };
+type DirectChat = { room_id: string; room_name: string; peer_username: string; created_at: string };
+type ChatMessage = { id: string; room_id: string; sender_id: string; sender_name: string; body: string; media_path: string | null; media_type: 'image' | 'video' | 'audio' | null; view_once: boolean; sent_at: string; reply_to?: string | null };
 type ChatReaction = { message_id: string; user_id: string; emoji: string };
 const QUICK_EMOJIS = ['😊', '❤️', '👍', '😂', '🎉', '🙏'];
 
@@ -545,6 +567,27 @@ function inferredUploadMime(extension: string, mediaType: NonNullable<ChatMessag
 
 function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) => Promise<string | null> }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [rooms, setRooms] = useState<ChatRoom[]>([]);
+  const [directChats, setDirectChats] = useState<DirectChat[]>([]);
+  const [myUsername, setMyUsername] = useState('');
+  const [selectedRoom, setSelectedRoom] = useState<ChatRoom | null>(null);
+  const [roomName, setRoomName] = useState('');
+  const [roomPassword, setRoomPassword] = useState('');
+  const [joinRoomId, setJoinRoomId] = useState<string | null>(null);
+  const [joinPassword, setJoinPassword] = useState('');
+  const [showCreateRoom, setShowCreateRoom] = useState(false);
+  const [roomsLoading, setRoomsLoading] = useState(false);
+  const [roomBusy, setRoomBusy] = useState(false);
+  const [roomError, setRoomError] = useState('');
+  const [roomMembers, setRoomMembers] = useState<ChatRoomMember[]>([]);
+  const [showRoomSettings, setShowRoomSettings] = useState(false);
+  const [updatedRoomPassword, setUpdatedRoomPassword] = useState('');
+  const [roomSettingsBusy, setRoomSettingsBusy] = useState(false);
+  const [kickConfirmId, setKickConfirmId] = useState<string | null>(null);
+  const [deleteRoomConfirm, setDeleteRoomConfirm] = useState(false);
+  const [roomNotice, setRoomNotice] = useState('');
+  const [inviteUsername, setInviteUsername] = useState('');
+  const [directUsername, setDirectUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState('');
@@ -569,15 +612,182 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   const isAnonymous = !!session?.user?.is_anonymous;
   const myName = session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')[0] || 'Guest';
 
+  const refreshRooms = useCallback(async () => {
+    if (!supabase || !isJoined) return [] as ChatRoom[];
+    setRoomsLoading(true);
+    const [{ data, error }, { data: directData, error: directError }, { data: usernameData }] = await Promise.all([
+      supabase.rpc('list_chat_rooms'), supabase.rpc('list_direct_chats'), supabase.rpc('my_chat_username'),
+    ]);
+    setRoomsLoading(false);
+    if (error) { setRoomError(`Chat rooms need the latest database setup: ${error.message}`); return [] as ChatRoom[]; }
+    if (directError) setRoomError(`Private chats need the latest database setup: ${directError.message}`);
+    const nextRooms = (data ?? []) as ChatRoom[];
+    setRooms(nextRooms);
+    setDirectChats((directData ?? []) as DirectChat[]);
+    setMyUsername((usernameData as string | null) ?? '');
+    return nextRooms;
+  }, [isJoined]);
+
+  useEffect(() => { if (isJoined) void refreshRooms(); }, [isJoined, refreshRooms]);
+
   useEffect(() => {
-    if (!supabase || !isJoined) return;
+    if (!supabase || !isJoined || !session?.user?.id) return;
+    const channel = supabase.channel(`officetime-room-membership-${session.user.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_room_members', filter: `user_id=eq.${session.user.id}` }, () => { void refreshRooms(); })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'chat_room_members' }, payload => {
+        const removed = payload.old as { user_id?: string; room_id?: string };
+        if (removed.user_id !== session.user.id) return;
+        if (selectedRoom?.room_id === removed.room_id) {
+          setSelectedRoom(null); setMessages([]); setReactions([]); setReplyTo(null);
+          setRoomNotice('You were removed from that group.');
+        }
+        void refreshRooms();
+      })
+      .subscribe();
+    return () => { void supabase?.removeChannel(channel); };
+  }, [isJoined, session?.user?.id, selectedRoom?.room_id, refreshRooms]);
+
+  async function createRoom() {
+    if (!supabase || !roomName.trim() || !roomPassword || roomBusy) return;
+    setRoomBusy(true); setRoomError('');
+    const { data, error } = await supabase.rpc('create_chat_room', { name_in: roomName.trim(), password_in: roomPassword });
+    if (error) setRoomError(error.message);
+    else {
+      const nextRooms = await refreshRooms();
+      const created = nextRooms.find(room => room.room_id === data);
+      if (created) setSelectedRoom(created);
+      setRoomName(''); setRoomPassword(''); setShowCreateRoom(false);
+    }
+    setRoomBusy(false);
+  }
+
+  async function enterRoom(room: ChatRoom, password = '') {
+    if (!supabase || roomBusy) return;
+    setRoomBusy(true); setRoomError(''); setRoomNotice('');
+    if (!room.joined) {
+      const { data, error } = await supabase.rpc('join_chat_room', { room_id_in: room.room_id, password_in: password });
+      if (error || !data) {
+        setRoomError(error?.message || 'That password is incorrect, or there have been too many attempts. Try again later.');
+        setRoomBusy(false); return;
+      }
+    }
+    const nextRooms = await refreshRooms();
+    setSelectedRoom(nextRooms.find(item => item.room_id === room.room_id) ?? { ...room, joined: true });
+    setJoinRoomId(null); setJoinPassword(''); setRoomError(''); setMessages([]); setReactions([]);
+    setShowRoomSettings(false); setRoomMembers([]); setKickConfirmId(null);
+    setRoomBusy(false);
+  }
+
+  async function addMemberByUsername() {
+    if (!supabase || !selectedRoom?.is_creator || !inviteUsername.trim() || roomSettingsBusy) return;
+    setRoomSettingsBusy(true); setRoomError(''); setRoomNotice('');
+    const { data, error } = await supabase.rpc('add_chat_room_member_by_username', { room_id_in: selectedRoom.room_id, username_in: inviteUsername.trim() });
+    if (error) setRoomError(error.message);
+    else {
+      const invited = (data?.[0] ?? null) as { member_name: string; username: string } | null;
+      setInviteUsername('');
+      await loadRoomMembers(selectedRoom);
+      const nextRooms = await refreshRooms();
+      const updatedRoom = nextRooms.find(room => room.room_id === selectedRoom.room_id);
+      if (updatedRoom) setSelectedRoom(updatedRoom);
+      setRoomNotice(invited ? `@${invited.username} was added to the room.` : 'The user was added to the room.');
+    }
+    setRoomSettingsBusy(false);
+  }
+
+  async function startDirectChat() {
+    if (!supabase || !directUsername.trim() || roomBusy) return;
+    setRoomBusy(true); setRoomError(''); setRoomNotice('');
+    const { data, error } = await supabase.rpc('open_direct_chat', { username_in: directUsername.trim() });
+    if (error) setRoomError(error.message);
+    else {
+      const opened = (data?.[0] ?? null) as { room_id: string; room_name: string; peer_username: string } | null;
+      if (opened) {
+        setSelectedRoom({ room_id: opened.room_id, room_name: opened.room_name, creator_name: opened.peer_username, created_at: new Date().toISOString(), member_count: 2, password_protected: false, joined: true, is_creator: false, room_type: 'direct' });
+        setMessages([]); setReactions([]); setDirectUsername(''); void refreshRooms();
+      }
+    }
+    setRoomBusy(false);
+  }
+
+  async function loadRoomMembers(room: ChatRoom) {
+    if (!supabase) return;
+    const { data, error } = await supabase.rpc('list_chat_room_members', { room_id_in: room.room_id });
+    if (error) setRoomError(`Could not load room members: ${error.message}`);
+    else setRoomMembers((data ?? []) as ChatRoomMember[]);
+  }
+
+  async function saveRoomPassword() {
+    if (!supabase || !selectedRoom || !selectedRoom.is_creator || roomSettingsBusy) return;
+    setRoomSettingsBusy(true); setRoomError(''); setRoomNotice('');
+    const { error } = await supabase.rpc('set_chat_room_password', { room_id_in: selectedRoom.room_id, password_in: updatedRoomPassword });
+    if (error) setRoomError(error.message);
+    else {
+      const nextRooms = await refreshRooms();
+      const updatedRoom = nextRooms.find(room => room.room_id === selectedRoom.room_id);
+      if (updatedRoom) setSelectedRoom(updatedRoom);
+      setUpdatedRoomPassword('');
+      setRoomNotice(updatedRoomPassword ? 'Room password updated.' : 'Room password removed; anyone can join this room.');
+    }
+    setRoomSettingsBusy(false);
+  }
+
+  async function kickRoomMember(member: ChatRoomMember) {
+    if (!supabase || !selectedRoom || !selectedRoom.is_creator || roomSettingsBusy) return;
+    if (kickConfirmId !== member.member_id) { setKickConfirmId(member.member_id); return; }
+    setRoomSettingsBusy(true); setRoomError('');
+    const { data, error } = await supabase.rpc('kick_chat_room_member', { room_id_in: selectedRoom.room_id, member_id_in: member.member_id });
+    if (error) setRoomError(error.message);
+    else if (!data) setRoomError('That member is no longer in this room.');
+    else {
+      setRoomMembers(current => current.filter(item => item.member_id !== member.member_id));
+      const nextRooms = await refreshRooms();
+      const updatedRoom = nextRooms.find(room => room.room_id === selectedRoom.room_id);
+      if (updatedRoom) setSelectedRoom(updatedRoom);
+      setRoomNotice(`${member.member_name} was removed from this room.`);
+    }
+    setKickConfirmId(null); setRoomSettingsBusy(false);
+  }
+
+  async function deleteRoom() {
+    if (!supabase || !selectedRoom?.is_creator || roomSettingsBusy) return;
+    if (!deleteRoomConfirm) { setDeleteRoomConfirm(true); return; }
+    setRoomSettingsBusy(true); setRoomError('');
+    try {
+      const { data: mediaRows, error: pathsError } = await supabase.rpc('list_chat_room_media_paths', { room_id_in: selectedRoom.room_id });
+      if (pathsError) throw pathsError;
+      const paths = ((mediaRows ?? []) as { media_path: string }[]).map(row => row.media_path);
+      for (let offset = 0; offset < paths.length; offset += 100) {
+        const { error: mediaError } = await supabase.storage.from('chat-media').remove(paths.slice(offset, offset + 100));
+        if (mediaError) throw new Error(`Could not remove room media: ${mediaError.message}`);
+      }
+      const { error } = await supabase.rpc('delete_chat_room', { room_id_in: selectedRoom.room_id });
+      if (error) throw error;
+      const deletedName = selectedRoom.room_name;
+      setSelectedRoom(null); setMessages([]); setReactions([]); setReplyTo(null); setDraft(''); setFile(null);
+      setRoomMembers([]); setShowRoomSettings(false); setDeleteRoomConfirm(false); setKickConfirmId(null);
+      setRooms(current => current.filter(room => room.room_id !== selectedRoom.room_id));
+      setRoomNotice(`“${deletedName}” and its messages were deleted.`);
+    } catch (error: any) {
+      setRoomError(error?.message || 'Could not delete this room.');
+      setDeleteRoomConfirm(false);
+    } finally { setRoomSettingsBusy(false); }
+  }
+
+  function backToLobby() {
+    setSelectedRoom(null); setMessages([]); setReactions([]); setReplyTo(null); setDraft(''); setFile(null); setChatError(''); setRoomError(''); setRoomMembers([]); setShowRoomSettings(false); setDeleteRoomConfirm(false); setRoomNotice('');
+    void refreshRooms();
+  }
+
+  useEffect(() => {
+    if (!supabase || !isJoined || !selectedRoom) return;
     let alive = true;
     void (async () => {
       const { data: hidden, error: hideError } = await supabase.from('chat_message_hides').select('message_id').eq('viewer_id', session.user.id);
       if (!alive) return;
       const hiddenIds = new Set((hidden ?? []).map(row => row.message_id as string));
       if (hideError) setChatError(`Delete controls need the latest chat database setup: ${hideError.message}`);
-      const { data, error } = await supabase.from('chat_messages').select('*').order('sent_at', { ascending: true }).limit(100);
+      const { data, error } = await supabase.from('chat_messages').select('*').eq('room_id', selectedRoom.room_id).order('sent_at', { ascending: true }).limit(100);
       if (!alive) return;
       if (error) setChatError(error.message);
       else {
@@ -592,8 +802,8 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
         } else setReactions([]);
       }
     })();
-    const channel = supabase.channel('officetime-team-chat')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, payload => {
+    const channel = supabase.channel(`officetime-chat-${selectedRoom.room_id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `room_id=eq.${selectedRoom.room_id}` }, payload => {
         if (!alive) return;
         const incoming = payload.new as ChatMessage;
         setMessages(current => current.some(item => item.id === incoming.id) ? current : [...current, incoming].slice(-100));
@@ -619,7 +829,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
         setReactions(current => current.filter(item => !(item.message_id === removed.message_id && item.user_id === removed.user_id && item.emoji === removed.emoji)));
       }).subscribe();
     return () => { alive = false; void supabase?.removeChannel(channel); };
-  }, [isJoined, session?.user?.id]);
+  }, [isJoined, session?.user?.id, selectedRoom?.room_id]);
 
   useEffect(() => () => {
     recorder.current?.stop();
@@ -669,7 +879,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   function stopVoiceRecording() { recorder.current?.stop(); recorder.current = null; setRecording(false); }
 
   async function sendMessage(text = draft, attachment = file) {
-    if (!supabase || !session?.user?.id || sending) return;
+    if (!supabase || !session?.user?.id || !selectedRoom || sending) return;
     const body = text.trim();
     if (!body && !attachment) return;
     if (body.length > 1000) return Alert.alert('Message too long', 'Keep chat messages under 1,000 characters.');
@@ -687,7 +897,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
         const { error: uploadError } = await supabase.storage.from('chat-media').upload(mediaPath, attachment, { contentType, upsert: false });
         if (uploadError) throw uploadError;
       }
-      const { error } = await supabase.from('chat_messages').insert({ sender_id: session.user.id, sender_name: myName.slice(0, 40), body, media_path: mediaPath, media_type: mediaType, view_once: !!(viewOnce && mediaType === 'image'), reply_to: replyTo?.id ?? null });
+      const { error } = await supabase.from('chat_messages').insert({ room_id: selectedRoom.room_id, sender_id: session.user.id, sender_name: myName.slice(0, 40), body, media_path: mediaPath, media_type: mediaType, view_once: !!(viewOnce && mediaType === 'image'), reply_to: replyTo?.id ?? null });
       if (error) throw error;
       setDraft(''); setFile(null); setViewOnce(false); setReplyTo(null);
     } catch (error: any) { Alert.alert('Message not sent', error?.message || 'Check your connection and try again.'); }
@@ -719,12 +929,12 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   }
 
   async function deleteForEveryone(message: ChatMessage) {
-    if (!supabase || !session?.user?.id || message.sender_id !== session.user.id || deletingId) return;
+    if (!supabase || !session?.user?.id || (message.sender_id !== session.user.id && !selectedRoom?.is_creator) || deletingId) return;
     setDeletingId(message.id); setChatError('');
     try {
       const { data, error } = await supabase.from('chat_messages').delete().eq('id', message.id).eq('sender_id', session.user.id).select('id').maybeSingle();
       if (error) throw error;
-      if (!data) throw new Error('Only the person who sent this message can delete it for everyone.');
+      if (!data) throw new Error('You do not have permission to remove this message.');
       setMessages(current => current.filter(item => item.id !== message.id));
       setDeleteAllTarget(null);
       if (message.media_path) {
@@ -747,10 +957,32 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   if (!supabase) return <View style={styles.card}><Text style={styles.sectionTitle}>Team chat</Text><Text style={styles.muted}>Shared chat needs Supabase configured. Set up the chat schema and media function using the README instructions.</Text></View>;
 
   return <View style={styles.chatCard}>
-    <View style={styles.chatHeading}><View style={styles.chatAvatar}><Text style={styles.chatAvatarText}>✦</Text></View><View style={{ flex: 1 }}><Text style={styles.sectionTitle}>Office chat</Text><Text style={styles.chatPresence}>Shared room · everyone can read · live</Text></View><Text style={styles.onlineBadge}>● LIVE</Text></View>
+    <View style={styles.chatHeading}><View style={styles.chatAvatar}><Text style={styles.chatAvatarText}>✦</Text></View><View style={{ flex: 1 }}><Text style={styles.sectionTitle}>{selectedRoom?.room_name ?? (isJoined ? 'Chat Lobby' : 'Office chat')}</Text><Text style={styles.chatPresence}>{selectedRoom ? `${selectedRoom.member_count} members · private group · live` : 'Find a group or create your own'}</Text></View>{selectedRoom ? <Pressable onPress={backToLobby}><Text style={styles.link}>← Lobby</Text></Pressable> : <Text style={styles.onlineBadge}>● LIVE</Text>}</View>
+    {!!roomError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{roomError}</Text>}
+    {!!roomNotice && <Text style={{ color: '#15803D', fontSize: 12, lineHeight: 18 }}>{roomNotice}</Text>}
     {!!chatError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{chatError}</Text>}
-    {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Say hello to the team</Text><Text style={styles.muted}>Join with a display name. No work email is needed.</Text><TextInput style={styles.input} value={displayName} onChangeText={value => { setDisplayName(value); setJoinError(''); }} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary, joining && styles.dim]} disabled={!displayName.trim() || joining} onPress={() => { setJoining(true); setJoinError(''); void onJoin(displayName.trim()).then(message => setJoinError(message ?? '')).catch(error => setJoinError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.')).finally(() => setJoining(false)); }}><Text style={styles.actionText}>{joining ? 'Please wait…' : 'Join the chat'}</Text></Pressable>{!!joinError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{joinError}</Text>}</View> : <>
-      <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Chatting as {myName}{isAnonymous ? ' · guest' : ''}</Text></View>
+    {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Enter the chat lobby</Text><Text style={styles.muted}>Set a display name to browse groups. You’ll need a room password to enter private groups.</Text><TextInput style={styles.input} value={displayName} onChangeText={value => { setDisplayName(value); setJoinError(''); }} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary, joining && styles.dim]} disabled={!displayName.trim() || joining} onPress={() => { setJoining(true); setJoinError(''); void onJoin(displayName.trim()).then(message => setJoinError(message ?? '')).catch(error => setJoinError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.')).finally(() => setJoining(false)); }}><Text style={styles.actionText}>{joining ? 'Please wait…' : 'Enter chat lobby'}</Text></Pressable>{!!joinError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{joinError}</Text>}</View> : !selectedRoom ? <>
+      <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Browsing as {myName}{isAnonymous ? ' · guest' : ''}</Text>{!!myUsername && <Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800', marginTop: 4 }}>Your username: @{myUsername}</Text>}</View>
+      {!isAnonymous && <View style={{ gap: 8, padding: 12, backgroundColor: '#EFF6FF', borderRadius: 14 }}><Text style={styles.chatWelcome}>Start a personal chat</Text><Text style={styles.chatPresence}>Enter someone’s username to open your private conversation.</Text><View style={{ flexDirection: 'row', gap: 8 }}><TextInput style={[styles.input, { flex: 1 }]} value={directUsername} onChangeText={setDirectUsername} placeholder="Username" autoCapitalize="none" autoCorrect={false} onSubmitEditing={() => void startDirectChat()}/><Pressable disabled={roomBusy || !directUsername.trim()} onPress={() => void startDirectChat()} style={[styles.action, styles.primary, (roomBusy || !directUsername.trim()) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Opening…' : 'Chat'}</Text></Pressable></View>
+        {directChats.length > 0 && <View style={{ gap: 6, marginTop: 5 }}><Text style={styles.historyTitle}>Your personal chats</Text>{directChats.map(chat => <Pressable key={chat.room_id} onPress={() => setSelectedRoom({ room_id: chat.room_id, room_name: chat.room_name, creator_name: chat.peer_username, created_at: chat.created_at, member_count: 2, password_protected: false, joined: true, is_creator: false, room_type: 'direct' })} style={{ padding: 9, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderRadius: 10 }}><Text style={styles.historyTitle}>{chat.room_name}</Text><Text style={styles.chatPresence}>@{chat.peer_username}</Text></Pressable>)}</View>}
+      </View>}
+      <Pressable onPress={() => { setShowCreateRoom(value => !value); setRoomError(''); }} style={[styles.action, styles.primary]}><Text style={styles.actionText}>{showCreateRoom ? 'Cancel room creation' : '+ Create a chat room'}</Text></Pressable>
+      {showCreateRoom && <View style={{ gap: 9, padding: 12, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 14 }}><Text style={styles.chatWelcome}>Create a private group</Text><TextInput style={styles.input} value={roomName} onChangeText={setRoomName} placeholder="Room name" maxLength={50}/><TextInput style={styles.input} value={roomPassword} onChangeText={setRoomPassword} placeholder="Create a password (4+ characters)" secureTextEntry maxLength={72}/><Pressable disabled={roomBusy || !roomName.trim() || roomPassword.length < 4} onPress={() => void createRoom()} style={[styles.action, styles.primary, (roomBusy || !roomName.trim() || roomPassword.length < 4) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Creating…' : 'Create room'}</Text></Pressable></View>}
+      <View style={{ gap: 9 }}><Text style={styles.chatWelcome}>Available groups</Text>{roomsLoading && rooms.length === 0 ? <Text style={styles.muted}>Loading groups…</Text> : rooms.map(room => <View key={room.room_id} style={{ gap: 8, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: '#FFFFFF' }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><View style={{ flex: 1 }}><Text style={styles.historyTitle}>{room.room_name}</Text><Text style={styles.chatPresence}>{room.creator_name} · {room.member_count} {room.member_count === 1 ? 'member' : 'members'} · {room.password_protected ? '🔒 Password protected' : 'Open room'}</Text></View>{room.joined && <Text style={styles.onlineBadge}>JOINED</Text>}</View>{room.joined ? <Pressable onPress={() => void enterRoom(room)} style={[styles.action, styles.primary]}><Text style={styles.actionText}>Enter room</Text></Pressable> : joinRoomId === room.room_id ? null : <Pressable onPress={() => { setJoinRoomId(room.room_id); setJoinPassword(''); setRoomError(''); }} style={styles.outlineButton}><Text style={styles.outlineText}>{room.password_protected ? 'Enter password' : 'Join room'}</Text></Pressable>}{!room.joined && joinRoomId === room.room_id && <View style={{ flexDirection: 'row', gap: 7, alignItems: 'center' }}>{room.password_protected && <TextInput style={[styles.input, { flex: 1 }]} value={joinPassword} onChangeText={setJoinPassword} placeholder="Room password" secureTextEntry onSubmitEditing={() => void enterRoom(room, joinPassword)}/>}<Pressable disabled={roomBusy || (room.password_protected && !joinPassword)} onPress={() => void enterRoom(room, joinPassword)} style={[styles.action, styles.primary, (roomBusy || (room.password_protected && !joinPassword)) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Checking…' : 'Enter'}</Text></Pressable><Pressable onPress={() => { setJoinRoomId(null); setJoinPassword(''); }}><Text style={styles.link}>Cancel</Text></Pressable></View>}</View>)}</View>
+    </> : <>
+      <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Chatting as {myName}{isAnonymous ? ' · guest' : ''}</Text>{selectedRoom.is_creator && <Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800', marginTop: 4 }}>Room creator</Text>}</View>
+      {selectedRoom.is_creator && <Pressable onPress={() => { const opening = !showRoomSettings; setShowRoomSettings(opening); setRoomError(''); if (opening) void loadRoomMembers(selectedRoom); }} style={styles.outlineButton}><Text style={styles.outlineText}>{showRoomSettings ? 'Hide room management' : 'Manage password and members'}</Text></Pressable>}
+      {showRoomSettings && selectedRoom.is_creator && <View style={{ gap: 10, padding: 12, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 14 }}>
+        <Text style={styles.chatWelcome}>Room management</Text>
+        {selectedRoom.room_type === 'group' && <View style={{ gap: 8, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}><Text style={styles.historyTitle}>Add a member by username</Text><View style={{ flexDirection: 'row', gap: 8 }}><TextInput style={[styles.input, { flex: 1 }]} value={inviteUsername} onChangeText={setInviteUsername} placeholder="Username" autoCapitalize="none" autoCorrect={false}/><Pressable disabled={roomSettingsBusy || !inviteUsername.trim()} onPress={() => void addMemberByUsername()} style={[styles.action, styles.primary, (roomSettingsBusy || !inviteUsername.trim()) && styles.dim]}><Text style={styles.actionText}>Add</Text></Pressable></View><Text style={styles.chatPresence}>They need an OfficeTime account. They’ll be added to this room immediately.</Text></View>}
+        <Text style={styles.muted}>{selectedRoom.password_protected ? 'This room currently requires a password.' : 'This room is open to anyone who enters the lobby.'} Enter a new password, or leave it empty to remove password protection.</Text>
+        <TextInput style={styles.input} value={updatedRoomPassword} onChangeText={setUpdatedRoomPassword} placeholder="New password (4+ characters)" secureTextEntry maxLength={72}/>
+        <Pressable disabled={roomSettingsBusy || (!!updatedRoomPassword && updatedRoomPassword.length < 4) || (!updatedRoomPassword && !selectedRoom.password_protected)} onPress={() => void saveRoomPassword()} style={[styles.action, styles.primary, (roomSettingsBusy || (!!updatedRoomPassword && updatedRoomPassword.length < 4) || (!updatedRoomPassword && !selectedRoom.password_protected)) && styles.dim]}><Text style={styles.actionText}>{roomSettingsBusy ? 'Saving…' : updatedRoomPassword ? 'Update room password' : 'Remove password'}</Text></Pressable>
+        <Text style={styles.historyTitle}>Members ({roomMembers.length})</Text>
+        {roomMembers.map(member => <View key={member.member_id} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 8 }}><Text style={{ flex: 1, color: colors.text, fontSize: 12 }}>{member.member_name}{member.member_id === session.user.id ? ' · you (creator)' : ''}</Text>{member.member_id !== session.user.id && <Pressable disabled={roomSettingsBusy} onPress={() => void kickRoomMember(member)}><Text style={{ color: kickConfirmId === member.member_id ? '#B91C1C' : colors.muted, fontWeight: '800', fontSize: 11 }}>{kickConfirmId === member.member_id ? 'Confirm remove' : 'Remove'}</Text></Pressable>}</View>)}
+        {roomMembers.length === 0 && <Text style={styles.muted}>Loading members…</Text>}
+        <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10, gap: 8 }}><Text style={{ color: '#B91C1C', fontSize: 11, lineHeight: 16 }}>Deleting this room permanently removes its messages and shared media for everyone.</Text><View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}><Pressable disabled={roomSettingsBusy} onPress={() => void deleteRoom()} style={[styles.action, { backgroundColor: '#B91C1C', flex: 1 }, roomSettingsBusy && styles.dim]}><Text style={styles.actionText}>{roomSettingsBusy ? 'Deleting…' : deleteRoomConfirm ? 'Confirm delete room' : 'Delete this room'}</Text></Pressable>{deleteRoomConfirm && <Pressable onPress={() => setDeleteRoomConfirm(false)}><Text style={styles.link}>Cancel</Text></Pressable>}</View></View>
+      </View>}
       <ScrollView ref={messageScroll} onContentSizeChange={() => messageScroll.current?.scrollToEnd({ animated: true })} style={styles.chatMessages} contentContainerStyle={styles.chatMessagesContent} nestedScrollEnabled>
         {messages.length === 0 ? <View style={styles.chatEmpty}><Text style={styles.chatEmptyIcon}>☕</Text><Text style={styles.emptyTitle}>Start the conversation</Text><Text style={styles.muted}>Send a message, photo, video, or voice note.</Text></View> : messages.map(message => {
           const mine = message.sender_id === session.user.id;
@@ -765,7 +997,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
             <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 7 }}>
               <Pressable onPress={() => setReplyTo(message)}><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '700' }}>Reply</Text></Pressable>
               <Pressable disabled={deletingId === message.id} onPress={() => void deleteForMe(message)}><Text style={{ color: '#64748B', fontSize: 10, fontWeight: '700' }}>Delete for me</Text></Pressable>
-              {mine && <Pressable disabled={deletingId === message.id} onPress={() => setDeleteAllTarget(message)}><Text style={{ color: '#B91C1C', fontSize: 10, fontWeight: '700' }}>Delete for everyone</Text></Pressable>}
+              {(mine || selectedRoom.is_creator) && <Pressable disabled={deletingId === message.id} onPress={() => setDeleteAllTarget(message)}><Text style={{ color: '#B91C1C', fontSize: 10, fontWeight: '700' }}>{mine ? 'Delete for everyone' : 'Remove message'}</Text></Pressable>}
             </View>
           </View>;
         })}
@@ -775,18 +1007,23 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       <View style={styles.chatComposer}>{!!replyTo && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#EFF6FF', borderRadius: 10, padding: 9 }}><View style={{ flex: 1 }}><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800' }}>Replying to {replyTo.sender_name}</Text><Text numberOfLines={1} style={styles.muted}>{replyTo.body || (replyTo.media_type ? `${replyTo.media_type} attachment` : '')}</Text></View><Pressable accessibilityLabel="Cancel reply" onPress={() => setReplyTo(null)}><Text style={styles.link}>×</Text></Pressable></View>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>{QUICK_EMOJIS.map(emoji => <Pressable key={emoji} accessibilityLabel={`Insert ${emoji}`} onPress={() => setDraft(current => `${current}${emoji}`)} style={{ paddingHorizontal: 5, paddingVertical: 3 }}><Text style={{ fontSize: 18 }}>{emoji}</Text></Pressable>)}</View><View style={styles.chatTools}><Pressable accessibilityLabel="Add photo or video" onPress={chooseFile} style={styles.chatTool}><Text style={styles.chatToolText}>＋ Media</Text></Pressable><Pressable accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice message'} onPress={recording ? stopVoiceRecording : () => void startVoiceRecording()} style={[styles.chatTool, recording && styles.recordingTool]}><Text style={[styles.chatToolText, recording && styles.recordingText]}>{recording ? '■ Stop' : '● Voice'}</Text></Pressable></View>{Platform.OS === 'web' && <input ref={fileInput} type="file" accept="image/*,video/*" onChange={handleFileSelection} aria-label="Choose a photo or video" style={{ position: 'fixed', width: 1, height: 1, opacity: 0, overflow: 'hidden', left: -100, bottom: 0 }} />}<View style={styles.chatInputRow}><TextInput style={styles.chatInput} multiline maxLength={1000} value={draft} onChangeText={setDraft} placeholder="Message the team…"/><Pressable accessibilityLabel="Send message" disabled={sending || (!draft.trim() && !file)} onPress={() => void sendMessage()} style={[styles.sendButton, (sending || (!draft.trim() && !file)) && styles.dim]}><Text style={styles.sendButtonText}>{sending ? '…' : '↑'}</Text></Pressable></View></View>
     </>}
     <Modal visible={!!mediaView} transparent animationType="fade" onRequestClose={() => setMediaView(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{mediaView?.once ? 'View-once photo' : 'Shared media'}</Text><Pressable onPress={() => setMediaView(null)}><Text style={styles.link}>Close</Text></Pressable></View>{mediaView?.type === 'image' ? <Image source={{ uri: mediaView.url }} resizeMode="contain" style={styles.mediaImage}/> : Platform.OS === 'web' && mediaView ? React.createElement(mediaView.type === 'video' ? 'video' : 'audio', { src: mediaView.url, controls: true, playsInline: true, style: { width: '100%', maxHeight: 420 } }) : <Text style={styles.muted}>Open this media in the web app to play it.</Text>}{mediaView?.once && <Text style={styles.onceFootnote}>This view is now used. Close this window to hide the photo.</Text>}</View></View></Modal>
-    <Modal visible={!!deleteAllTarget} transparent animationType="fade" onRequestClose={() => setDeleteAllTarget(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><Text style={styles.sectionTitle}>Delete for everyone?</Text><Text style={styles.muted}>This removes the message from the shared chat for all participants.</Text><View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}><Pressable style={styles.outlineButton} onPress={() => setDeleteAllTarget(null)}><Text style={styles.outlineText}>Cancel</Text></Pressable><Pressable disabled={!!deletingId} onPress={() => deleteAllTarget && void deleteForEveryone(deleteAllTarget)} style={[styles.action, { backgroundColor: '#B91C1C', paddingHorizontal: 14 }]}><Text style={styles.actionText}>{deletingId === deleteAllTarget?.id ? 'Deleting…' : 'Delete for everyone'}</Text></Pressable></View></View></View></Modal>
+    <Modal visible={!!deleteAllTarget} transparent animationType="fade" onRequestClose={() => setDeleteAllTarget(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><Text style={styles.sectionTitle}>{deleteAllTarget?.sender_id === session?.user?.id ? 'Delete for everyone?' : 'Remove this message?'}</Text><Text style={styles.muted}>{deleteAllTarget?.sender_id === session?.user?.id ? 'This removes your message from the shared chat for all participants.' : 'As the room creator, you can remove this message for everyone in the room.'}</Text><View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}><Pressable style={styles.outlineButton} onPress={() => setDeleteAllTarget(null)}><Text style={styles.outlineText}>Cancel</Text></Pressable><Pressable disabled={!!deletingId} onPress={() => deleteAllTarget && void deleteForEveryone(deleteAllTarget)} style={[styles.action, { backgroundColor: '#B91C1C', paddingHorizontal: 14 }]}><Text style={styles.actionText}>{deletingId === deleteAllTarget?.id ? 'Deleting…' : 'Remove for everyone'}</Text></Pressable></View></View></View></Modal>
   </View>;
 }
 
 function AuthScreen({ onContinue, onJoinChat }: { onContinue: () => void; onJoinChat: (name: string) => Promise<string | null> }) {
-  const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [guestName, setGuestName] = useState(''); const [busy, setBusy] = useState(false); const [guestError, setGuestError] = useState('');
-  async function signIn(create = false) {
-    if (!supabase) return; setBusy(true);
-    const result = create ? await supabase.auth.signUp({ email: email.trim(), password }) : await supabase.auth.signInWithPassword({ email: email.trim(), password });
+  const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [username, setUsername] = useState(''); const [authMode, setAuthMode] = useState<'login' | 'signup'>('login'); const [authMessage, setAuthMessage] = useState(''); const [guestName, setGuestName] = useState(''); const [busy, setBusy] = useState(false); const [guestError, setGuestError] = useState('');
+  async function submitAccount() {
+    if (!supabase) return;
+    const normalizedUsername = username.trim().toLowerCase();
+    if (authMode === 'signup' && !/^[a-z0-9_]{3,24}$/.test(normalizedUsername)) { setAuthMessage('Username must be 3–24 characters using letters, numbers, or underscores.'); return; }
+    setBusy(true); setAuthMessage('');
+    const result = authMode === 'signup'
+      ? await supabase.auth.signUp({ email: email.trim(), password, options: { data: { username: normalizedUsername, full_name: normalizedUsername } } })
+      : await supabase.auth.signInWithPassword({ email: email.trim(), password });
     setBusy(false);
-    if (result.error) Alert.alert(create ? 'Could not create account' : 'Could not sign in', result.error.message);
-    else if (create && !result.data.session) Alert.alert('Check your email', 'Confirm your email, then sign in.');
+    if (result.error) setAuthMessage(result.error.message);
+    else if (authMode === 'signup' && !result.data.session) setAuthMessage('Account created. Check your email to confirm it, then sign in.');
   }
   async function joinGuestChat() {
     setBusy(true); setGuestError('');
@@ -794,7 +1031,7 @@ function AuthScreen({ onContinue, onJoinChat }: { onContinue: () => void; onJoin
     catch (error) { setGuestError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.'); }
     finally { setBusy(false); }
   }
-  return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><View style={styles.avatarLarge}><Text style={styles.avatarText}>OT</Text></View><Text style={styles.title}>Welcome to OfficeTime</Text><Text style={styles.subtitle}>Sign in to securely sync attendance across devices.</Text><TextInput style={styles.input} placeholder="Work email" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail}/><TextInput style={styles.input} placeholder="Password" secureTextEntry value={password} onChangeText={setPassword}/><Pressable style={[styles.action, styles.primary]} onPress={() => void signIn()} disabled={busy}><Text style={styles.actionText}>{busy ? 'Please wait…' : 'Sign in'}</Text></Pressable><Pressable style={styles.textButton} onPress={() => void signIn(true)}><Text style={styles.outlineText}>Create employee account</Text></Pressable><View style={styles.chatJoinDivider}><View style={styles.chatDividerLine}/><Text style={styles.muted}>OR CHAT AS A GUEST</Text><View style={styles.chatDividerLine}/></View><TextInput style={styles.input} placeholder="Chat display name" autoCapitalize="words" value={guestName} onChangeText={value => { setGuestName(value); setGuestError(''); }} maxLength={40}/><Pressable style={[styles.action, styles.guestAction]} disabled={busy || !guestName.trim()} onPress={() => void joinGuestChat()}><Text style={styles.guestActionText}>{busy ? 'Please wait…' : 'Join office chat'}</Text></Pressable>{!!guestError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{guestError}</Text>}<Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
+  return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><View style={styles.avatarLarge}><Text style={styles.avatarText}>OT</Text></View><Text style={styles.title}>{authMode === 'signup' ? 'Create your account' : 'Welcome to OfficeTime'}</Text><Text style={styles.subtitle}>{authMode === 'signup' ? 'Sign up with your email, password, and a username others can use to find you.' : 'Log in with your email and password.'}</Text>{authMode === 'signup' && <TextInput style={styles.input} placeholder="Username (3–24 characters)" autoCapitalize="none" autoCorrect={false} value={username} onChangeText={value => { setUsername(value); setAuthMessage(''); }} maxLength={24}/>}<TextInput style={styles.input} placeholder="Email address (Gmail is supported)" autoCapitalize="none" keyboardType="email-address" autoComplete="email" value={email} onChangeText={value => { setEmail(value); setAuthMessage(''); }}/><TextInput style={styles.input} placeholder="Password" secureTextEntry autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'} value={password} onChangeText={value => { setPassword(value); setAuthMessage(''); }}/><Pressable style={[styles.action, styles.primary]} onPress={() => void submitAccount()} disabled={busy || !email.trim() || !password || (authMode === 'signup' && !username.trim())}><Text style={styles.actionText}>{busy ? 'Please wait…' : authMode === 'signup' ? 'Sign up' : 'Log in'}</Text></Pressable><Pressable style={styles.textButton} onPress={() => { setAuthMode(current => current === 'login' ? 'signup' : 'login'); setAuthMessage(''); }}><Text style={styles.outlineText}>{authMode === 'signup' ? 'Already have an account? Log in' : 'New here? Create an account'}</Text></Pressable>{!!authMessage && <Text accessibilityRole="alert" style={{ color: authMessage.startsWith('Account created') ? '#15803D' : '#B91C1C', fontSize: 12, lineHeight: 18 }}>{authMessage}</Text>}<View style={styles.chatJoinDivider}><View style={styles.chatDividerLine}/><Text style={styles.muted}>OR CHAT AS A GUEST</Text><View style={styles.chatDividerLine}/></View><TextInput style={styles.input} placeholder="Chat display name" autoCapitalize="words" value={guestName} onChangeText={value => { setGuestName(value); setGuestError(''); }} maxLength={40}/><Pressable style={[styles.action, styles.guestAction]} disabled={busy || !guestName.trim()} onPress={() => void joinGuestChat()}><Text style={styles.guestActionText}>{busy ? 'Please wait…' : 'Join office chat'}</Text></Pressable>{!!guestError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{guestError}</Text>}<Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
 }
 
 type MemoryTile = { id: number; pairKey: string; symbol?: string; faceSource?: ImageSourcePropType; matched: boolean };

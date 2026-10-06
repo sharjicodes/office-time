@@ -4,6 +4,7 @@ import { AttendanceDay, DEFAULT_POLICY, getDaySessions, localDateKey } from './a
 import { supabase } from './supabase';
 
 const DAYS_KEY = 'officetime.attendance.v1';
+const LAST_ATTENDANCE_OWNER_KEY = 'officetime.attendance.last-owner.v1';
 const POLICY_KEY = 'officetime.policy.v1';
 const DELETED_DAYS_KEY = 'officetime.deleted-days.v1';
 async function daysKey() {
@@ -11,7 +12,15 @@ async function daysKey() {
     const { data } = await supabase?.auth.getSession() ?? { data: { session: null } };
     const user = data.session?.user;
     // Guest chat auth is not an employee account; keep attendance device-local.
-    return `${DAYS_KEY}.${user && !user.is_anonymous ? user.id : 'device'}`;
+    if (user?.is_anonymous) return `${DAYS_KEY}.device`;
+    if (user) {
+      await AsyncStorage.setItem(LAST_ATTENDANCE_OWNER_KEY, user.id);
+      return `${DAYS_KEY}.${user.id}`;
+    }
+    // Signing out must not make the previous employee's local records look lost.
+    // Keep the owner-scoped cache selected until another employee signs in.
+    const lastOwner = await AsyncStorage.getItem(LAST_ATTENDANCE_OWNER_KEY);
+    return `${DAYS_KEY}.${lastOwner || 'device'}`;
   } catch { return `${DAYS_KEY}.device`; }
 }
 

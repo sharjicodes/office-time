@@ -5,9 +5,14 @@ create extension if not exists pgcrypto;
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   display_name text,
+  username text not null,
   role text not null default 'employee' check (role in ('employee','manager','hr_admin')),
   created_at timestamptz not null default now()
 );
+alter table public.profiles add column if not exists username text;
+update public.profiles set username = 'user_' || left(id::text, 8) where username is null or btrim(username) = '';
+alter table public.profiles alter column username set not null;
+create unique index if not exists profiles_username_unique_idx on public.profiles (lower(username));
 create table if not exists public.attendance_days (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -57,14 +62,20 @@ alter table public.late_arrival_reviews add column if not exists reviewed_at tim
 
 create or replace function public.create_profile_for_new_user()
 returns trigger language plpgsql security definer set search_path = '' as $$
+declare requested_username text;
 begin
-  insert into public.profiles (id, display_name) values (new.id, coalesce(new.raw_user_meta_data ->> 'full_name', split_part(new.email, '@', 1))) on conflict (id) do nothing;
+  requested_username := lower(regexp_replace(coalesce(new.raw_user_meta_data->>'username', ''), '[^a-z0-9_]', '', 'g'));
+  if char_length(requested_username) < 3 or char_length(requested_username) > 24 then
+    requested_username := 'user_' || left(replace(new.id::text, '-', ''), 18);
+  end if;
+  insert into public.profiles (id, display_name, username)
+    values (new.id, coalesce(nullif(new.raw_user_meta_data->>'full_name', ''), requested_username), requested_username);
   return new;
 end; $$;
 drop trigger if exists on_auth_user_created_officetime on auth.users;
 create trigger on_auth_user_created_officetime after insert on auth.users for each row execute procedure public.create_profile_for_new_user();
-insert into public.profiles (id, display_name)
-select id, coalesce(raw_user_meta_data ->> 'full_name', split_part(email, '@', 1)) from auth.users
+insert into public.profiles (id, display_name, username)
+select id, coalesce(raw_user_meta_data ->> 'full_name', split_part(email, '@', 1)), 'user_' || left(id::text, 8) from auth.users
 on conflict (id) do nothing;
 
 create or replace function public.has_staff_role()

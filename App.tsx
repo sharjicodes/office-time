@@ -1203,8 +1203,15 @@ function GamesHub({ session }: { session: any }) {
 const ludoColors = ['#E74C3C', '#27AE60', '#F1C40F', '#3498DB', '#9B59B6', '#E67E22'];
 // Player order follows the board bases: red (bottom-left), green (bottom-right),
 // yellow (top-right), blue (top-left). These are their entry squares on the track.
-const ludoStarts: Record<number, number[]> = { 4: [41, 32, 15, 2], 6: [41, 32, 15, 2, 47, 21] };
-const ludoSafeSquares = [2, 8, 15, 21, 28, 34, 41, 47];
+type LudoPlayerCount = 2 | 3 | 4 | 5 | 6;
+const ludoStarts: Record<LudoPlayerCount, number[]> = {
+  2: [41, 28], 3: [41, 28, 15], 4: [41, 28, 15, 2],
+  5: [0, 26, 35, 9, 44], 6: [0, 26, 35, 9, 44, 18],
+};
+// The four non-entry safety squares are marked with stars like the reference board.
+const ludoStarSquares = [10, 23, 36, 49];
+const ludoSixStarSquares = [4, 13, 22, 30, 39, 48];
+const ludoSafeSquaresFor = (playerCount: LudoPlayerCount) => [...new Set([...ludoStarts[playerCount], ...(playerCount > 4 ? ludoSixStarSquares : ludoStarSquares)])];
 const ludoProgressLabel = (position: number) => position < 0 ? 'Yard' : position >= 52 ? `Home ${position - 51}/6` : `Track ${position + 1}/52`;
 const ludoTrackCoords: [number, number][] = [
   [7,0],[6,0],[6,1],[6,2],[6,3],[6,4],[6,5],[5,6],[4,6],[3,6],[2,6],[1,6],[0,6],
@@ -1213,8 +1220,11 @@ const ludoTrackCoords: [number, number][] = [
   [14,7],[14,6],[13,6],[12,6],[11,6],[10,6],[9,6],[8,5],[8,4],[8,3],[8,2],[8,1],[8,0],
 ];
 const ludoYardCoords: [number, number][][] = [
-  [[11,1],[11,4],[13,1],[13,4]], [[11,10],[11,13],[13,10],[13,13]],
-  [[1,10],[1,13],[4,10],[4,13]], [[1,1],[1,4],[4,1],[4,4]],
+  // Fractional grid positions place waiting tokens at the exact centers of the symmetric 2×2 yard circles.
+  [[10.5,1.5],[10.5,3.5],[12.5,1.5],[12.5,3.5]],
+  [[10.5,10.5],[10.5,12.5],[12.5,10.5],[12.5,12.5]],
+  [[1.5,10.5],[1.5,12.5],[3.5,10.5],[3.5,12.5]],
+  [[1.5,1.5],[1.5,3.5],[3.5,1.5],[3.5,3.5]],
   [[1,6],[1,8],[4,6],[4,8]], [[10,6],[10,8],[13,6],[13,8]],
 ];
 const ludoHomeLanes: [number, number][][] = [
@@ -1224,7 +1234,58 @@ const ludoHomeLanes: [number, number][][] = [
 ];
 
 type LudoBoardPlayer = { id: string; username: string; tokens: number[]; index: number };
-function LudoBoard({ playerCount, players, legalTokenIndices, selectablePlayerId, diceValue, onMove }: { playerCount: 4 | 6; players: LudoBoardPlayer[]; legalTokenIndices: number[]; selectablePlayerId: string; diceValue: number | null; onMove: (playerId: string, tokenIndex: number) => void }) {
+const sixSideLengths = [9, 9, 8, 9, 9, 8];
+const sixVertexAngles = [-120, -60, 0, 60, 120, 180];
+const sixPlayerVertices = [0, 3, 4, 1, 5, 2];
+const sixPoint = (angle: number, radius: number, center = 50): [number, number] => {
+  const radians = angle * Math.PI / 180;
+  return [center + Math.cos(radians) * radius, center + Math.sin(radians) * radius];
+};
+const sixTrackCoords: [number, number][] = sixSideLengths.flatMap((length, side) => Array.from({ length }, (_, step) => {
+  const from = sixPoint(sixVertexAngles[side], 39);
+  const to = sixPoint(sixVertexAngles[(side + 1) % 6], 39);
+  const t = step / length;
+  return [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t] as [number, number];
+}));
+function SixPlayerLudoBoard({ playerCount, players, legalTokenIndices, selectablePlayerId, diceValue, onMove }: { playerCount: LudoPlayerCount; players: LudoBoardPlayer[]; legalTokenIndices: number[]; selectablePlayerId: string; diceValue: number | null; onMove: (playerId: string, tokenIndex: number) => void }) {
+  const [boardSize, setBoardSize] = useState(0);
+  const yardPoint = (playerIndex: number, tokenIndex: number): [number, number] => {
+    const circles: [number, number][][] = [
+      [[42.7,19.1],[47.7,19.1],[52.7,19.1],[50.0,24.0]],
+      [[48.0,77.3],[42.7,82.3],[53.3,82.3],[48.0,87.3]],
+      [[21.0,67.0],[26.3,72.0],[16.0,72.0],[21.0,77.0]],
+      [[73.7,28.0],[78.7,33.3],[68.7,33.3],[73.7,38.7]],
+      [[24.3,28.0],[29.7,33.3],[19.0,33.3],[24.3,38.7]],
+      [[76.3,70.7],[81.7,76.0],[71.0,76.0],[76.3,81.3]],
+    ];
+    return circles[playerIndex]?.[tokenIndex] ?? [50, 50];
+  };
+  const homePoint = (playerIndex: number, laneIndex: number): [number, number] => {
+    const angle = sixVertexAngles[sixPlayerVertices[playerIndex]];
+    return sixPoint(angle, 32 - laneIndex * 5);
+  };
+  const positionFor = (player: LudoBoardPlayer, position: number, tokenIndex: number): [number, number] => {
+    if (position < 0) return yardPoint(player.index, tokenIndex);
+    if (position >= 52) return homePoint(player.index, Math.min(5, position - 52));
+    const trackIndex = (ludoStarts[playerCount][player.index] + position) % 52;
+    return sixTrackCoords[trackIndex];
+  };
+  return <View style={{ width: '100%', maxWidth: 480, alignSelf: 'center', gap: 6 }}>
+    <View onLayout={event => setBoardSize(event.nativeEvent.layout.width)} style={{ width: '100%', aspectRatio: 1, borderRadius: 22, overflow: 'hidden', backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', position: 'relative' }}>
+      <Image source={require('./assets/ludo-six-player-board.jpg')} resizeMode="stretch" style={{ position: 'absolute', width: '100%', height: '100%' }} />
+      {players.flatMap(player => player.tokens.map((position, tokenIndex) => {
+        const [x,y] = positionFor(player, position, tokenIndex);
+        const selectable = player.id === selectablePlayerId && legalTokenIndices.includes(tokenIndex);
+        return <Pressable key={`${player.id}-${tokenIndex}`} disabled={!selectable} onPress={() => onMove(player.id, tokenIndex)} style={[styles.ludoPiece, { left: `${x}%`, top: `${y}%`, width: Math.max(18, boardSize * 0.045), height: Math.max(18, boardSize * 0.045), marginLeft: -Math.max(9, boardSize * 0.0225), marginTop: -Math.max(9, boardSize * 0.0225), backgroundColor: ludoColors[player.index % ludoColors.length] }, selectable && styles.ludoPieceSelectable]}><Text style={styles.ludoPieceText}>{tokenIndex + 1}</Text></Pressable>;
+      }))}
+    </View>{diceValue !== null && <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800', textAlign: 'center' }}>🎲 Dice: {diceValue}</Text>}
+  </View>;
+}
+function LudoBoard({ playerCount, players, legalTokenIndices, selectablePlayerId, diceValue, onMove }: { playerCount: LudoPlayerCount; players: LudoBoardPlayer[]; legalTokenIndices: number[]; selectablePlayerId: string; diceValue: number | null; onMove: (playerId: string, tokenIndex: number) => void }) {
+  const [boardSize, setBoardSize] = useState(0);
+  if (playerCount > 4) return <SixPlayerLudoBoard playerCount={playerCount} players={players} legalTokenIndices={legalTokenIndices} selectablePlayerId={selectablePlayerId} diceValue={diceValue} onMove={onMove} />;
+  const triangleHalf = boardSize / 10;
+  const safeSquares = ludoSafeSquaresFor(playerCount);
   const baseColor = (row: number, col: number) => row < 6 && col < 6 ? ludoColors[3] : row < 6 && col > 8 ? ludoColors[2] : row > 8 && col < 6 ? ludoColors[0] : row > 8 && col > 8 ? ludoColors[1] : null;
   const cellColor = (row: number, col: number) => {
     if (row === 7 && col >= 1 && col <= 5) return ludoColors[3];
@@ -1250,30 +1311,34 @@ function LudoBoard({ playerCount, players, legalTokenIndices, selectablePlayerId
     { row: 9, col: 0, color: ludoColors[0] }, { row: 9, col: 9, color: ludoColors[1] },
     { row: 0, col: 9, color: ludoColors[2] }, { row: 0, col: 0, color: ludoColors[3] },
   ];
-  return <View style={styles.ludoBoard}>
+  return <View style={{ width: '100%', maxWidth: 420, alignSelf: 'center', gap: 6 }}><View style={styles.ludoBoard} onLayout={event => setBoardSize(event.nativeEvent.layout.width)}>
     <View style={styles.ludoGrid}>{Array.from({ length: 15 }, (_, row) => <View key={`row-${row}`} style={styles.ludoGridRow}>{Array.from({ length: 15 }, (_, col) => {
-      const color = cellColor(row, col); const pathIndex = ludoTrackCoords.findIndex(([r,c]) => r === row && c === col); const isSafe = pathIndex >= 0 && ludoSafeSquares.includes(pathIndex);
-      return <View key={`cell-${row}-${col}`} style={[styles.ludoGridCell, color ? { backgroundColor: color } : styles.ludoGridBlank, pathIndex >= 0 && !color && styles.ludoPathCell, isSafe && styles.ludoSafeCell]}/>;
+      const color = cellColor(row, col); const pathIndex = ludoTrackCoords.findIndex(([r,c]) => r === row && c === col); const isSafe = pathIndex >= 0 && safeSquares.includes(pathIndex); const isStar = isSafe;
+      return <View key={`cell-${row}-${col}`} style={[styles.ludoGridCell, color ? { backgroundColor: color } : styles.ludoGridBlank, pathIndex >= 0 && !color && styles.ludoPathCell, isSafe && styles.ludoSafeCell]}>{isStar && <Text style={styles.ludoSafeStar}>☆</Text>}</View>;
     })}</View>)}</View>
-    <View pointerEvents="none" style={styles.ludoCenterMark}><Text style={{ color: ludoColors[3] }}>◀</Text><Text style={{ color: ludoColors[2] }}>▲</Text><Text style={{ color: ludoColors[0] }}>▼</Text><Text style={{ color: ludoColors[1] }}>▶</Text></View>
-    {baseBoxes.map((box, index) => <View key={`base-${index}`} pointerEvents="none" style={[styles.ludoHomeBox, { left: `${box.col/15*100}%`, top: `${box.row/15*100}%`, backgroundColor: box.color }]}><View style={styles.ludoHomeInner}>{[0,1,2,3].map(i => <View key={i} style={[styles.ludoHomeDot, { backgroundColor: box.color }]}/>)}</View></View>)}
+    <View pointerEvents="none" style={styles.ludoCenterMark}>
+      <View style={{ position: 'absolute', top: 0, left: 0, width: 0, height: 0, borderLeftWidth: triangleHalf, borderRightWidth: triangleHalf, borderTopWidth: triangleHalf, borderLeftColor: 'transparent', borderRightColor: 'transparent', borderTopColor: ludoColors[2] }}/>
+      <View style={{ position: 'absolute', top: 0, right: 0, width: 0, height: 0, borderTopWidth: triangleHalf, borderBottomWidth: triangleHalf, borderRightWidth: triangleHalf, borderTopColor: 'transparent', borderBottomColor: 'transparent', borderRightColor: ludoColors[1] }}/>
+      <View style={{ position: 'absolute', bottom: 0, left: 0, width: 0, height: 0, borderLeftWidth: triangleHalf, borderRightWidth: triangleHalf, borderBottomWidth: triangleHalf, borderLeftColor: 'transparent', borderRightColor: 'transparent', borderBottomColor: ludoColors[0] }}/>
+      <View style={{ position: 'absolute', top: 0, left: 0, width: 0, height: 0, borderTopWidth: triangleHalf, borderBottomWidth: triangleHalf, borderLeftWidth: triangleHalf, borderTopColor: 'transparent', borderBottomColor: 'transparent', borderLeftColor: ludoColors[3] }}/>
+    </View>
+    {baseBoxes.map((box, index) => <View key={`base-${index}`} pointerEvents="none" style={[styles.ludoHomeBox, { left: `${box.col/15*100}%`, top: `${box.row/15*100}%`, backgroundColor: box.color }]}><View style={[styles.ludoHomeInner, { position: 'relative' }]}>{[0,1,2,3].map(i => <View key={i} style={[styles.ludoHomeDot, { position: 'absolute', backgroundColor: box.color, left: i % 2 === 0 ? '10.5%' : '54.5%', top: i < 2 ? '10.5%' : '54.5%' }]}/>)}</View></View>)}
     {players.flatMap(player => player.tokens.map((position, tokenIndex) => {
       const [row, col] = coordinates(player, position, tokenIndex);
       const x = (col + 0.5) / 15 * 100; const y = (row + 0.5) / 15 * 100;
       const selectable = player.id === selectablePlayerId && legalTokenIndices.includes(tokenIndex);
-      return <Pressable key={`${player.id}-${tokenIndex}`} disabled={!selectable} onPress={() => onMove(player.id, tokenIndex)} style={[styles.ludoPiece, { left: `${x}%`, top: `${y}%`, backgroundColor: ludoColors[player.index % ludoColors.length] }, selectable && styles.ludoPieceSelectable]}><Text style={styles.ludoPieceText}>{tokenIndex + 1}</Text></Pressable>;
+      return <Pressable key={`${player.id}-${tokenIndex}`} disabled={!selectable} onPress={() => onMove(player.id, tokenIndex)} style={[styles.ludoPiece, { left: `${x}%`, top: `${y}%`, marginLeft: -boardSize * 0.03, marginTop: -boardSize * 0.03, backgroundColor: ludoColors[player.index % ludoColors.length] }, selectable && styles.ludoPieceSelectable]}><Text style={styles.ludoPieceText}>{tokenIndex + 1}</Text></Pressable>;
     }))}
-    <View style={styles.ludoCenter}><Text style={styles.ludoDice}>{diceValue ?? '🎲'}</Text></View>
-  </View>;
+  </View>{diceValue !== null && <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800', textAlign: 'center' }}>🎲 Dice: {diceValue}</Text>}</View>;
 }
 
-function freshLocalLudo(playerCount: 4 | 6, names?: string[], forfeitTripleSix = true) {
+function freshLocalLudo(playerCount: LudoPlayerCount, names?: string[], forfeitTripleSix = true) {
   return { playerCount, names: Array.from({ length: playerCount }, (_, index) => names?.[index] || `Player ${index + 1}`), tokens: Array.from({ length: playerCount }, () => [-1, -1, -1, -1]), turnIndex: 0, diceValue: null as number | null, winnerIndex: null as number | null, sixStreak: 0, forfeitTripleSix };
 }
 
 function LudoGame({ session }: { session: any }) {
   const [playMode, setPlayMode] = useState<'offline' | 'online'>('offline');
-  const [playerCount, setPlayerCount] = useState<4 | 6>(4);
+  const [playerCount, setPlayerCount] = useState<LudoPlayerCount>(4);
   const [forfeitTripleSix, setForfeitTripleSix] = useState(true);
   const [localGame, setLocalGame] = useState(() => freshLocalLudo(4));
   const [inviteText, setInviteText] = useState('');
@@ -1286,7 +1351,7 @@ function LudoGame({ session }: { session: any }) {
 
   const localLegalMoves = localGame.diceValue === null ? [] : localGame.tokens[localGame.turnIndex].map((position, index) => (position < 0 ? localGame.diceValue === 6 : position + localGame.diceValue! <= 57) ? index : -1).filter(index => index >= 0);
 
-  function startLocalGame(count: 4 | 6) {
+  function startLocalGame(count: LudoPlayerCount) {
     setLocalGame(current => freshLocalLudo(count, current.names, forfeitTripleSix));
   }
 
@@ -1314,7 +1379,7 @@ function LudoGame({ session }: { session: any }) {
       let captured = false;
       if (destination < 52) {
         const globalSquare = (ludoStarts[current.playerCount][playerIndex] + destination) % 52;
-        if (!ludoSafeSquares.includes(globalSquare)) {
+        if (!ludoSafeSquaresFor(current.playerCount).includes(globalSquare)) {
           tokens.forEach((opponent, otherIndex) => {
             if (otherIndex === playerIndex) return;
             opponent.forEach((position, otherToken) => {
@@ -1423,8 +1488,8 @@ function LudoGame({ session }: { session: any }) {
     <View style={styles.difficultyRow}><Pressable onPress={() => { setPlayMode('offline'); setLudoMessage(''); }} style={[styles.difficultyButton, playMode === 'offline' && styles.difficultySelected]}><Text style={[styles.difficultyText, playMode === 'offline' && styles.difficultyTextSelected]}>Offline play</Text></Pressable><Pressable onPress={() => { setPlayMode('online'); setLudoMessage(''); }} style={[styles.difficultyButton, playMode === 'online' && styles.difficultySelected]}><Text style={[styles.difficultyText, playMode === 'online' && styles.difficultyTextSelected]}>Online play</Text></Pressable></View>
     {playMode === 'offline' ? <View style={styles.onlineGamePanel}>
       <Text style={styles.sectionTitle}>Pass-and-play · one device</Text>
-      <Text style={styles.muted}>Choose 4 or 6 local players. Each player rolls and moves when their name is highlighted.</Text>
-      <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Players</Text>{([4, 6] as const).map(count => <Pressable key={count} onPress={() => startLocalGame(count)} style={[styles.difficultyButton, localGame.playerCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, localGame.playerCount === count && styles.difficultyTextSelected]}>{count} players</Text></Pressable>)}</View>
+      <Text style={styles.muted}>Choose between 2 and 6 local players. Each player rolls and moves when their name is highlighted.</Text>
+      <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Players</Text>{([2, 3, 4, 5, 6] as const).map(count => <Pressable key={count} onPress={() => startLocalGame(count)} style={[styles.difficultyButton, localGame.playerCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, localGame.playerCount === count && styles.difficultyTextSelected]}>{count}</Text></Pressable>)}</View>
       <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: forfeitTripleSix }} onPress={() => { const next = !forfeitTripleSix; setForfeitTripleSix(next); setLocalGame(current => ({ ...current, forfeitTripleSix: next, sixStreak: 0 })); }} style={styles.ludoRuleToggle}><Text style={styles.ludoRuleCheck}>{forfeitTripleSix ? '✓' : ''}</Text><Text style={styles.muted}>Forfeit the third consecutive six</Text></Pressable>
       <View style={styles.ludoNameGrid}>{localGame.names.map((name, index) => <TextInput key={`local-name-${index}`} accessibilityLabel={`Player ${index + 1} name`} style={[styles.input, styles.ludoNameInput]} value={name} onChangeText={value => setLocalGame(current => ({ ...current, names: current.names.map((item, i) => i === index ? value : item) }))} maxLength={18}/>)}</View>
       <View style={styles.ludoPlayerList}>{localGame.names.map((name, index) => <View key={`local-player-${index}`} style={[styles.ludoPlayerBadge, localGame.turnIndex === index && localGame.winnerIndex === null && styles.playerTurn]}><Text style={[styles.ludoPlayerName, { color: ludoColors[index] }]}>{name || `Player ${index + 1}`}</Text><Text style={styles.muted}>{localGame.tokens[index].filter(position => position === 57).length}/4 home</Text></View>)}</View>
@@ -1437,10 +1502,10 @@ function LudoGame({ session }: { session: any }) {
       <Pressable style={styles.outlineButton} onPress={() => startLocalGame(localGame.playerCount)}><Text style={styles.outlineText}>Start a new game</Text></Pressable>
     </View> : !session ? <><Text style={styles.muted}>Create a guest username or sign in to invite players and join online rooms.</Text><Pressable disabled={busy} style={[styles.newGameButton, { alignSelf: 'flex-start' }]} onPress={() => void createGuest()}><Text style={styles.newGameText}>{busy ? 'Creating…' : 'Create guest username'}</Text></Pressable></> : <>
       {!!myUsername && <Text style={styles.onlineUsername}>Your username: <Text style={styles.onlineUsernameValue}>@{myUsername}</Text></Text>}
-      <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Players</Text>{([4, 6] as const).map(count => <Pressable key={count} onPress={() => setPlayerCount(count)} style={[styles.difficultyButton, playerCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, playerCount === count && styles.difficultyTextSelected]}>{count} players</Text></Pressable>)}</View>
+      <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Players</Text>{([2, 3, 4, 5, 6] as const).map(count => <Pressable key={count} onPress={() => setPlayerCount(count)} style={[styles.difficultyButton, playerCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, playerCount === count && styles.difficultyTextSelected]}>{count}</Text></Pressable>)}</View>
       <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: forfeitTripleSix }} onPress={() => setForfeitTripleSix(value => !value)} style={styles.ludoRuleToggle}><Text style={styles.ludoRuleCheck}>{forfeitTripleSix ? '✓' : ''}</Text><Text style={styles.muted}>Forfeit the third consecutive six</Text></Pressable>
       <Text style={styles.muted}>Enter {playerCount - 1} usernames, separated by commas.</Text>
-      <TextInput accessibilityLabel="Ludo invite usernames" style={styles.input} value={inviteText} onChangeText={setInviteText} autoCapitalize="none" autoCorrect={false} placeholder={playerCount === 4 ? '@alex, @sam, @mira' : '@alex, @sam, @mira, @lee, @jo'}/>
+      <TextInput accessibilityLabel="Ludo invite usernames" style={styles.input} value={inviteText} onChangeText={setInviteText} autoCapitalize="none" autoCorrect={false} placeholder={Array.from({ length: playerCount - 1 }, (_, index) => `@player${index + 1}`).join(', ')}/>
       <Pressable disabled={busy} style={[styles.action, styles.primary, busy && styles.dim]} onPress={() => void createRoom()}><Text style={styles.actionText}>{busy ? 'Please wait…' : `Create ${playerCount}-player room`}</Text></Pressable>
       {!!ludoMessage && <Text accessibilityRole="alert" style={styles.muted}>{ludoMessage}</Text>}
       {receivedInvites.map(invite => <View key={invite.id} style={styles.onlineInviteCard}><View style={{ flex: 1 }}><Text style={styles.onlineInviteTitle}>Ludo invitation · {invite.player_count} players</Text><Text style={styles.muted}>From @{invite.creator_username}</Text></View><Pressable onPress={() => void replyInvite(invite.id, true)} style={styles.newGameButton}><Text style={styles.newGameText}>Join</Text></Pressable><Pressable onPress={() => void replyInvite(invite.id, false)}><Text style={styles.link}>Decline</Text></Pressable></View>)}
@@ -1938,6 +2003,7 @@ function Stepper({ label, value, onMinus, onPlus }: { label: string; value: stri
 function SettingChoice({ label, value, options, onSelect }: { label: string; value: string; options: string[]; onSelect: (value: string) => void }) { return <View style={styles.settingChoice}><Text style={styles.rowLabel}>{label}</Text><View style={styles.choiceRow}>{options.map(option => <Pressable key={option} onPress={() => onSelect(option)} style={[styles.choice, value === option && styles.choiceSelected]}><Text style={[styles.choiceText, value === option && styles.choiceTextSelected]}>{option}</Text></Pressable>)}</View></View>; }
 
 const styles = StyleSheet.create({
+  ludoSafeStar: { color: '#94A3B8', fontSize: 18, lineHeight: 20, fontWeight: '700' },
   fireworksLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1000, elevation: 1000, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.10)' }, fireworkParticle: { position: 'absolute', left: -3, top: -3, width: 7, height: 7, borderRadius: 5 }, fireworkFlash: { position: 'absolute', left: -11, top: -11, width: 22, height: 22, borderRadius: 12, backgroundColor: '#FFF7C2' }, fireworksMessage: { position: 'absolute', alignSelf: 'center', top: '42%', minWidth: 230, borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.72)', backgroundColor: 'rgba(15,23,42,0.88)', paddingHorizontal: 26, paddingVertical: 22, alignItems: 'center', shadowColor: '#000000', shadowOpacity: 0.24, shadowRadius: 24, elevation: 12 }, fireworksEmoji: { fontSize: 32, marginBottom: 7 }, fireworksTitle: { color: '#FFFFFF', fontSize: 22, fontWeight: '900', textAlign: 'center' }, fireworksSubtitle: { color: '#DBEAFE', fontSize: 13, fontWeight: '700', marginTop: 5 },
   safe: { flex: 1, backgroundColor: colors.background }, ambienceLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden', zIndex: 0 }, correctionOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.58)', alignItems: 'center', justifyContent: 'center', padding: 12 }, correctionModal: { width: '100%', maxWidth: 620, height: '92%', maxHeight: 780, backgroundColor: colors.card, borderRadius: 18, padding: 15, gap: 12, overflow: 'hidden' }, correctionScroll: { flex: 1, minHeight: 0 }, correctionContent: { gap: 12, paddingBottom: 8 }, correctionRow: { gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }, correctionFields: { flexDirection: 'row', gap: 8 }, sessionBreakEditor: { gap: 6, backgroundColor: '#F8FAFC', padding: 9, borderRadius: 10 }, sessionBreakFields: { flexDirection: 'row', gap: 8 }, sessionBreakField: { flex: 1, gap: 4 }, correctionFooter: { flexShrink: 0, paddingTop: 2, backgroundColor: colors.card }, correctionSave: { flex: 0, alignSelf: 'stretch', height: 46, justifyContent: 'center' }, passingLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, overflow: 'hidden' }, fallLayer: { position: 'absolute', top: -36, left: 0, right: 0, bottom: 0, zIndex: 51, overflow: 'hidden' }, spiderThread: { position: 'absolute', top: 0, width: 2, backgroundColor: '#E2E8F0', opacity: 0.95, transformOrigin: 'top center' }, fallingSpider: { position: 'absolute', top: 0 }, passingGif: { position: 'absolute', top: '42%', left: 0 }, ambientGlow: { position: 'absolute', width: 260, height: 260, borderRadius: 140, opacity: 0.16 }, glowBlue: { top: '18%', left: -140, backgroundColor: '#BFDBFE' }, glowMint: { top: '54%', right: -145, backgroundColor: '#A7F3D0' }, floatPaw: { position: 'absolute', fontSize: 21, opacity: 0.15 }, floatPawOne: { top: '26%', left: '12%' }, floatPawTwo: { top: '66%', right: '14%' }, firefly: { position: 'absolute', color: '#F59E0B', fontSize: 23, fontWeight: '900' }, fireflyOne: { top: '38%', right: '23%' }, fireflyTwo: { top: '72%', left: '28%' }, runningPawTrail: { position: 'absolute', left: 0, bottom: 14, fontSize: 22, color: '#60A5FA', opacity: 0.25 }, spiderWeb: { position: 'absolute', width: 142, height: 142, top: -42, right: -42, borderRadius: 100 }, webRing: { position: 'absolute', borderWidth: 1, borderColor: '#60A5FA', borderRadius: 100 }, webRingOuter: { width: 128, height: 128, left: 7, top: 7 }, webRingMiddle: { width: 88, height: 88, left: 27, top: 27 }, webRingInner: { width: 48, height: 48, left: 47, top: 47 }, webSpoke: { position: 'absolute', width: 124, height: 1, top: 70, left: 70, backgroundColor: '#60A5FA' }, webSpider: { position: 'absolute', left: 57, top: 55, fontSize: 18 }, ambientRunner: { position: 'absolute', left: 0, bottom: 13, fontSize: 28, opacity: 0.38 }, page: { width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 38, gap: 16 }, center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   catScene: { height: 88, width: '100%', borderRadius: 18, overflow: 'hidden', backgroundColor: '#DFF4F3', borderWidth: 1, borderColor: '#C5E8E5' }, catSun: { position: 'absolute', right: 24, top: 13, width: 25, height: 25, borderRadius: 20, backgroundColor: '#FDE68A' }, catCloud: { position: 'absolute', right: 56, top: 9, fontSize: 15, opacity: 0.75 }, catTitle: { position: 'absolute', left: 13, top: 12, color: '#0F766E', fontSize: 8, fontWeight: '900', letterSpacing: 1.1 }, catCaption: { position: 'absolute', left: 13, top: 26, color: '#365F66', fontSize: 11, fontWeight: '700' }, catHorizon: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, backgroundColor: '#A7D9AC' }, catGrassLeft: { position: 'absolute', left: '30%', bottom: 8, height: 13, width: 55, borderTopLeftRadius: 35, borderTopRightRadius: 20, backgroundColor: '#86C694', transform: [{ rotate: '-5deg' }] }, catGrassRight: { position: 'absolute', right: '8%', bottom: 6, height: 16, width: 70, borderTopLeftRadius: 40, borderTopRightRadius: 25, backgroundColor: '#8BCB9A', transform: [{ rotate: '4deg' }] }, catPaws: { position: 'absolute', left: '42%', bottom: 13, fontSize: 11, letterSpacing: 4 }, walkingCat: { position: 'absolute', left: 0, bottom: 7 }, catEmoji: { fontSize: 31, lineHeight: 37 },

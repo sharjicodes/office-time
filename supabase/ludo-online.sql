@@ -3,7 +3,7 @@ create table if not exists public.ludo_matches (
   id uuid primary key default gen_random_uuid(),
   creator_id uuid not null references auth.users(id) on delete cascade,
   creator_username text not null,
-  player_count integer not null check (player_count in (4, 6)),
+  player_count integer not null check (player_count between 2 and 6),
   invitee_ids uuid[] not null,
   invitee_usernames text[] not null,
   declined_ids uuid[] not null default '{}',
@@ -22,6 +22,8 @@ create table if not exists public.ludo_matches (
   check (cardinality(invitee_usernames) = player_count - 1),
   check (cardinality(player_user_ids) = cardinality(player_usernames))
 );
+alter table public.ludo_matches drop constraint if exists ludo_matches_player_count_check;
+alter table public.ludo_matches add constraint ludo_matches_player_count_check check (player_count between 2 and 6);
 alter table public.ludo_matches add column if not exists six_streak integer not null default 0 check (six_streak between 0 and 2);
 alter table public.ludo_matches add column if not exists forfeit_triple_six boolean not null default true;
 create index if not exists ludo_matches_created_idx on public.ludo_matches (created_at desc) where status = 'waiting';
@@ -39,7 +41,7 @@ returns uuid language plpgsql security definer set search_path = public, auth as
 declare target_id uuid; target_name text; sender_name text; invite_ids uuid[] := '{}'; invite_names text[] := '{}'; requested text; match_id uuid; initial_tokens jsonb;
 begin
   if auth.uid() is null then raise exception 'Create a guest profile or sign in to invite players.'; end if;
-  if player_count_in not in (4,6) or cardinality(username_list_in) <> player_count_in - 1 then raise exception 'Enter exactly % usernames.', player_count_in - 1; end if;
+  if player_count_in not between 2 and 6 or cardinality(username_list_in) <> player_count_in - 1 then raise exception 'Choose 2–6 players and enter exactly % usernames.', player_count_in - 1; end if;
   select username into sender_name from public.profiles where id = auth.uid();
   foreach requested in array username_list_in loop
     select id, username into target_id, target_name from public.profiles where lower(username) = lower(btrim(regexp_replace(requested, '^@', '')));
@@ -95,10 +97,12 @@ end $$;
 
 create or replace function public.move_ludo_token(match_id_in uuid, token_index_in integer)
 returns void language plpgsql security definer set search_path = public, auth as $$
-declare m public.ludo_matches%rowtype; player_id uuid; position integer; destination integer; die integer; start_offset integer; absolute_cell integer; safe_cells integer[] := array[2,8,15,21,28,34,41,47]; opponent uuid; opponent_tokens integer[]; updated_tokens integer[]; player_pos integer; captured boolean := false;
+declare m public.ludo_matches%rowtype; player_id uuid; position integer; destination integer; die integer; start_offset integer; absolute_cell integer; safe_cells integer[] := array[2,10,15,23,28,36,41,49]; opponent uuid; opponent_tokens integer[]; updated_tokens integer[]; player_pos integer; captured boolean := false;
 begin
   select * into m from public.ludo_matches where id = match_id_in for update;
   if not found or auth.uid() <> m.player_user_ids[m.turn_index + 1] then raise exception 'It is not your turn.'; end if;
+  if m.player_count = 5 then safe_cells := array[0,4,9,13,22,26,30,35,39,44,48]; end if;
+  if m.player_count = 6 then safe_cells := array[0,4,9,13,18,22,26,30,35,39,44,48]; end if;
   if m.status <> 'active' or m.dice_value is null then raise exception 'Roll the dice first.'; end if;
   if token_index_in < 0 or token_index_in > 3 then raise exception 'Choose one of your four pieces.'; end if;
   player_id := auth.uid(); die := m.dice_value;
@@ -112,9 +116,12 @@ begin
   end if;
   select array_agg((m.tokens -> player_id::text ->> n)::integer order by n) into updated_tokens from generate_series(0,3) n;
   updated_tokens[token_index_in + 1] := destination;
-  start_offset := case m.player_count
-    when 4 then (array[41,32,15,2])[array_position(m.player_user_ids, player_id)]
-    else (array[41,32,15,2,47,21])[array_position(m.player_user_ids, player_id)] end;
+  start_offset := (case m.player_count
+    when 2 then array[41,28]
+    when 3 then array[41,28,15]
+    when 4 then array[41,28,15,2]
+    when 5 then array[0,26,35,9,44]
+    else array[0,26,35,9,44,18] end)[array_position(m.player_user_ids, player_id)];
   if destination < 52 then
     absolute_cell := (start_offset + destination) % 52;
     if not absolute_cell = any(safe_cells) then
@@ -123,7 +130,12 @@ begin
           select array_agg((m.tokens -> opponent::text ->> n)::integer order by n) into opponent_tokens from generate_series(0,3) n;
           for player_pos in 1..4 loop
             if opponent_tokens[player_pos] >= 0 and opponent_tokens[player_pos] < 52 and
-               ((case m.player_count when 4 then (array[41,32,15,2])[array_position(m.player_user_ids, opponent)] else (array[41,32,15,2,47,21])[array_position(m.player_user_ids, opponent)] end) + opponent_tokens[player_pos]) % 52 = absolute_cell then
+               (((case m.player_count
+                 when 2 then array[41,28]
+                 when 3 then array[41,28,15]
+                 when 4 then array[41,28,15,2]
+                 when 5 then array[0,26,35,9,44]
+                 else array[0,26,35,9,44,18] end)[array_position(m.player_user_ids, opponent)]) + opponent_tokens[player_pos]) % 52 = absolute_cell then
               opponent_tokens[player_pos] := -1; captured := true;
             end if;
           end loop;

@@ -9,11 +9,27 @@ alter table public.profiles alter column username set not null;
 create unique index if not exists profiles_username_unique_idx on public.profiles (lower(username));
 create or replace function public.create_profile_for_new_user()
 returns trigger language plpgsql security definer set search_path = '' as $$
-declare requested_username text;
+declare
+  requested_username text;
+  guest_adjectives text[] := array['bright','calm','clever','cool','happy','kind','lucky','quick','sunny','swift','tiny','wise'];
+  guest_animals text[] := array['bear','bird','cat','deer','fox','koala','lion','otter','panda','tiger','wolf','zebra'];
+  guest_seed bigint;
+  suffix integer := 0;
 begin
-  requested_username := lower(regexp_replace(coalesce(new.raw_user_meta_data->>'username', ''), '[^a-z0-9_]', '', 'g'));
-  if char_length(requested_username) < 3 or char_length(requested_username) > 24 then
-    requested_username := 'user_' || left(replace(new.id::text, '-', ''), 18);
+  if new.is_anonymous then
+    guest_seed := abs(hashtext(new.id::text)::bigint);
+    requested_username := 'guest_' || guest_adjectives[(guest_seed % array_length(guest_adjectives, 1))::integer + 1]
+      || '_' || guest_animals[((guest_seed / array_length(guest_adjectives, 1)) % array_length(guest_animals, 1))::integer + 1]
+      || '_' || lpad((guest_seed % 100)::text, 2, '0');
+    while exists (select 1 from public.profiles where lower(username) = lower(requested_username)) loop
+      suffix := suffix + 1;
+      requested_username := left(requested_username, 21) || suffix::text;
+    end loop;
+  else
+    requested_username := lower(regexp_replace(coalesce(new.raw_user_meta_data->>'username', ''), '[^a-z0-9_]', '', 'g'));
+    if char_length(requested_username) < 3 or char_length(requested_username) > 24 then
+      requested_username := 'user_' || left(replace(new.id::text, '-', ''), 18);
+    end if;
   end if;
   insert into public.profiles (id, display_name, username)
   values (new.id, coalesce(nullif(new.raw_user_meta_data->>'full_name', ''), requested_username), requested_username);

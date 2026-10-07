@@ -1090,7 +1090,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
     {!!roomNotice && <Text style={{ color: '#15803D', fontSize: 12, lineHeight: 18 }}>{roomNotice}</Text>}
     {!!chatError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{chatError}</Text>}
     {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Enter the chat lobby</Text><Text style={styles.muted}>Set a display name to browse groups. You’ll need a room password to enter private groups.</Text><TextInput style={styles.input} value={displayName} onChangeText={value => { setDisplayName(value); setJoinError(''); }} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary, joining && styles.dim]} disabled={!displayName.trim() || joining} onPress={() => { setJoining(true); setJoinError(''); void onJoin(displayName.trim()).then(message => setJoinError(message ?? '')).catch(error => setJoinError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.')).finally(() => setJoining(false)); }}><Text style={styles.actionText}>{joining ? 'Please wait…' : 'Enter chat lobby'}</Text></Pressable>{!!joinError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{joinError}</Text>}</View> : miloMode ? <MiloPolicyAssistant session={session} /> : !selectedRoom ? <>
-      <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Browsing as {myName}{isAnonymous ? ' · guest' : ''}</Text>{!!myUsername && <Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800', marginTop: 4 }}>Your username: @{myUsername}</Text>}</View>
+      <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Browsing as {myName}{isAnonymous ? ' · guest' : ''}</Text>{!!myUsername && <Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800', marginTop: 4 }}>{isAnonymous ? 'Share this easy username: ' : 'Your username: '}@{myUsername}</Text>}</View>
       {!isAnonymous && <View style={{ gap: 8, padding: 12, backgroundColor: '#EFF6FF', borderRadius: 14 }}><Text style={styles.chatWelcome}>Start a personal chat</Text><Text style={styles.chatPresence}>Enter someone’s username to open your private conversation.</Text><View style={{ flexDirection: 'row', gap: 8 }}><TextInput style={[styles.input, { flex: 1 }]} value={directUsername} onChangeText={setDirectUsername} placeholder="Username" autoCapitalize="none" autoCorrect={false} onSubmitEditing={() => void startDirectChat()}/><Pressable disabled={roomBusy || !directUsername.trim()} onPress={() => void startDirectChat()} style={[styles.action, styles.primary, (roomBusy || !directUsername.trim()) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Opening…' : 'Chat'}</Text></Pressable></View>
         {directChats.length > 0 && <View style={{ gap: 6, marginTop: 5 }}><Text style={styles.historyTitle}>Your personal chats</Text>{directChats.map(chat => <Pressable key={chat.room_id} onPress={() => setSelectedRoom({ room_id: chat.room_id, room_name: chat.room_name, creator_name: chat.peer_username, created_at: chat.created_at, member_count: 2, password_protected: false, joined: true, is_creator: false, room_type: 'direct' })} style={{ padding: 9, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderRadius: 10 }}><Text style={styles.historyTitle}>{chat.room_name}</Text><Text style={styles.chatPresence}>@{chat.peer_username}</Text></Pressable>)}</View>}
       </View>}
@@ -1201,17 +1201,32 @@ function GamesHub({ session }: { session: any }) {
 }
 
 const ludoColors = ['#E74C3C', '#27AE60', '#F1C40F', '#3498DB', '#9B59B6', '#E67E22'];
-// Player order follows the board bases: red (bottom-left), green (bottom-right),
-// yellow (top-right), blue (top-left). These are their entry squares on the track.
+const ludoSixColors = [ludoColors[3], ludoColors[2], ludoColors[4], ludoColors[0], ludoColors[1], ludoColors[5]];
+const ludoColorFor = (playerIndex: number, playerCount: LudoPlayerCount) => playerCount > 4 ? ludoSixColors[playerIndex % 6] : ludoColors[playerIndex % ludoColors.length];
+// Four-player starts follow the classic board; six-player seats follow the uploaded board's order.
 type LudoPlayerCount = 2 | 3 | 4 | 5 | 6;
 const ludoStarts: Record<LudoPlayerCount, number[]> = {
   2: [41, 28], 3: [41, 28, 15], 4: [41, 28, 15, 2],
-  5: [0, 26, 35, 9, 44], 6: [0, 26, 35, 9, 44, 18],
+  5: [0, 9, 18, 27, 36], 6: [0, 9, 18, 27, 36, 44],
 };
 // The four non-entry safety squares are marked with stars like the reference board.
 const ludoStarSquares = [10, 23, 36, 49];
-const ludoSixStarSquares = [4, 13, 22, 30, 39, 48];
+const ludoSixStarSquares = [4, 13, 22, 31, 40, 48];
 const ludoSafeSquaresFor = (playerCount: LudoPlayerCount) => [...new Set([...ludoStarts[playerCount], ...(playerCount > 4 ? ludoSixStarSquares : ludoStarSquares)])];
+function ludoTokenCanMove(tokens: number[][], playerIndex: number, tokenIndex: number, die: number, playerCount: LudoPlayerCount) {
+  const position = tokens[playerIndex]?.[tokenIndex];
+  if (position === undefined || position >= 57) return false;
+  if (position < 0 && die !== 6) return false;
+  const destination = position < 0 ? 0 : position + die;
+  if (destination > 57) return false;
+  const firstStep = position < 0 ? 0 : position + 1;
+  for (let step = firstStep; step <= Math.min(destination, 51); step += 1) {
+    const square = (ludoStarts[playerCount][playerIndex] + step) % 52;
+    const opposingPieces = tokens.reduce((total, otherTokens, otherPlayer) => otherPlayer === playerIndex ? total : total + otherTokens.filter(otherPosition => otherPosition >= 0 && otherPosition < 52 && (ludoStarts[playerCount][otherPlayer] + otherPosition) % 52 === square).length, 0);
+    if (opposingPieces >= 2) return false;
+  }
+  return true;
+}
 const ludoProgressLabel = (position: number) => position < 0 ? 'Yard' : position >= 52 ? `Home ${position - 51}/6` : `Track ${position + 1}/52`;
 const ludoTrackCoords: [number, number][] = [
   [7,0],[6,0],[6,1],[6,2],[6,3],[6,4],[6,5],[5,6],[4,6],[3,6],[2,6],[1,6],[0,6],
@@ -1234,35 +1249,29 @@ const ludoHomeLanes: [number, number][][] = [
 ];
 
 type LudoBoardPlayer = { id: string; username: string; tokens: number[]; index: number };
-const sixSideLengths = [9, 9, 8, 9, 9, 8];
-const sixVertexAngles = [-120, -60, 0, 60, 120, 180];
-const sixPlayerVertices = [0, 3, 4, 1, 5, 2];
-const sixPoint = (angle: number, radius: number, center = 50): [number, number] => {
-  const radians = angle * Math.PI / 180;
-  return [center + Math.cos(radians) * radius, center + Math.sin(radians) * radius];
-};
+const sixSideLengths = [9, 9, 9, 9, 8, 8];
+const sixEntryPoints: [number, number][] = [[50,72],[28,85],[5,50],[28,12],[71,12],[94,50]];
+const sixPoint = (from: [number, number], to: [number, number], progress: number): [number, number] => [from[0] + (to[0] - from[0]) * progress, from[1] + (to[1] - from[1]) * progress];
 const sixTrackCoords: [number, number][] = sixSideLengths.flatMap((length, side) => Array.from({ length }, (_, step) => {
-  const from = sixPoint(sixVertexAngles[side], 39);
-  const to = sixPoint(sixVertexAngles[(side + 1) % 6], 39);
-  const t = step / length;
-  return [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t] as [number, number];
+  return sixPoint(sixEntryPoints[side], sixEntryPoints[(side + 1) % 6], step / length);
 }));
 function SixPlayerLudoBoard({ playerCount, players, legalTokenIndices, selectablePlayerId, diceValue, onMove }: { playerCount: LudoPlayerCount; players: LudoBoardPlayer[]; legalTokenIndices: number[]; selectablePlayerId: string; diceValue: number | null; onMove: (playerId: string, tokenIndex: number) => void }) {
   const [boardSize, setBoardSize] = useState(0);
   const yardPoint = (playerIndex: number, tokenIndex: number): [number, number] => {
     const circles: [number, number][][] = [
-      [[42.7,19.1],[47.7,19.1],[52.7,19.1],[50.0,24.0]],
-      [[48.0,77.3],[42.7,82.3],[53.3,82.3],[48.0,87.3]],
-      [[21.0,67.0],[26.3,72.0],[16.0,72.0],[21.0,77.0]],
-      [[73.7,28.0],[78.7,33.3],[68.7,33.3],[73.7,38.7]],
-      [[24.3,28.0],[29.7,33.3],[19.0,33.3],[24.3,38.7]],
-      [[76.3,70.7],[81.7,76.0],[71.0,76.0],[76.3,81.3]],
+      [[44.6,81.3],[54.7,81.3],[49.7,76.9],[49.7,85.3]],
+      [[14.6,61.5],[24.3,61.5],[19.4,65.1],[19.4,70.6]],
+      [[19.2,24.4],[19.2,28.6],[14.7,31.9],[24.6,31.9]],
+      [[44.9,8.6],[54.9,8.8],[49.7,12.6],[49.7,18.8]],
+      [[80.6,23.8],[75.0,28.6],[80.6,31.9],[85.4,31.9]],
+      [[74.6,62.2],[85.3,62.2],[79.9,65.6],[79.9,70.8]],
     ];
     return circles[playerIndex]?.[tokenIndex] ?? [50, 50];
   };
   const homePoint = (playerIndex: number, laneIndex: number): [number, number] => {
-    const angle = sixVertexAngles[sixPlayerVertices[playerIndex]];
-    return sixPoint(angle, 32 - laneIndex * 5);
+    const point = sixEntryPoints[playerIndex];
+    const inwardProgress = 0.14 + laneIndex * 0.14;
+    return sixPoint(point, [50,50], inwardProgress);
   };
   const positionFor = (player: LudoBoardPlayer, position: number, tokenIndex: number): [number, number] => {
     if (position < 0) return yardPoint(player.index, tokenIndex);
@@ -1272,11 +1281,20 @@ function SixPlayerLudoBoard({ playerCount, players, legalTokenIndices, selectabl
   };
   return <View style={{ width: '100%', maxWidth: 480, alignSelf: 'center', gap: 6 }}>
     <View onLayout={event => setBoardSize(event.nativeEvent.layout.width)} style={{ width: '100%', aspectRatio: 1, borderRadius: 22, overflow: 'hidden', backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', position: 'relative' }}>
-      <Image source={require('./assets/ludo-six-player-board.jpg')} resizeMode="stretch" style={{ position: 'absolute', width: '100%', height: '100%' }} />
+      <Image source={require('./assets/ludo-six-player-board.jpg')} resizeMode="cover" style={{ position: 'absolute', width: '100%', height: '100%' }} />
+      {Array.from({ length: 6 }, (_, playerIndex) => Array.from({ length: 4 }, (_, tokenIndex) => {
+        const player = players.find(item => item.index === playerIndex);
+        const position = player?.tokens[tokenIndex];
+        if (playerIndex < playerCount && (position === undefined || position < 0)) return null;
+        const [x,y] = yardPoint(playerIndex, tokenIndex);
+        const maskSize = Math.max(20, boardSize * 0.065);
+        return <View key={`six-yard-mask-${playerIndex}-${tokenIndex}`} pointerEvents="none" style={{ position: 'absolute', left: `${x}%`, top: `${y}%`, width: maskSize, height: maskSize, marginLeft: -maskSize / 2, marginTop: -maskSize / 2, borderRadius: maskSize / 2, backgroundColor: '#fff' }} />;
+      }))}
       {players.flatMap(player => player.tokens.map((position, tokenIndex) => {
         const [x,y] = positionFor(player, position, tokenIndex);
         const selectable = player.id === selectablePlayerId && legalTokenIndices.includes(tokenIndex);
-        return <Pressable key={`${player.id}-${tokenIndex}`} disabled={!selectable} onPress={() => onMove(player.id, tokenIndex)} style={[styles.ludoPiece, { left: `${x}%`, top: `${y}%`, width: Math.max(18, boardSize * 0.045), height: Math.max(18, boardSize * 0.045), marginLeft: -Math.max(9, boardSize * 0.0225), marginTop: -Math.max(9, boardSize * 0.0225), backgroundColor: ludoColors[player.index % ludoColors.length] }, selectable && styles.ludoPieceSelectable]}><Text style={styles.ludoPieceText}>{tokenIndex + 1}</Text></Pressable>;
+        const pieceSize = Math.max(18, boardSize * (position < 0 ? 0.07 : 0.05));
+        return <Pressable key={`${player.id}-${tokenIndex}`} disabled={!selectable} onPress={() => onMove(player.id, tokenIndex)} style={[styles.ludoPiece, { left: `${x}%`, top: `${y}%`, width: pieceSize, height: pieceSize, marginLeft: -pieceSize / 2, marginTop: -pieceSize / 2, backgroundColor: position < 0 ? 'transparent' : ludoSixColors[player.index % ludoSixColors.length], borderWidth: selectable ? 2.5 : 0, borderColor: selectable ? '#111827' : 'transparent', elevation: position < 0 ? 0 : 3 }, selectable && styles.ludoPieceSelectable]}>{position >= 0 && <Text style={styles.ludoPieceText}>{tokenIndex + 1}</Text>}</Pressable>;
       }))}
     </View>{diceValue !== null && <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800', textAlign: 'center' }}>🎲 Dice: {diceValue}</Text>}
   </View>;
@@ -1332,6 +1350,17 @@ function LudoBoard({ playerCount, players, legalTokenIndices, selectablePlayerId
   </View>{diceValue !== null && <Text style={{ color: colors.text, fontSize: 13, fontWeight: '800', textAlign: 'center' }}>🎲 Dice: {diceValue}</Text>}</View>;
 }
 
+function LudoMoveChoices({ tokenIndices, tokens, diceValue, onChoose, disabled = false }: { tokenIndices: number[]; tokens: number[]; diceValue: number | null; onChoose: (tokenIndex: number) => void; disabled?: boolean }) {
+  if (diceValue === null || tokenIndices.length === 0) return null;
+  return <View style={styles.ludoMoveChoicePanel}>
+    <Text style={styles.sectionTitle}>Choose a token to move {diceValue} {diceValue === 1 ? 'space' : 'spaces'}</Text>
+    <View style={styles.ludoMoveChoices}>{tokenIndices.map(tokenIndex => <Pressable key={tokenIndex} accessibilityRole="button" accessibilityLabel={`Move token ${tokenIndex + 1}, currently ${ludoProgressLabel(tokens[tokenIndex])}`} disabled={disabled} onPress={() => onChoose(tokenIndex)} style={[styles.ludoMoveChoice, disabled && styles.dim]}>
+      <Text style={styles.ludoMoveChoiceTitle}>Move token {tokenIndex + 1}</Text>
+      <Text style={styles.ludoMoveChoiceSubtitle}>{tokens[tokenIndex] < 0 ? 'Leave the yard' : ludoProgressLabel(tokens[tokenIndex])}</Text>
+    </Pressable>)}</View>
+  </View>;
+}
+
 function freshLocalLudo(playerCount: LudoPlayerCount, names?: string[], forfeitTripleSix = true) {
   return { playerCount, names: Array.from({ length: playerCount }, (_, index) => names?.[index] || `Player ${index + 1}`), tokens: Array.from({ length: playerCount }, () => [-1, -1, -1, -1]), turnIndex: 0, diceValue: null as number | null, winnerIndex: null as number | null, sixStreak: 0, forfeitTripleSix };
 }
@@ -1342,6 +1371,10 @@ function LudoGame({ session }: { session: any }) {
   const [forfeitTripleSix, setForfeitTripleSix] = useState(true);
   const [localGame, setLocalGame] = useState(() => freshLocalLudo(4));
   const [inviteText, setInviteText] = useState('');
+  const [publicRoomName, setPublicRoomName] = useState('');
+  const [publicRoomPassword, setPublicRoomPassword] = useState('');
+  const [publicRooms, setPublicRooms] = useState<any[]>([]);
+  const [roomJoinPasswords, setRoomJoinPasswords] = useState<Record<string, string>>({});
   const [myUsername, setMyUsername] = useState('');
   const [receivedInvites, setReceivedInvites] = useState<any[]>([]);
   const [ludoMatch, setLudoMatch] = useState<any>(null);
@@ -1349,7 +1382,7 @@ function LudoGame({ session }: { session: any }) {
   const [busy, setBusy] = useState(false);
   const pendingLudoAction = useRef(false);
 
-  const localLegalMoves = localGame.diceValue === null ? [] : localGame.tokens[localGame.turnIndex].map((position, index) => (position < 0 ? localGame.diceValue === 6 : position + localGame.diceValue! <= 57) ? index : -1).filter(index => index >= 0);
+  const localLegalMoves = localGame.diceValue === null ? [] : localGame.tokens[localGame.turnIndex].map((_position, index) => ludoTokenCanMove(localGame.tokens, localGame.turnIndex, index, localGame.diceValue!, localGame.playerCount) ? index : -1).filter(index => index >= 0);
 
   function startLocalGame(count: LudoPlayerCount) {
     setLocalGame(current => freshLocalLudo(count, current.names, forfeitTripleSix));
@@ -1363,7 +1396,7 @@ function LudoGame({ session }: { session: any }) {
       setLudoMessage('Third consecutive six forfeited · turn passes.');
       return;
     }
-    const legal = localGame.tokens[localGame.turnIndex].some(position => position < 0 ? rolled === 6 : position + rolled <= 57);
+    const legal = localGame.tokens[localGame.turnIndex].some((_position, index) => ludoTokenCanMove(localGame.tokens, localGame.turnIndex, index, rolled, localGame.playerCount));
     setLocalGame(current => ({ ...current, diceValue: rolled, sixStreak: rolled === 6 ? current.sixStreak + 1 : 0 }));
     if (!legal) setLudoMessage(`Player ${localGame.turnIndex + 1} rolled ${rolled} · no legal move.`);
     else setLudoMessage('');
@@ -1416,17 +1449,25 @@ function LudoGame({ session }: { session: any }) {
     setReceivedInvites((data ?? []).filter((item: any) => item.invitee_ids?.includes(session.user.id) && !item.accepted_ids?.includes(session.user.id) && !item.declined_ids?.includes(session.user.id)));
   }, [session]);
 
+  const refreshPublicRooms = useCallback(async () => {
+    if (!supabase || !session) return;
+    const { data } = await supabase.rpc('list_public_ludo_rooms');
+    if (data) setPublicRooms(data);
+  }, [session]);
+
   useEffect(() => {
     if (!supabase || !session) return;
     void supabase.from('profiles').select('username').eq('id', session.user.id).maybeSingle().then(({ data }) => setMyUsername(data?.username ?? ''));
     void refreshInvites();
+    void refreshPublicRooms();
+    const roomRefresh = setInterval(() => void refreshPublicRooms(), 8000);
     const channel = supabase.channel(`ludo-invites-${session.user.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ludo_matches' }, () => void refreshInvites()).subscribe();
     const url = typeof window !== 'undefined' ? new URL(window.location.href) : null;
     const matchId = url?.searchParams.get('ludo');
     if (matchId) void loadMatch(matchId);
-    return () => { void supabase?.removeChannel(channel); };
-  }, [session, refreshInvites, loadMatch]);
+    return () => { clearInterval(roomRefresh); void supabase?.removeChannel(channel); };
+  }, [session, refreshInvites, refreshPublicRooms, loadMatch]);
 
   useEffect(() => {
     if (!supabase || !ludoMatch?.id) return;
@@ -1453,6 +1494,34 @@ function LudoGame({ session }: { session: any }) {
     if (data) void loadMatch(data as string);
   }
 
+  async function createPublicRoom() {
+    if (!supabase || !session) { setLudoMessage('Create a guest username or sign in before opening a room.'); return; }
+    setBusy(true); setLudoMessage('Creating your room…');
+    const { data, error } = await supabase.rpc('create_public_ludo_room', {
+      room_name_in: publicRoomName.trim(), password_in: publicRoomPassword,
+      player_count_in: playerCount, forfeit_triple_six_in: forfeitTripleSix,
+    });
+    setBusy(false);
+    if (error) { setLudoMessage(error.message); return; }
+    setPublicRoomName(''); setPublicRoomPassword('');
+    setLudoMessage('Room created. It will start when all seats are filled.');
+    await refreshPublicRooms();
+    if (data) void loadMatch(data as string);
+  }
+
+  async function joinPublicRoom(roomId: string) {
+    if (!supabase || !session) return;
+    setBusy(true);
+    const { error } = await supabase.rpc('join_public_ludo_room', {
+      match_id_in: roomId, password_in: roomJoinPasswords[roomId] ?? '',
+    });
+    setBusy(false);
+    if (error) { setLudoMessage(error.message); return; }
+    setLudoMessage('You joined the room.');
+    await refreshPublicRooms();
+    void loadMatch(roomId);
+  }
+
   async function replyInvite(matchId: string, accept: boolean) {
     const { error } = await supabase!.rpc('respond_ludo_invite', { match_id_in: matchId, accept_in: accept });
     if (error) { setLudoMessage(error.message); return; }
@@ -1462,8 +1531,10 @@ function LudoGame({ session }: { session: any }) {
   async function gameAction(functionName: string, args: Record<string, unknown>) {
     if (!supabase || !ludoMatch || pendingLudoAction.current) return;
     pendingLudoAction.current = true;
+    setBusy(true);
     const { data, error } = await supabase.rpc(functionName, args);
     pendingLudoAction.current = false;
+    setBusy(false);
     if (error) setLudoMessage(error.message);
     else {
       await loadMatch(ludoMatch.id);
@@ -1480,11 +1551,13 @@ function LudoGame({ session }: { session: any }) {
   const players = ludoMatch?.player_user_ids?.map((id: string, index: number) => ({ id, username: ludoMatch.player_usernames[index], tokens: ludoMatch.tokens?.[id] ?? [-1, -1, -1, -1], index })) ?? [];
   const currentPlayerId = players[ludoMatch?.turn_index ?? 0]?.id;
   const myTurn = !!session && currentPlayerId === session.user.id && ludoMatch?.status === 'active';
-  const legalTokenIndices = myTurn && ludoMatch?.dice_value ? players.find((player: any) => player.id === session.user.id)?.tokens.map((position: number, index: number) => position < 0 ? (ludoMatch.dice_value === 6 ? index : -1) : (position + ludoMatch.dice_value <= 57 ? index : -1)).filter((index: number) => index >= 0) ?? [] : [];
+  const onlineTokenPositions = players.map((player: any) => player.tokens);
+  const myPlayerIndex = players.findIndex((player: any) => player.id === session?.user?.id);
+  const legalTokenIndices = myTurn && ludoMatch?.dice_value ? players.find((player: any) => player.id === session.user.id)?.tokens.map((_position: number, index: number) => ludoTokenCanMove(onlineTokenPositions, myPlayerIndex, index, ludoMatch.dice_value, ludoMatch.player_count) ? index : -1).filter((index: number) => index >= 0) ?? [] : [];
 
   return <View style={styles.gameCard}>
     <View style={styles.gameHeader}><View style={{ flex: 1 }}><Text style={styles.gameEyebrow}>PLAY TOGETHER</Text><Text style={styles.gameTitle}>Ludo</Text></View><Text style={styles.gameIcon}>🎲</Text></View>
-    <Text style={styles.gameDescription}>Play pass-and-play on one device or invite friends by username. Roll a six to leave the yard; land on an opponent to send them back. Get all four pieces home to win.</Text>
+    <Text style={styles.gameDescription}>Play offline, invite friends by username, or open a password-protected online room. Roll a six to leave the yard; land on an opponent to send them back. Get all four pieces home to win.</Text>
     <View style={styles.difficultyRow}><Pressable onPress={() => { setPlayMode('offline'); setLudoMessage(''); }} style={[styles.difficultyButton, playMode === 'offline' && styles.difficultySelected]}><Text style={[styles.difficultyText, playMode === 'offline' && styles.difficultyTextSelected]}>Offline play</Text></Pressable><Pressable onPress={() => { setPlayMode('online'); setLudoMessage(''); }} style={[styles.difficultyButton, playMode === 'online' && styles.difficultySelected]}><Text style={[styles.difficultyText, playMode === 'online' && styles.difficultyTextSelected]}>Online play</Text></Pressable></View>
     {playMode === 'offline' ? <View style={styles.onlineGamePanel}>
       <Text style={styles.sectionTitle}>Pass-and-play · one device</Text>
@@ -1492,36 +1565,55 @@ function LudoGame({ session }: { session: any }) {
       <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Players</Text>{([2, 3, 4, 5, 6] as const).map(count => <Pressable key={count} onPress={() => startLocalGame(count)} style={[styles.difficultyButton, localGame.playerCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, localGame.playerCount === count && styles.difficultyTextSelected]}>{count}</Text></Pressable>)}</View>
       <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: forfeitTripleSix }} onPress={() => { const next = !forfeitTripleSix; setForfeitTripleSix(next); setLocalGame(current => ({ ...current, forfeitTripleSix: next, sixStreak: 0 })); }} style={styles.ludoRuleToggle}><Text style={styles.ludoRuleCheck}>{forfeitTripleSix ? '✓' : ''}</Text><Text style={styles.muted}>Forfeit the third consecutive six</Text></Pressable>
       <View style={styles.ludoNameGrid}>{localGame.names.map((name, index) => <TextInput key={`local-name-${index}`} accessibilityLabel={`Player ${index + 1} name`} style={[styles.input, styles.ludoNameInput]} value={name} onChangeText={value => setLocalGame(current => ({ ...current, names: current.names.map((item, i) => i === index ? value : item) }))} maxLength={18}/>)}</View>
-      <View style={styles.ludoPlayerList}>{localGame.names.map((name, index) => <View key={`local-player-${index}`} style={[styles.ludoPlayerBadge, localGame.turnIndex === index && localGame.winnerIndex === null && styles.playerTurn]}><Text style={[styles.ludoPlayerName, { color: ludoColors[index] }]}>{name || `Player ${index + 1}`}</Text><Text style={styles.muted}>{localGame.tokens[index].filter(position => position === 57).length}/4 home</Text></View>)}</View>
-      <LudoBoard playerCount={localGame.playerCount} players={localGame.names.map((username, index) => ({ id: String(index), username, tokens: localGame.tokens[index], index }))} legalTokenIndices={localLegalMoves} selectablePlayerId={String(localGame.turnIndex)} diceValue={localGame.diceValue} onMove={(_id, tokenIndex) => moveLocalToken(tokenIndex)}/>
+      <View style={styles.ludoPlayerList}>{localGame.names.map((name, index) => <View key={`local-player-${index}`} style={[styles.ludoPlayerBadge, localGame.turnIndex === index && localGame.winnerIndex === null && styles.playerTurn]}><Text style={[styles.ludoPlayerName, { color: ludoColorFor(index, localGame.playerCount) }]}>{name || `Player ${index + 1}`}</Text><Text style={styles.muted}>{localGame.tokens[index].filter(position => position === 57).length}/4 home</Text></View>)}</View>
+      <LudoBoard playerCount={localGame.playerCount} players={localGame.names.map((username, index) => ({ id: String(index), username, tokens: localGame.tokens[index], index }))} legalTokenIndices={[]} selectablePlayerId="" diceValue={localGame.diceValue} onMove={() => {}}/>
       <Text style={styles.turnLabel}>{localGame.winnerIndex !== null ? `${localGame.names[localGame.winnerIndex] || `Player ${localGame.winnerIndex + 1}`} wins!` : `${localGame.names[localGame.turnIndex] || `Player ${localGame.turnIndex + 1}`}’s turn`}</Text>
       {!!ludoMessage && <Text style={styles.muted}>{ludoMessage}</Text>}
       {localGame.winnerIndex === null && localGame.diceValue === null && <Pressable style={[styles.action, styles.primary]} onPress={rollLocalDice}><Text style={styles.actionText}>Roll dice</Text></Pressable>}
       {localGame.winnerIndex === null && localGame.diceValue !== null && localLegalMoves.length === 0 && <Pressable style={styles.outlineButton} onPress={skipLocalTurn}><Text style={styles.outlineText}>No legal move · Pass turn</Text></Pressable>}
-      {localGame.winnerIndex === null && localLegalMoves.length > 0 && <Text style={styles.muted}>Tap one of the highlighted pieces to move it {localGame.diceValue} spaces.</Text>}
+      {localGame.winnerIndex === null && <LudoMoveChoices tokenIndices={localLegalMoves} tokens={localGame.tokens[localGame.turnIndex]} diceValue={localGame.diceValue} onChoose={moveLocalToken}/>}
       <Pressable style={styles.outlineButton} onPress={() => startLocalGame(localGame.playerCount)}><Text style={styles.outlineText}>Start a new game</Text></Pressable>
     </View> : !session ? <><Text style={styles.muted}>Create a guest username or sign in to invite players and join online rooms.</Text><Pressable disabled={busy} style={[styles.newGameButton, { alignSelf: 'flex-start' }]} onPress={() => void createGuest()}><Text style={styles.newGameText}>{busy ? 'Creating…' : 'Create guest username'}</Text></Pressable></> : <>
-      {!!myUsername && <Text style={styles.onlineUsername}>Your username: <Text style={styles.onlineUsernameValue}>@{myUsername}</Text></Text>}
+      {!!myUsername && <Text style={styles.onlineUsername}>{session.user?.is_anonymous ? 'Share this easy username: ' : 'Your username: '}<Text style={styles.onlineUsernameValue}>@{myUsername}</Text></Text>}
       <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Players</Text>{([2, 3, 4, 5, 6] as const).map(count => <Pressable key={count} onPress={() => setPlayerCount(count)} style={[styles.difficultyButton, playerCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, playerCount === count && styles.difficultyTextSelected]}>{count}</Text></Pressable>)}</View>
       <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: forfeitTripleSix }} onPress={() => setForfeitTripleSix(value => !value)} style={styles.ludoRuleToggle}><Text style={styles.ludoRuleCheck}>{forfeitTripleSix ? '✓' : ''}</Text><Text style={styles.muted}>Forfeit the third consecutive six</Text></Pressable>
+      <View style={styles.onlineGamePanel}>
+        <Text style={styles.sectionTitle}>Create a password room</Text>
+        <Text style={styles.muted}>Anyone can see the room listing. Only people with its password can join. It closes when all {playerCount} seats are taken.</Text>
+        <TextInput accessibilityLabel="Room name" style={styles.input} value={publicRoomName} onChangeText={setPublicRoomName} maxLength={32} placeholder="Room name"/>
+        <TextInput accessibilityLabel="Room password" style={styles.input} value={publicRoomPassword} onChangeText={setPublicRoomPassword} maxLength={64} placeholder="Room password (4–64 characters)" secureTextEntry autoCapitalize="none" autoCorrect={false}/>
+        <Pressable disabled={busy || !publicRoomName.trim() || publicRoomPassword.length < 4} style={[styles.action, styles.primary, (busy || !publicRoomName.trim() || publicRoomPassword.length < 4) && styles.dim]} onPress={() => void createPublicRoom()}><Text style={styles.actionText}>{busy ? 'Please wait…' : `Create ${playerCount}-player room`}</Text></Pressable>
+      </View>
+      <View style={styles.onlineGamePanel}>
+        <View style={styles.onlineMatchHeader}><Text style={styles.sectionTitle}>Open rooms</Text><Pressable onPress={() => void refreshPublicRooms()}><Text style={styles.link}>Refresh</Text></Pressable></View>
+        <Text style={styles.muted}>Join with your guest username or account. Full rooms disappear from this list.</Text>
+        {publicRooms.length === 0 ? <Text style={styles.muted}>No open rooms right now. Create one and invite others to enter its password.</Text> : publicRooms.map((room: any) => <View key={room.id} style={[styles.onlineInviteCard, { flexWrap: 'wrap' }]}>
+          <View style={{ flex: 1, minWidth: 120 }}><Text style={styles.onlineInviteTitle}>{room.room_name}</Text><Text style={styles.muted}>@{room.creator_username} · {room.joined_count}/{room.player_count} players · 🔒 Password</Text></View>
+          <TextInput accessibilityLabel={`Password for ${room.room_name}`} style={[styles.input, { flex: 1, minWidth: 105, marginBottom: 0 }]} value={roomJoinPasswords[room.id] ?? ''} onChangeText={value => setRoomJoinPasswords(current => ({ ...current, [room.id]: value }))} placeholder="Password" secureTextEntry autoCapitalize="none" autoCorrect={false}/>
+          <Pressable disabled={busy || !roomJoinPasswords[room.id]} onPress={() => void joinPublicRoom(room.id)} style={[styles.newGameButton, (busy || !roomJoinPasswords[room.id]) && styles.dim]}><Text style={styles.newGameText}>Join</Text></Pressable>
+        </View>)}
+      </View>
+      <Text style={styles.sectionTitle}>Invite players directly</Text>
       <Text style={styles.muted}>Enter {playerCount - 1} usernames, separated by commas.</Text>
       <TextInput accessibilityLabel="Ludo invite usernames" style={styles.input} value={inviteText} onChangeText={setInviteText} autoCapitalize="none" autoCorrect={false} placeholder={Array.from({ length: playerCount - 1 }, (_, index) => `@player${index + 1}`).join(', ')}/>
-      <Pressable disabled={busy} style={[styles.action, styles.primary, busy && styles.dim]} onPress={() => void createRoom()}><Text style={styles.actionText}>{busy ? 'Please wait…' : `Create ${playerCount}-player room`}</Text></Pressable>
+      <Pressable disabled={busy} style={[styles.action, styles.primary, busy && styles.dim]} onPress={() => void createRoom()}><Text style={styles.actionText}>{busy ? 'Please wait…' : `Send ${playerCount}-player invitations`}</Text></Pressable>
       {!!ludoMessage && <Text accessibilityRole="alert" style={styles.muted}>{ludoMessage}</Text>}
       {receivedInvites.map(invite => <View key={invite.id} style={styles.onlineInviteCard}><View style={{ flex: 1 }}><Text style={styles.onlineInviteTitle}>Ludo invitation · {invite.player_count} players</Text><Text style={styles.muted}>From @{invite.creator_username}</Text></View><Pressable onPress={() => void replyInvite(invite.id, true)} style={styles.newGameButton}><Text style={styles.newGameText}>Join</Text></Pressable><Pressable onPress={() => void replyInvite(invite.id, false)}><Text style={styles.link}>Decline</Text></Pressable></View>)}
       {ludoMatch && <View style={styles.onlineGamePanel}>
-        <View style={styles.onlineMatchHeader}><Text style={styles.sectionTitle}>{ludoMatch.status === 'waiting' ? 'Waiting for players' : ludoMatch.status === 'completed' ? 'Game over' : ludoMatch.status === 'cancelled' ? 'Room closed' : 'Ludo room'}</Text><Pressable onPress={() => openLudoLink(ludoMatch.id)}><Text style={styles.link}>Open invite link</Text></Pressable></View>
+        <View style={styles.onlineMatchHeader}><Text style={styles.sectionTitle}>{ludoMatch.room_name || (ludoMatch.status === 'waiting' ? 'Waiting for players' : ludoMatch.status === 'completed' ? 'Game over' : ludoMatch.status === 'cancelled' ? 'Room closed' : 'Ludo room')}</Text><Pressable onPress={() => openLudoLink(ludoMatch.id)}><Text style={styles.link}>Open invite link</Text></Pressable></View>
         <Text selectable style={styles.muted}>{typeof window !== 'undefined' ? `${window.location.origin}/?ludo=${ludoMatch.id}` : `Room code: ${ludoMatch.id}`}</Text>
         <Text style={styles.muted}>Players joined: {players.length} / {ludoMatch.player_count}</Text>
+        {ludoMatch.status === 'waiting' && ludoMatch.is_public && <Text style={styles.muted}>Waiting for {ludoMatch.player_count - players.length} more player{ludoMatch.player_count - players.length === 1 ? '' : 's'}. This room is open to password holders.</Text>}
+        <View style={styles.ludoPlayerList}>{players.map((player: any) => <Text key={player.id} style={styles.ludoPlayerName}>✓ @{player.username}</Text>)}</View>
         <View style={styles.ludoPlayerList}>{(ludoMatch.invitee_usernames ?? []).map((username: string, index: number) => <Text key={`${username}-${index}`} style={styles.ludoPlayerName}>{players.some((player: any) => player.username === username) ? '✓' : '◷'} @{username}</Text>)}</View>
         {ludoMatch.status === 'cancelled' && <Text style={styles.muted}>An invitation was declined. Create a new room to invite a different player.</Text>}
         {ludoMatch.status === 'active' || ludoMatch.status === 'completed' ? <>
-          <LudoBoard playerCount={ludoMatch.player_count} players={players} legalTokenIndices={legalTokenIndices} selectablePlayerId={session.user.id} diceValue={ludoMatch.dice_value} onMove={(_id, tokenIndex) => void gameAction('move_ludo_token', { match_id_in: ludoMatch.id, token_index_in: tokenIndex})}/>
-          <View style={styles.ludoPlayerList}>{players.map((player: any) => <View key={player.id} style={[styles.ludoPlayerBadge, player.id === currentPlayerId && styles.playerTurn]}><Text style={[styles.ludoPlayerName, { color: ludoColors[player.index % ludoColors.length] }]}>{player.id === session.user.id ? 'You' : `@${player.username}`}</Text><Text style={styles.muted}>{player.tokens.filter((token: number) => token === 57).length}/4 home</Text></View>)}</View>
+          <LudoBoard playerCount={ludoMatch.player_count} players={players} legalTokenIndices={[]} selectablePlayerId="" diceValue={ludoMatch.dice_value} onMove={() => {}}/>
+          <View style={styles.ludoPlayerList}>{players.map((player: any) => <View key={player.id} style={[styles.ludoPlayerBadge, player.id === currentPlayerId && styles.playerTurn]}><Text style={[styles.ludoPlayerName, { color: ludoColorFor(player.index, ludoMatch.player_count) }]}>{player.id === session.user.id ? 'You' : `@${player.username}`}</Text><Text style={styles.muted}>{player.tokens.filter((token: number) => token === 57).length}/4 home</Text></View>)}</View>
           <Text style={styles.turnLabel}>{ludoMatch.status === 'completed' ? `${players.find((player: any) => player.id === ludoMatch.winner_user_id)?.username === myUsername ? 'You win!' : `@${players.find((player: any) => player.id === ludoMatch.winner_user_id)?.username} wins!`}` : myTurn ? 'Your turn' : `Waiting for @${players.find((player: any) => player.id === currentPlayerId)?.username ?? 'player'}`}</Text>
           {myTurn && !ludoMatch.dice_value && <Pressable style={[styles.action, styles.primary]} onPress={() => void gameAction('roll_ludo_dice', { match_id_in: ludoMatch.id })}><Text style={styles.actionText}>Roll dice</Text></Pressable>}
           {myTurn && !!ludoMatch.dice_value && legalTokenIndices.length === 0 && <Pressable style={styles.outlineButton} onPress={() => void gameAction('skip_ludo_turn', { match_id_in: ludoMatch.id })}><Text style={styles.outlineText}>No legal move · Pass turn</Text></Pressable>}
-          {myTurn && legalTokenIndices.length > 0 && <Text style={styles.muted}>Tap one of your highlighted pieces to move it {ludoMatch.dice_value} spaces.</Text>}
+          {myTurn && <LudoMoveChoices tokenIndices={legalTokenIndices} tokens={players.find((player: any) => player.id === session.user.id)?.tokens ?? []} diceValue={ludoMatch.dice_value} disabled={busy} onChoose={tokenIndex => void gameAction('move_ludo_token', { match_id_in: ludoMatch.id, token_index_in: tokenIndex})}/>}
         </> : null}
       </View>}
     </>}
@@ -1688,7 +1780,7 @@ function MemoryMatchGame({ session }: { session: any }) {
       {!session
         ? <><Text style={styles.muted}>Create a lightweight guest profile to get a unique username and play online. Your local attendance history stays on this device.</Text><Pressable style={[styles.newGameButton, { alignSelf: 'flex-start' }]} onPress={() => void startGuestOnline()}><Text style={styles.newGameText}>Create guest username</Text></Pressable>{!!gameMessage && <Text accessibilityRole="alert" style={styles.muted}>{gameMessage}</Text>}</>
         : <>
-          {!!myGameUsername && <Text style={styles.onlineUsername}>Your username: <Text style={styles.onlineUsernameValue}>@{myGameUsername}</Text></Text>}
+          {!!myGameUsername && <Text style={styles.onlineUsername}>{session.user?.is_anonymous ? 'Share this easy username: ' : 'Your username: '}<Text style={styles.onlineUsernameValue}>@{myGameUsername}</Text></Text>}
           <Text style={styles.difficultyLabel}>Invite a player by username</Text>
           <View style={styles.difficultyRow}><Text style={styles.difficultyLabel}>Board size</Text>{[8, 16, 24].map(count => <Pressable key={count} onPress={() => setPairCount(count)} style={[styles.difficultyButton, pairCount === count && styles.difficultySelected]}><Text style={[styles.difficultyText, pairCount === count && styles.difficultyTextSelected]}>{count} pairs</Text></Pressable>)}</View>
           <View style={styles.onlineInviteRow}><TextInput accessibilityLabel="Username to invite" autoCapitalize="none" autoCorrect={false} style={[styles.input, styles.onlineInviteInput]} placeholder="e.g. alex_01" value={inviteUsername} onChangeText={setInviteUsername}/><Pressable style={[styles.newGameButton, styles.onlineInviteButton]} onPress={() => void invitePlayer()}><Text style={styles.newGameText}>Invite</Text></Pressable></View>
@@ -2014,7 +2106,7 @@ const styles = StyleSheet.create({
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, statCard: { flexBasis: '47%', flexGrow: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 14, gap: 8 }, statLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 }, statValue: { color: colors.text, fontSize: 16, fontWeight: '800' }, card: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 17, gap: 13 }, cardHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, sectionTitle: { color: colors.text, fontSize: 17, fontWeight: '800' }, row: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 }, rowLabel: { color: colors.muted, fontSize: 12, flex: 1 }, rowValue: { color: colors.text, fontSize: 12, fontWeight: '700', textAlign: 'right', flex: 1 }, pill: { backgroundColor: '#DCFCE7', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 99 }, pillWarn: { backgroundColor: '#FEF3C7' }, pillText: { color: '#15803D', fontSize: 10, fontWeight: '800' }, policyNote: { color: '#854D0E', fontSize: 11, lineHeight: 17, backgroundColor: '#FFFBEB', padding: 10, borderRadius: 10 }, outlineButton: { borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 11, padding: 11, alignItems: 'center', backgroundColor: '#F8FBFF' }, outlineText: { color: colors.blue, fontSize: 12, fontWeight: '800' }, lobbySubmit: { width: 46, height: 46, borderRadius: 14, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' }, lobbySubmitText: { color: '#FFFFFF', fontSize: 23, lineHeight: 27, fontWeight: '900' }, muted: { color: colors.muted, fontSize: 12, lineHeight: 18 }, stepper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, stepActions: { flexDirection: 'row', alignItems: 'center', gap: 10 }, stepButton: { width: 30, height: 30, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }, stepText: { fontSize: 20, color: colors.text }, stepValue: { minWidth: 64, textAlign: 'center', fontWeight: '800', color: colors.text, fontSize: 12 }, settingChoice: { gap: 8 }, choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, choice: { backgroundColor: '#F1F5F9', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 99 }, choiceSelected: { backgroundColor: '#DBEAFE' }, choiceText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, choiceTextSelected: { color: colors.blue },
   gameCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 18, gap: 15 }, gameHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, gameEyebrow: { color: colors.blue, fontWeight: '800', fontSize: 10, letterSpacing: 1.2 }, gameTitle: { color: colors.text, fontSize: 24, fontWeight: '800', marginTop: 3 }, gameIcon: { fontSize: 34 }, gameDescription: { color: colors.muted, fontSize: 12, lineHeight: 18 }, difficultyRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 7 }, difficultyLabel: { color: colors.muted, fontSize: 11, fontWeight: '700', marginRight: 3 }, difficultyButton: { borderRadius: 99, paddingVertical: 7, paddingHorizontal: 10, backgroundColor: '#F1F5F9' }, difficultySelected: { backgroundColor: '#DBEAFE' }, difficultyText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, difficultyTextSelected: { color: colors.blue }, playerRow: { flexDirection: 'row', gap: 10 }, playerCard: { flex: 1, alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 10 }, playerTurn: { borderColor: colors.blue, backgroundColor: '#EFF6FF' }, playerName: { width: '100%', color: colors.text, textAlign: 'center', fontWeight: '700', fontSize: 12, paddingVertical: 4 }, playerScore: { color: colors.blue, fontWeight: '800', fontSize: 25, marginTop: 4 }, playerPairs: { color: colors.muted, fontSize: 10 }, turnLabel: { textAlign: 'center', color: colors.text, fontWeight: '800', fontSize: 14 }, memoryBoard: { width: '100%', maxWidth: 460, alignSelf: 'center', gap: 8 }, memoryRow: { flexDirection: 'row', gap: 8 }, memoryTile: { flex: 1, aspectRatio: 1, borderRadius: 13, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: colors.navy, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }, memoryFaceImage: { width: '100%', height: '100%' }, memoryTileOpen: { backgroundColor: '#EFF6FF', borderColor: '#93C5FD' }, memoryTileMatched: { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }, memoryTileText: { fontSize: 29, fontWeight: '800' }, memoryTileHidden: { color: '#BFDBFE', fontSize: 31 }, gameFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, gameHint: { flex: 1, color: colors.muted, fontSize: 11 }, newGameButton: { backgroundColor: colors.blue, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 11 }, newGameText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   onlineGamePanel: { padding: 13, borderRadius: 16, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, gap: 11 }, onlineInviteRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, onlineInviteInput: { flex: 1, minWidth: 0, marginBottom: 0 }, onlineInviteButton: { minHeight: 46, justifyContent: 'center' }, onlineInviteCard: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 12, padding: 10, backgroundColor: '#EFF6FF' }, onlineInviteTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, onlineUsername: { color: colors.muted, fontSize: 12 }, onlineUsernameValue: { color: colors.blue, fontWeight: '800' }, onlineMatchHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
-  ludoPlayerList: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, ludoPlayerName: { color: colors.text, fontSize: 11, fontWeight: '700' }, ludoPlayerBadge: { minWidth: 74, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 11, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, alignItems: 'center' }, ludoNameGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 7 }, ludoNameInput: { width: '48%', flexGrow: 1, marginBottom: 0 }, ludoRuleToggle: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 5 }, ludoRuleCheck: { width: 20, height: 20, borderRadius: 5, overflow: 'hidden', textAlign: 'center', textAlignVertical: 'center', backgroundColor: '#DBEAFE', color: colors.blue, fontWeight: '900', borderWidth: 1, borderColor: colors.blue }, ludoBoard: { width: '100%', maxWidth: 420, aspectRatio: 1, alignSelf: 'center', position: 'relative', borderRadius: 4, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#64748B', overflow: 'hidden' }, ludoGrid: { position: 'absolute', width: '100%', height: '100%' }, ludoGridRow: { flexDirection: 'row', flex: 1 }, ludoGridCell: { flex: 1, aspectRatio: 1, borderWidth: 0.5, borderColor: '#94A3B8', alignItems: 'center', justifyContent: 'center' }, ludoGridBlank: { backgroundColor: '#FFFFFF' }, ludoPathCell: { backgroundColor: '#FFFFFF' }, ludoSafeCell: { backgroundColor: '#F8FAFC', borderColor: '#64748B' }, ludoHomeBox: { position: 'absolute', width: '40%', height: '40%', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#475569' }, ludoHomeInner: { width: '76%', height: '76%', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#334155', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-evenly' }, ludoHomeDot: { width: '35%', aspectRatio: 1, borderRadius: 100, borderWidth: 1.5, borderColor: '#475569', elevation: 2 }, ludoCenterMark: { position: 'absolute', left: '40%', top: '40%', width: '20%', height: '20%', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center' }, ludoTrackCell: { borderColor: '#334155', borderWidth: 1 }, ludoCellNumber: { fontSize: 8, color: colors.blue }, ludoPiece: { position: 'absolute', width: '6%', height: '6%', marginLeft: -9, marginTop: -9, borderRadius: 100, borderWidth: 1.5, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', elevation: 3 }, ludoPieceSelectable: { borderColor: '#111827', borderWidth: 2.5, transform: [{ scale: 1.2 }] }, ludoPieceText: { color: '#FFFFFF', fontSize: 9, fontWeight: '900' }, ludoCenter: { position: 'absolute', left: '50%', top: '50%', width: 30, height: 30, marginLeft: -15, marginTop: -15, borderRadius: 6, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, ludoDice: { fontSize: 18, fontWeight: '900', color: colors.text },
+  ludoPlayerList: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, ludoPlayerName: { color: colors.text, fontSize: 11, fontWeight: '700' }, ludoPlayerBadge: { minWidth: 74, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 11, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, alignItems: 'center' }, ludoNameGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 7 }, ludoNameInput: { width: '48%', flexGrow: 1, marginBottom: 0 }, ludoRuleToggle: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 5 }, ludoRuleCheck: { width: 20, height: 20, borderRadius: 5, overflow: 'hidden', textAlign: 'center', textAlignVertical: 'center', backgroundColor: '#DBEAFE', color: colors.blue, fontWeight: '900', borderWidth: 1, borderColor: colors.blue }, ludoMoveChoicePanel: { padding: 12, borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 14, backgroundColor: '#EFF6FF', gap: 10 }, ludoMoveChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, ludoMoveChoice: { flexGrow: 1, flexBasis: '45%', minWidth: 120, padding: 12, borderRadius: 12, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#BFDBFE', gap: 3 }, ludoMoveChoiceTitle: { color: colors.blue, fontSize: 13, fontWeight: '900' }, ludoMoveChoiceSubtitle: { color: colors.muted, fontSize: 11, fontWeight: '600' }, ludoBoard: { width: '100%', maxWidth: 420, aspectRatio: 1, alignSelf: 'center', position: 'relative', borderRadius: 4, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#64748B', overflow: 'hidden' }, ludoGrid: { position: 'absolute', width: '100%', height: '100%' }, ludoGridRow: { flexDirection: 'row', flex: 1 }, ludoGridCell: { flex: 1, aspectRatio: 1, borderWidth: 0.5, borderColor: '#94A3B8', alignItems: 'center', justifyContent: 'center' }, ludoGridBlank: { backgroundColor: '#FFFFFF' }, ludoPathCell: { backgroundColor: '#FFFFFF' }, ludoSafeCell: { backgroundColor: '#F8FAFC', borderColor: '#64748B' }, ludoHomeBox: { position: 'absolute', width: '40%', height: '40%', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#475569' }, ludoHomeInner: { width: '76%', height: '76%', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#334155', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-evenly' }, ludoHomeDot: { width: '35%', aspectRatio: 1, borderRadius: 100, borderWidth: 1.5, borderColor: '#475569', elevation: 2 }, ludoCenterMark: { position: 'absolute', left: '40%', top: '40%', width: '20%', height: '20%', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center' }, ludoTrackCell: { borderColor: '#334155', borderWidth: 1 }, ludoCellNumber: { fontSize: 8, color: colors.blue }, ludoPiece: { position: 'absolute', width: '6%', height: '6%', marginLeft: -9, marginTop: -9, borderRadius: 100, borderWidth: 1.5, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', elevation: 3 }, ludoPieceSelectable: { borderColor: '#111827', borderWidth: 2.5, transform: [{ scale: 1.2 }] }, ludoPieceText: { color: '#FFFFFF', fontSize: 9, fontWeight: '900' }, ludoCenter: { position: 'absolute', left: '50%', top: '50%', width: 30, height: 30, marginLeft: -15, marginTop: -15, borderRadius: 6, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, ludoDice: { fontSize: 18, fontWeight: '900', color: colors.text },
   exportButton: { backgroundColor: colors.blue, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, alignItems: 'center' }, exportDisabled: { opacity: 0.45 }, exportButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' }, historyDayCard: { backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' }, sessionToggle: { color: colors.blue, fontSize: 10, fontWeight: '700' }, sessionList: { borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#F8FAFC' }, sessionEntry: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border }, sessionLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', width: 58 }, sessionTime: { color: colors.text, fontSize: 11, fontWeight: '700', flex: 1 }, sessionDuration: { color: colors.muted, fontSize: 10 },
   chatJoinDivider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }, chatDividerLine: { flex: 1, height: 1, backgroundColor: colors.border }, guestAction: { backgroundColor: '#0F766E' }, guestActionText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   heroCatLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }, heroCatImage: { position: 'absolute', width: '100%', height: '100%' }, heroCatShade: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.navy }, heroCatPaw: { position: 'absolute', left: '55%', bottom: '15%', width: 45, height: 88, transformOrigin: 'bottom center' }, heroCatPawArm: { position: 'absolute', left: 15, bottom: 0, width: 15, height: 62, borderRadius: 10, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatPawPalm: { position: 'absolute', left: 3, top: 8, width: 40, height: 34, borderRadius: 20, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatToe: { position: 'absolute', top: 2, width: 12, height: 17, borderRadius: 9, backgroundColor: '#E8953D', borderWidth: 1, borderColor: '#FFD17A' }, heroCatToeOne: { left: 5 }, heroCatToeTwo: { left: 17, top: -1 }, heroCatToeThree: { left: 29 }, heroCatBlink: { position: 'absolute', left: '31%', top: '24%', width: '9%', height: '4%', borderRadius: 99, backgroundColor: '#EAA34B', alignItems: 'center', justifyContent: 'center' }, heroCatBlinkLine: { width: '72%', height: 1.5, borderRadius: 2, backgroundColor: '#60351E', transform: [{ rotate: '-5deg' }] }, greetingPill: { backgroundColor: 'rgba(15, 118, 110, 0.92)', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, greetingPillText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' }, catGreetingCard: { width: '100%', maxWidth: 420, backgroundColor: '#FFFFFF', borderRadius: 26, paddingHorizontal: 24, paddingVertical: 27, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#CFECE8' }, catSpeech: { backgroundColor: '#DCFCE7', paddingHorizontal: 18, paddingVertical: 9, borderRadius: 16, borderBottomLeftRadius: 4 }, catSpeechText: { color: '#166534', fontSize: 15, fontWeight: '900' }, catGreetingTitle: { color: colors.text, fontSize: 23, fontWeight: '900', textAlign: 'center' }, catGreetingBody: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', maxWidth: 280 }, actionPrimarySmall: { backgroundColor: colors.blue, borderRadius: 12, paddingVertical: 11, paddingHorizontal: 20, marginTop: 7 }, officeByeRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F0FDF4', borderRadius: 13, padding: 10 }, officeOutActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }, officeOutButton: { backgroundColor: '#B91C1C', borderRadius: 13, paddingVertical: 12, paddingHorizontal: 9, alignItems: 'center', marginTop: 12 }, officeOutText: { color: '#FFFFFF', fontWeight: '900', fontSize: 12, textAlign: 'center' }, undoOfficeOutButton: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#B91C1C', borderRadius: 13, paddingVertical: 11, paddingHorizontal: 12 }, undoOfficeOutText: { color: '#B91C1C', fontWeight: '800', fontSize: 11 }, officeSummaryModal: { width: '100%', maxWidth: 560, maxHeight: '90%', backgroundColor: colors.card, borderRadius: 18, padding: 16, gap: 13 }, officeSummaryTotals: { flexDirection: 'row', gap: 10, padding: 12, backgroundColor: '#F1F5F9', borderRadius: 12 }, officeSummaryWork: { color: colors.blue, fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryBreak: { color: '#B91C1C', fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F8FAFC', borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 10 }, officeSummaryText: { color: colors.text, fontSize: 12, fontWeight: '800' },

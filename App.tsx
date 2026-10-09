@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ActivityIndicator, Alert, Animated, Easing, Image, ImageSourcePropType, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Print from 'expo-print';
@@ -9,7 +10,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AttendanceDay, AttendanceSession, DEFAULT_POLICY, formatDuration, getAttendanceSummary, getDaySessions, isHalfDayDate, localDateKey, MONTHLY_LATE_LOGIN_LIMIT, monthLateCount, PolicyConfig } from './src/lib/attendance';
 import { clearDay, loadDays, loadPolicy, saveDay, savePolicy, syncPending } from './src/lib/storage';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
-import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
+import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, showChatNotification, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
 import { colors } from './src/theme';
 import { BUILD_ID, BUILD_SUMMARY } from './src/release';
 
@@ -247,6 +248,7 @@ function OfficeTimeApp() {
   const [officeOutSummary, setOfficeOutSummary] = useState<AttendanceDay | null>(null);
   const [catGreeting, setCatGreeting] = useState<'hi' | 'bye' | null>(null);
   const [fireworksId, setFireworksId] = useState(0);
+  const [breakReminderEnabled, setBreakReminderEnabled] = useState(true);
   const previousTargetState = useRef<{ date: string; reached: boolean } | null>(null);
   const today = localDateKey(now);
   const day = days.find(item => item.date === today) ?? { date: today, punchInAt: null, punchOutAt: null, breakMinutes: policy.defaultBreakMinutes, managerApproval: false, synced: true };
@@ -261,6 +263,15 @@ function OfficeTimeApp() {
   const estimatedTargetTime = new Date(now.getTime() + remainingTargetSeconds * 1000)
     .toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
   const breakTimerRunning = !active && !day.officeOutAt && !!sessions[sessions.length - 1]?.punchOutAt;
+  const breakStartedAt = breakTimerRunning ? sessions[sessions.length - 1]?.punchOutAt ?? null : null;
+
+  useEffect(() => {
+    if (!breakReminderEnabled || !breakStartedAt || day.officeOutAt) { void cancelReminder('break-reminder'); return; }
+    const reminderAfterMs = Math.max(15, policy.defaultBreakMinutes) * 60_000;
+    const remainingMs = reminderAfterMs - Math.max(0, now.getTime() - new Date(breakStartedAt).getTime());
+    if (remainingMs > 0) void scheduleTimedReminder('break-reminder', 'Break time', `Your expected ${formatDuration(policy.defaultBreakMinutes)} break is up. Ready to punch back in?`, remainingMs).catch(() => undefined);
+    else void cancelReminder('break-reminder');
+  }, [breakReminderEnabled, breakStartedAt, day.officeOutAt, policy.defaultBreakMinutes]);
 
   useEffect(() => {
     if (booting) return;
@@ -283,6 +294,7 @@ function OfficeTimeApp() {
     let mounted = true;
     const subscription = NetInfo.addEventListener(state => { setOnline(!!state.isConnected); if (state.isConnected) void syncPending().then(refresh); });
     const timer = setInterval(() => setNow(new Date()), 1_000);
+    void AsyncStorage.getItem('milo.break-reminders.v1').then(value => { if (value !== null) setBreakReminderEnabled(value === 'true'); });
     void Promise.all([refresh(), scheduleDailyReminder()]).finally(() => { if (mounted) setBooting(false); });
     if (supabase) {
       void supabase.auth.getSession().then(({ data }) => { if (mounted) setSession(data.session); });
@@ -329,6 +341,7 @@ function OfficeTimeApp() {
     setDays(list => [updated, ...list.filter(d => d.date !== updated.date)]);
     const firstLoginIsLate = kind === 'in' && sessions.length === 0 && updatedSummary.afterFlexLimit;
     if (kind === 'in') {
+      await cancelNotice('break-reminder');
       await scheduleTimedNotice('missing-punch-out', 'Don’t forget to punch out', 'Your attendance session is still open.', 9 * 60 * 60 * 1000);
       if (!updatedSummary.targetReached) await scheduleWorkTarget(policy, updatedSummary, updated);
       if (firstLoginIsLate) {
@@ -343,6 +356,7 @@ function OfficeTimeApp() {
     } else {
       await cancelNotice('missing-punch-out');
       await cancelNotice('work-target');
+      if (breakReminderEnabled) await scheduleTimedNotice('break-reminder', 'Break time', `Your expected ${formatDuration(policy.defaultBreakMinutes)} break is up. Ready to punch back in?`, Math.max(15, policy.defaultBreakMinutes) * 60_000);
       setCatGreeting('bye');
     }
   }
@@ -362,6 +376,7 @@ function OfficeTimeApp() {
     setDays(list => [updated, ...list.filter(item => item.date !== updated.date)]);
     await cancelNotice('missing-punch-out');
     await cancelNotice('work-target');
+    await cancelNotice('break-reminder');
     setOfficeOutSummary(updated);
   }
   async function undoOfficeOut() {
@@ -507,12 +522,14 @@ function OfficeTimeApp() {
         <View style={styles.card}><Text style={styles.sectionTitle}>Your workday settings</Text><Text style={styles.muted}>Editable defaults pending HR confirmation</Text>
           <Stepper label="Recorded work target" value={formatDuration(policy.recordedWorkTargetMinutes)} onMinus={() => void changePolicy('recordedWorkTargetMinutes', Math.max(60, policy.recordedWorkTargetMinutes - 30))} onPlus={() => void changePolicy('recordedWorkTargetMinutes', policy.recordedWorkTargetMinutes + 30)} />
           <Stepper label="Expected break" value={`${policy.defaultBreakMinutes} min`} onMinus={() => void changePolicy('defaultBreakMinutes', Math.max(0, policy.defaultBreakMinutes - 15))} onPlus={() => void changePolicy('defaultBreakMinutes', Math.min(240, policy.defaultBreakMinutes + 15))} />
+          <Pressable accessibilityRole="switch" accessibilityState={{ checked: breakReminderEnabled }} onPress={() => { const next = !breakReminderEnabled; setBreakReminderEnabled(next); void AsyncStorage.setItem('milo.break-reminders.v1', String(next)); if (!next) void cancelNotice('break-reminder'); }} style={styles.outlineButton}><Text style={styles.outlineText}>{breakReminderEnabled ? '✓ Break-end reminder on' : '＋ Turn on break-end reminder'}</Text></Pressable>
           <Pressable style={styles.outlineButton} onPress={() => void scheduleWorkTarget()}><Text style={styles.outlineText}>Remind me when target is reached</Text></Pressable>
           {Platform.OS === 'web' && <Text style={styles.muted}>Browser reminders need notification permission and this tab open. Use the iOS or Android app for scheduled daily reminders.</Text>}
           <Text style={styles.policyNote}>Punch-in sessions count as recorded work. Each punch-out starts a break timer that stops at the next punch-in. The policy mentions both a 9-hour day including breaks and 8 recorded work hours; confirm the expected break duration with HR.</Text>
         </View>
       </>}
       {tab === 'Today' && <><Pressable style={styles.outlineButton} onPress={() => setCorrectionTarget({ date: today, add: !days.some(item => item.date === today) })}><Text style={styles.outlineText}>{sessions.length ? 'Adjust or add punch times' : 'Add a missed punch'}</Text></Pressable><WorkTimeCalculator targetMinutes={policy.recordedWorkTargetMinutes} />{sessions.length > 0 && <ClearDayControl date={today} onClear={clearAttendanceDay} />}</>}
+      {tab === 'Today' && <TeamAvailability session={session} today={today} />}
       {tab === 'History' && <History days={days} policy={policy} onClear={clearAttendanceDay} onCorrect={date => setCorrectionTarget({ date, add: false })} onAddMissed={date => setCorrectionTarget({ date, add: true })} />}
       {tab === 'Chat' && <TeamChat session={session} onJoin={async name => {
         if (!supabase) return 'Configure Supabase to enable shared chat.';
@@ -664,7 +681,7 @@ function CatCardGreeting({ kind, onDone }: { kind: 'hi' | 'bye' | null; onDone: 
 }
 
 type ChatRoom = { room_id: string; room_name: string; creator_name: string; created_at: string; member_count: number; password_protected: boolean; joined: boolean; is_creator: boolean; room_type: 'group' | 'direct' };
-type ChatRoomMember = { member_id: string; member_name: string; joined_at: string };
+type ChatRoomMember = { member_id: string; member_name: string; joined_at: string; username?: string };
 type DirectChat = { room_id: string; room_name: string; peer_username: string; created_at: string };
 type ChatMessage = { id: string; room_id: string; sender_id: string; sender_name: string; body: string; media_path: string | null; media_type: 'image' | 'video' | 'audio' | null; view_once: boolean; sent_at: string; reply_to?: string | null };
 type ChatReaction = { message_id: string; user_id: string; emoji: string };
@@ -1049,6 +1066,9 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState('');
   const [draft, setDraft] = useState('');
+  const [messageSearch, setMessageSearch] = useState('');
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const [mentionNotice, setMentionNotice] = useState('');
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [reactions, setReactions] = useState<ChatReaction[]>([]);
   const [file, setFile] = useState<File | null>(null);
@@ -1079,6 +1099,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   const callChannel = useRef<any>(null);
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const groupPeerConnections = useRef<Record<string, RTCPeerConnection>>({});
+  const roomMembersRef = useRef<ChatRoomMember[]>([]);
   const localCallStreamRef = useRef<MediaStream | null>(null);
   const queuedCallIce = useRef<RTCIceCandidateInit[]>([]);
   const queuedGroupCallIce = useRef<Record<string, RTCIceCandidateInit[]>>({});
@@ -1096,11 +1117,13 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   const isJoined = !!session?.user?.id;
   const isAnonymous = !!session?.user?.is_anonymous;
   const myName = session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')[0] || 'Guest';
+  const filteredMessages = messageSearch.trim() ? messages.filter(message => `${message.sender_name} ${message.body}`.toLocaleLowerCase().includes(messageSearch.trim().toLocaleLowerCase())) : messages;
 
   activeCallRef.current = activeCall;
   incomingCallRef.current = incomingCall;
   callReadyRef.current = callReady;
   callPeersRef.current = callPeers;
+  roomMembersRef.current = roomMembers;
 
   useEffect(() => {
     let alive = true;
@@ -1223,7 +1246,39 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
     return nextRooms;
   }, [isJoined]);
 
+  const refreshUnreadCounts = useCallback(async () => {
+    if (!supabase || !isJoined) return;
+    const { data, error } = await supabase.rpc('list_chat_unread_counts');
+    if (error) return;
+    setUnreadCounts(Object.fromEntries(((data ?? []) as { room_id: string; unread_count: number }[]).map(item => [item.room_id, Number(item.unread_count)])));
+  }, [isJoined]);
+
   useEffect(() => { if (isJoined) void refreshRooms(); }, [isJoined, refreshRooms]);
+
+  useEffect(() => {
+    if (!isJoined) return;
+    void refreshUnreadCounts();
+    const interval = setInterval(() => void refreshUnreadCounts(), 15_000);
+    return () => clearInterval(interval);
+  }, [isJoined, refreshUnreadCounts]);
+
+  useEffect(() => {
+    if (!supabase || !selectedRoom || !isJoined) return;
+    let alive = true;
+    setMessageSearch('');
+    void Promise.all([
+      supabase.rpc('mark_chat_room_read', { room_id_in: selectedRoom.room_id }),
+      supabase.rpc('list_chat_room_members', { room_id_in: selectedRoom.room_id }),
+    ]).then(([readResult, memberResult]) => {
+      if (!alive) return;
+      if (readResult.error) setChatError(`Unread markers need the latest chat database setup: ${readResult.error.message}`);
+      if (memberResult.error) setRoomError(`Could not load room members: ${memberResult.error.message}`);
+      else setRoomMembers((memberResult.data ?? []) as ChatRoomMember[]);
+      setUnreadCounts(current => ({ ...current, [selectedRoom.room_id]: 0 }));
+      void refreshUnreadCounts();
+    });
+    return () => { alive = false; };
+  }, [selectedRoom?.room_id, isJoined, refreshUnreadCounts]);
 
   useEffect(() => {
     if (!isJoined || selectedRoom || !personalChatMode || miloMode) return;
@@ -1709,6 +1764,17 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
         if (!alive) return;
         const incoming = payload.new as ChatMessage;
         setMessages(current => current.some(item => item.id === incoming.id) ? current : [...current, incoming].slice(-100));
+        if (incoming.sender_id !== session.user.id) {
+          const mentioned = roomMembersRef.current.some(member => member.member_id === session.user.id && member.username && incoming.body.toLocaleLowerCase().includes(`@${member.username.toLocaleLowerCase()}`));
+          if (mentioned) {
+            const notice = `${incoming.sender_name} mentioned you in ${selectedRoom.room_name}.`;
+            setMentionNotice(notice);
+            setTimeout(() => setMentionNotice(current => current === notice ? '' : current), 7000);
+            void showChatNotification(`Mention in ${selectedRoom.room_name}`, `${incoming.sender_name}: ${incoming.body}`).catch(() => undefined);
+          } else void showChatNotification(`${incoming.sender_name} · ${selectedRoom.room_name}`, incoming.body || `${incoming.media_type ?? 'New'} message`).catch(() => undefined);
+        }
+        void supabase.rpc('mark_chat_room_read', { room_id_in: selectedRoom.room_id });
+        setUnreadCounts(current => ({ ...current, [selectedRoom.room_id]: 0 }));
       })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'chat_messages' }, payload => {
         if (!alive) return;
@@ -1873,14 +1939,15 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
     {!!chatError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{chatError}</Text>}
     {!!callError && <Text accessibilityRole="alert" style={styles.callError}>{callError}</Text>}
     {!!selectedRoom && <Text style={styles.callHint}>{callReady ? `Voice and video calls ready · ${selectedRoom.room_type === 'group' ? 'the room will be invited' : 'personal chat'}` : 'Connecting call service…'} · Allow microphone/camera access when your browser asks.</Text>}
+    {!!mentionNotice && <Text accessibilityRole="alert" style={{ color: colors.blue, fontSize: 12, fontWeight: '700', backgroundColor: '#EFF6FF', padding: 9, borderRadius: 10 }}>{mentionNotice}</Text>}
     {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Enter the chat lobby</Text><Text style={styles.muted}>Set a display name to browse groups. You’ll need a room password to enter private groups.</Text><TextInput style={styles.input} value={displayName} onChangeText={value => { setDisplayName(value); setJoinError(''); }} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary, joining && styles.dim]} disabled={!displayName.trim() || joining} onPress={() => { setJoining(true); setJoinError(''); void onJoin(displayName.trim()).then(message => setJoinError(message ?? '')).catch(error => setJoinError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.')).finally(() => setJoining(false)); }}><Text style={styles.actionText}>{joining ? 'Please wait…' : 'Enter chat lobby'}</Text></Pressable>{!!joinError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{joinError}</Text>}</View> : miloMode ? <MiloPolicyAssistant session={session} /> : !selectedRoom && personalChatMode ? <>
       <View style={{ gap: 8, padding: 12, backgroundColor: '#EFF6FF', borderRadius: 14 }}><Text style={styles.chatWelcome}>Start a personal chat</Text><Text style={styles.chatPresence}>Enter someone’s Milo username to open your private conversation. Guests can chat and call using their shared username too.</Text><View style={{ flexDirection: 'row', gap: 8 }}><TextInput style={[styles.input, { flex: 1 }]} value={directUsername} onChangeText={setDirectUsername} placeholder="Username" autoCapitalize="none" autoCorrect={false} onSubmitEditing={() => void startDirectChat()}/><Pressable disabled={roomBusy || !directUsername.trim()} onPress={() => void startDirectChat()} style={[styles.action, styles.primary, (roomBusy || !directUsername.trim()) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Opening…' : 'Chat'}</Text></Pressable></View>
-        {directChats.length > 0 && <View style={{ gap: 6, marginTop: 5 }}><Text style={styles.historyTitle}>Your personal chats</Text>{directChats.map(chat => <Pressable key={chat.room_id} onPress={() => setSelectedRoom({ room_id: chat.room_id, room_name: chat.room_name, creator_name: chat.peer_username, created_at: chat.created_at, member_count: 2, password_protected: false, joined: true, is_creator: false, room_type: 'direct' })} style={{ padding: 9, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderRadius: 10 }}><Text style={styles.historyTitle}>{chat.room_name}</Text><Text style={styles.chatPresence}>@{chat.peer_username}</Text></Pressable>)}</View>}
+        {directChats.length > 0 && <View style={{ gap: 6, marginTop: 5 }}><Text style={styles.historyTitle}>Your personal chats</Text>{directChats.map(chat => <Pressable key={chat.room_id} onPress={() => setSelectedRoom({ room_id: chat.room_id, room_name: chat.room_name, creator_name: chat.peer_username, created_at: chat.created_at, member_count: 2, password_protected: false, joined: true, is_creator: false, room_type: 'direct' })} style={{ padding: 9, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderRadius: 10 }}><Text style={styles.historyTitle}>{chat.room_name}</Text><View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><Text style={styles.chatPresence}>@{chat.peer_username}</Text>{(unreadCounts[chat.room_id] ?? 0) > 0 && <Text style={styles.onlineBadge}>{unreadCounts[chat.room_id]} new</Text>}</View></Pressable>)}</View>}
       </View>
     </> : !selectedRoom ? <>
       <Pressable onPress={() => { setShowCreateRoom(value => !value); setRoomError(''); }} style={[styles.action, styles.primary]}><Text style={styles.actionText}>{showCreateRoom ? 'Cancel room creation' : '+ Create a chat room'}</Text></Pressable>
       {showCreateRoom && <View style={{ gap: 9, padding: 12, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 14 }}><Text style={styles.chatWelcome}>Create a private group</Text><TextInput style={styles.input} value={roomName} onChangeText={setRoomName} placeholder="Room name" maxLength={50}/><TextInput style={styles.input} value={roomPassword} onChangeText={setRoomPassword} placeholder="Create a password (4+ characters)" secureTextEntry maxLength={72}/><Pressable disabled={roomBusy || !roomName.trim() || roomPassword.length < 4} onPress={() => void createRoom()} style={[styles.action, styles.primary, (roomBusy || !roomName.trim() || roomPassword.length < 4) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Creating…' : 'Create room'}</Text></Pressable></View>}
-      <View style={{ gap: 9 }}><Text style={styles.chatWelcome}>Available groups</Text>{roomsLoading && rooms.length === 0 ? <Text style={styles.muted}>Loading groups…</Text> : rooms.map(room => <View key={room.room_id} style={{ gap: 8, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: '#FFFFFF' }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><View style={{ flex: 1 }}><Text style={styles.historyTitle}>{room.room_name}</Text><Text style={styles.chatPresence}>{room.creator_name} · {room.member_count} {room.member_count === 1 ? 'member' : 'members'} · {room.password_protected ? '🔒 Password protected' : 'Open room'}</Text></View>{room.joined && <Text style={styles.onlineBadge}>JOINED</Text>}</View>{room.joined ? <Pressable onPress={() => void enterRoom(room)} style={[styles.action, styles.primary]}><Text style={styles.actionText}>Enter room</Text></Pressable> : joinRoomId === room.room_id ? null : <Pressable onPress={() => { setJoinRoomId(room.room_id); setJoinPassword(''); setRoomError(''); }} style={styles.outlineButton}><Text style={styles.outlineText}>{room.password_protected ? 'Enter password' : 'Join room'}</Text></Pressable>}{!room.joined && joinRoomId === room.room_id && <View style={{ gap: 8 }}>{room.password_protected && <TextInput style={[styles.input, { width: '100%' }]} value={joinPassword} onChangeText={setJoinPassword} placeholder="Room password" secureTextEntry returnKeyType="go" onSubmitEditing={() => void enterRoom(room, joinPassword)}/>}<View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}><Pressable accessibilityRole="button" accessibilityLabel="Cancel joining lobby" onPress={() => { setJoinRoomId(null); setJoinPassword(''); }} hitSlop={8}><Text style={styles.link}>Cancel</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={room.password_protected ? 'Enter lobby' : 'Join lobby'} disabled={roomBusy || (room.password_protected && !joinPassword)} onPress={() => void enterRoom(room, joinPassword)} style={[styles.lobbySubmit, (roomBusy || (room.password_protected && !joinPassword)) && styles.dim]}><Text style={styles.lobbySubmitText}>{roomBusy ? '…' : '✓'}</Text></Pressable></View></View>}</View>)}</View>
+      <View style={{ gap: 9 }}><Text style={styles.chatWelcome}>Available groups</Text>{roomsLoading && rooms.length === 0 ? <Text style={styles.muted}>Loading groups…</Text> : rooms.map(room => <View key={room.room_id} style={{ gap: 8, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: '#FFFFFF' }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><View style={{ flex: 1 }}><Text style={styles.historyTitle}>{room.room_name}</Text><Text style={styles.chatPresence}>{room.creator_name} · {room.member_count} {room.member_count === 1 ? 'member' : 'members'} · {room.password_protected ? '🔒 Password protected' : 'Open room'}</Text></View><View style={{ alignItems: 'flex-end', gap: 4 }}>{room.joined && <Text style={styles.onlineBadge}>JOINED</Text>}{(unreadCounts[room.room_id] ?? 0) > 0 && <Text style={styles.onlineBadge}>{unreadCounts[room.room_id]} new</Text>}</View></View>{room.joined ? <Pressable onPress={() => void enterRoom(room)} style={[styles.action, styles.primary]}><Text style={styles.actionText}>Enter room</Text></Pressable> : joinRoomId === room.room_id ? null : <Pressable onPress={() => { setJoinRoomId(room.room_id); setJoinPassword(''); setRoomError(''); }} style={styles.outlineButton}><Text style={styles.outlineText}>{room.password_protected ? 'Enter password' : 'Join room'}</Text></Pressable>}{!room.joined && joinRoomId === room.room_id && <View style={{ gap: 8 }}>{room.password_protected && <TextInput style={[styles.input, { width: '100%' }]} value={joinPassword} onChangeText={setJoinPassword} placeholder="Room password" secureTextEntry returnKeyType="go" onSubmitEditing={() => void enterRoom(room, joinPassword)}/>}<View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}><Pressable accessibilityRole="button" accessibilityLabel="Cancel joining lobby" onPress={() => { setJoinRoomId(null); setJoinPassword(''); }} hitSlop={8}><Text style={styles.link}>Cancel</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={room.password_protected ? 'Enter lobby' : 'Join lobby'} disabled={roomBusy || (room.password_protected && !joinPassword)} onPress={() => void enterRoom(room, joinPassword)} style={[styles.lobbySubmit, (roomBusy || (room.password_protected && !joinPassword)) && styles.dim]}><Text style={styles.lobbySubmitText}>{roomBusy ? '…' : '✓'}</Text></Pressable></View></View>}</View>)}</View>
     </> : <>
       <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Chatting as {myName}{isAnonymous ? ' · guest' : ''}</Text>{selectedRoom.is_creator && <Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800', marginTop: 4 }}>Room creator</Text>}</View>
       {selectedRoom.is_creator && <Pressable onPress={() => { const opening = !showRoomSettings; setShowRoomSettings(opening); setRoomError(''); if (opening) { setUpdatedRoomName(selectedRoom.room_name); void loadRoomMembers(selectedRoom); } }} style={styles.outlineButton}><Text style={styles.outlineText}>{showRoomSettings ? 'Hide room management' : 'Manage room'}</Text></Pressable>}
@@ -1896,8 +1963,9 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
         {roomMembers.length === 0 && <Text style={styles.muted}>Loading members…</Text>}
         <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10, gap: 8 }}><Text style={{ color: '#B91C1C', fontSize: 11, lineHeight: 16 }}>Deleting this room permanently removes its messages and shared media for everyone.</Text><View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}><Pressable disabled={roomSettingsBusy} onPress={() => void deleteRoom()} style={[styles.action, { backgroundColor: '#B91C1C', flex: 1 }, roomSettingsBusy && styles.dim]}><Text style={styles.actionText}>{roomSettingsBusy ? 'Deleting…' : deleteRoomConfirm ? 'Confirm delete room' : 'Delete this room'}</Text></Pressable>{deleteRoomConfirm && <Pressable onPress={() => setDeleteRoomConfirm(false)}><Text style={styles.link}>Cancel</Text></Pressable>}</View></View>
       </View>}
+      <TextInput accessibilityLabel="Search messages" style={styles.input} value={messageSearch} onChangeText={setMessageSearch} placeholder="Search messages in this chat" returnKeyType="search" />
       <ScrollView ref={messageScroll} onContentSizeChange={() => messageScroll.current?.scrollToEnd({ animated: true })} style={styles.chatMessages} contentContainerStyle={styles.chatMessagesContent} nestedScrollEnabled>
-        {messages.length === 0 ? <View style={styles.chatEmpty}><Text style={styles.chatEmptyIcon}>☕</Text><Text style={styles.emptyTitle}>Start the conversation</Text><Text style={styles.muted}>Send a message, photo, video, or voice note.</Text></View> : messages.map(message => {
+        {messages.length === 0 ? <View style={styles.chatEmpty}><Text style={styles.chatEmptyIcon}>☕</Text><Text style={styles.emptyTitle}>Start the conversation</Text><Text style={styles.muted}>Send a message, photo, video, or voice note.</Text></View> : filteredMessages.length === 0 ? <View style={styles.chatEmpty}><Text style={styles.emptyTitle}>No matching messages</Text><Text style={styles.muted}>Try another search.</Text></View> : filteredMessages.map(message => {
           const mine = message.sender_id === session.user.id;
           const repliedMessage = messages.find(item => item.id === message.reply_to);
           return <View key={message.id} style={[styles.chatBubble, mine ? styles.chatBubbleMine : styles.chatBubbleOther]}>
@@ -1917,7 +1985,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       </ScrollView>
       {file && <View style={styles.attachmentPreview}><Text style={styles.attachmentText}>▧  {file.name}</Text><Pressable onPress={() => { setFile(null); setViewOnce(false); }}><Text style={styles.link}>Remove</Text></Pressable></View>}
       {file?.type.startsWith('image/') && <Pressable onPress={() => setViewOnce(value => !value)} style={styles.onceToggle}><Text style={styles.onceCheckbox}>{viewOnce ? '✓' : ''}</Text><Text style={styles.onceText}>View once (each person can open this photo once)</Text></Pressable>}
-      <View style={styles.chatComposer}>{!!replyTo && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#EFF6FF', borderRadius: 10, padding: 9 }}><View style={{ flex: 1 }}><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800' }}>Replying to {replyTo.sender_name}</Text><Text numberOfLines={1} style={styles.muted}>{replyTo.body || (replyTo.media_type ? `${replyTo.media_type} attachment` : '')}</Text></View><Pressable accessibilityLabel="Cancel reply" onPress={() => setReplyTo(null)}><Text style={styles.link}>×</Text></Pressable></View>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>{QUICK_EMOJIS.map(emoji => <Pressable key={emoji} accessibilityLabel={`Insert ${emoji}`} onPress={() => setDraft(current => `${current}${emoji}`)} style={{ paddingHorizontal: 5, paddingVertical: 3 }}><Text style={{ fontSize: 18 }}>{emoji}</Text></Pressable>)}</View><View style={styles.chatTools}><Pressable accessibilityLabel="Add photo or video" onPress={chooseFile} style={styles.chatTool}><Text style={styles.chatToolText}>＋ Media</Text></Pressable><Pressable accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice message'} onPress={recording ? stopVoiceRecording : () => void startVoiceRecording()} style={[styles.chatTool, recording && styles.recordingTool]}><Text style={[styles.chatToolText, recording && styles.recordingText]}>{recording ? '■ Stop' : '● Voice'}</Text></Pressable></View>{Platform.OS === 'web' && <input ref={fileInput} type="file" accept="image/*,video/*" onChange={handleFileSelection} aria-label="Choose a photo or video" style={{ position: 'fixed', width: 1, height: 1, opacity: 0, overflow: 'hidden', left: -100, bottom: 0 }} />}<View style={styles.chatInputRow}><TextInput style={styles.chatInput} multiline maxLength={1000} value={draft} onChangeText={setDraft} placeholder="Message the team…"/><Pressable accessibilityLabel="Send message" disabled={sending || (!draft.trim() && !file)} onPress={() => void sendMessage()} style={[styles.sendButton, (sending || (!draft.trim() && !file)) && styles.dim]}><Text style={styles.sendButtonText}>{sending ? '…' : '↑'}</Text></Pressable></View></View>
+      <View style={styles.chatComposer}>{!!replyTo && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#EFF6FF', borderRadius: 10, padding: 9 }}><View style={{ flex: 1 }}><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800' }}>Replying to {replyTo.sender_name}</Text><Text numberOfLines={1} style={styles.muted}>{replyTo.body || (replyTo.media_type ? `${replyTo.media_type} attachment` : '')}</Text></View><Pressable accessibilityLabel="Cancel reply" onPress={() => setReplyTo(null)}><Text style={styles.link}>×</Text></Pressable></View>}{roomMembers.some(member => member.member_id !== session.user.id) && <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, alignItems: 'center' }}><Text style={styles.muted}>Mention:</Text>{roomMembers.filter(member => member.member_id !== session.user.id && member.username).map(member => <Pressable key={member.member_id} onPress={() => setDraft(current => `${current}${current && !current.endsWith(' ') ? ' ' : ''}@${member.username} `)} style={styles.chatTool}><Text style={styles.chatToolText}>@{member.username}</Text></Pressable>)}</ScrollView>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>{QUICK_EMOJIS.map(emoji => <Pressable key={emoji} accessibilityLabel={`Insert ${emoji}`} onPress={() => setDraft(current => `${current}${emoji}`)} style={{ paddingHorizontal: 5, paddingVertical: 3 }}><Text style={{ fontSize: 18 }}>{emoji}</Text></Pressable>)}</View><View style={styles.chatTools}><Pressable accessibilityLabel="Add photo or video" onPress={chooseFile} style={styles.chatTool}><Text style={styles.chatToolText}>＋ Media</Text></Pressable><Pressable accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice message'} onPress={recording ? stopVoiceRecording : () => void startVoiceRecording()} style={[styles.chatTool, recording && styles.recordingTool]}><Text style={[styles.chatToolText, recording && styles.recordingText]}>{recording ? '■ Stop' : '● Voice'}</Text></Pressable></View>{Platform.OS === 'web' && <input ref={fileInput} type="file" accept="image/*,video/*" onChange={handleFileSelection} aria-label="Choose a photo or video" style={{ position: 'fixed', width: 1, height: 1, opacity: 0, overflow: 'hidden', left: -100, bottom: 0 }} />}<View style={styles.chatInputRow}><TextInput style={styles.chatInput} multiline maxLength={1000} value={draft} onChangeText={setDraft} placeholder="Message the team…"/><Pressable accessibilityLabel="Send message" disabled={sending || (!draft.trim() && !file)} onPress={() => void sendMessage()} style={[styles.sendButton, (sending || (!draft.trim() && !file)) && styles.dim]}><Text style={styles.sendButtonText}>{sending ? '…' : '↑'}</Text></Pressable></View></View>
     </>}
     <Modal visible={!!incomingCall} transparent animationType="fade" onRequestClose={declineCall}><View style={styles.mediaOverlay}><View style={styles.callModal}><View style={styles.callAvatar}><Text style={styles.callAvatarText}>{incomingCall?.mode === 'video' ? '▣' : '☎'}</Text></View><Text style={styles.sectionTitle}>{incomingCall?.mode === 'video' ? 'Incoming video call' : 'Incoming voice call'}</Text><Text style={styles.muted}>{incomingCall?.group ? `${incomingCall.fromName} started a group call in ${selectedRoom?.room_name ?? 'this room'}.` : `${incomingCall?.fromName || 'Someone'} is calling you.`}</Text><View style={styles.callModalActions}><Pressable accessibilityRole="button" onPress={declineCall} style={[styles.callControl, styles.callDecline]}><Text style={styles.callControlText}>Decline</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void acceptCall()} style={[styles.callControl, styles.callAccept]}><Text style={styles.callControlText}>Accept</Text></Pressable></View></View></View></Modal>
     <Modal visible={!!activeCall} transparent animationType="fade" onRequestClose={() => endCall()}><View style={styles.mediaOverlay}><View style={styles.callModal}>
@@ -2802,11 +2870,53 @@ function PunchCorrectionModal({ date: initialDate, day, addToExisting, onClose, 
   </Modal>;
 }
 
+function TeamAvailability({ session, today }: { session: any; today: string }) {
+  const [visible, setVisible] = useState(false);
+  const [people, setPeople] = useState<{ username: string; display_name: string; presence_status: string }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const canShare = !!session?.user?.id && !session.user.is_anonymous && !!supabase;
+  const refresh = useCallback(async () => {
+    if (!canShare || !supabase) return;
+    setLoading(true);
+    const [{ data: preference, error: preferenceError }, { data, error: listError }] = await Promise.all([
+      supabase.from('team_availability_preferences').select('visible_to_team').eq('user_id', session.user.id).maybeSingle(),
+      supabase.rpc('list_team_availability', { work_date_in: today }),
+    ]);
+    if (preferenceError || listError) setError(`Team availability needs the latest database setup: ${(preferenceError || listError)?.message}`);
+    else { setVisible(!!preference?.visible_to_team); setPeople((data ?? []) as typeof people); setError(''); }
+    setLoading(false);
+  }, [canShare, session?.user?.id, today]);
+  useEffect(() => {
+    if (!canShare) return;
+    void refresh();
+    const interval = setInterval(() => void refresh(), 45_000);
+    return () => clearInterval(interval);
+  }, [canShare, refresh]);
+  async function toggleVisibility() {
+    if (!supabase || !canShare) return;
+    const next = !visible;
+    const { error: saveError } = await supabase.rpc('set_team_availability_visible', { visible_in: next });
+    if (saveError) setError(saveError.message);
+    else { setVisible(next); await refresh(); }
+  }
+  return <View style={{ gap: 9, padding: 14, borderWidth: 1, borderColor: colors.border, borderRadius: 16, backgroundColor: '#FFFFFF' }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><View style={{ flex: 1 }}><Text style={styles.sectionTitle}>Team availability</Text><Text style={styles.muted}>Share whether you’re working, on break, or off shift.</Text></View><Pressable accessibilityRole="switch" accessibilityState={{ checked: visible }} disabled={!canShare} onPress={() => void toggleVisibility()} style={{ minWidth: 68, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 99, backgroundColor: visible ? '#DCFCE7' : '#E2E8F0', alignItems: 'center' }}><Text style={{ color: visible ? '#15803D' : colors.muted, fontSize: 10, fontWeight: '800' }}>{!canShare ? 'SIGN IN' : visible ? 'SHARING' : 'PRIVATE'}</Text></Pressable></View>
+    {!canShare ? <Text style={styles.chatPresence}>Sign in with an employee account to share work availability.</Text> : visible ? loading && !people.length ? <Text style={styles.chatPresence}>Loading team…</Text> : people.length ? people.map(person => <View key={person.username} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 8 }}><View style={{ width: 8, height: 8, borderRadius: 99, backgroundColor: person.presence_status === 'Working' ? '#16A34A' : person.presence_status === 'On break' ? '#F59E0B' : '#94A3B8' }}/><Text style={{ flex: 1, color: colors.text, fontSize: 12 }}>{person.display_name} <Text style={styles.muted}>@{person.username}</Text></Text><Text style={styles.chatPresence}>{person.presence_status}</Text></View>) : <Text style={styles.chatPresence}>No teammates have shared their availability yet.</Text> : <Text style={styles.chatPresence}>Your status stays private until you turn sharing on.</Text>}
+    {!!error && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 11 }}>{error}</Text>}
+  </View>;
+}
+
 function History({ days, policy, onClear, onCorrect, onAddMissed }: { days: AttendanceDay[]; policy: PolicyConfig; onClear: (date: string) => Promise<void>; onCorrect: (date: string) => void; onAddMissed: (date: string) => void }) {
   const [month, setMonth] = useState(localDateKey().slice(0, 7));
   const [expandedDates, setExpandedDates] = useState<string[]>([]);
   const [exporting, setExporting] = useState(false);
   const rows = days.filter(d => d.date.startsWith(month));
+  const weekStart = new Date(); weekStart.setHours(0, 0, 0, 0); weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+  const weekStartKey = localDateKey(weekStart);
+  const weekRows = days.filter(item => item.date >= weekStartKey && item.date <= localDateKey());
+  const weekWorkMinutes = weekRows.reduce((sum, item) => sum + getAttendanceSummary(item, item.punchOutAt ? new Date(item.punchOutAt) : new Date(), policy).netWorkedMinutes, 0);
+  const weekBreakMinutes = weekRows.reduce((sum, item) => sum + getAttendanceSummary(item, item.punchOutAt ? new Date(item.punchOutAt) : new Date(), policy).takenBreakMinutes, 0);
   const lateDates = rows.filter(d => d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).afterFlexLimit)
     .map(d => d.date).sort();
   const halfDayDates = new Set(lateDates.slice(MONTHLY_LATE_LOGIN_LIMIT - 1));
@@ -2833,7 +2943,7 @@ function History({ days, policy, onClear, onCorrect, onAddMissed }: { days: Atte
     } catch { Alert.alert('Export failed', 'The attendance PDF could not be created. Please try again.'); }
     finally { setExporting(false); }
   }
-  return <><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><Pressable accessibilityRole="button" onPress={() => onAddMissed(`${month}-01`)} style={styles.outlineButton}><Text style={styles.outlineText}>＋ Add missed attendance</Text></Pressable><Pressable accessibilityRole="button" disabled={exporting || !rows.length} onPress={() => void exportPdf()} style={[styles.exportButton, (!rows.length || exporting) && styles.exportDisabled]}><Text style={styles.exportButtonText}>{exporting ? 'Preparing PDF…' : 'Export month as PDF'}</Text></Pressable><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{lateDates.length}</Text></View></View>{rows.length ? [...rows].sort((a, b) => b.date.localeCompare(a.date)).map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; const expanded = expandedDates.includes(d.date); return <View key={d.date} style={styles.historyDayCard}><View style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? 'Hide' : 'Show'} punches for ${d.date}`} onPress={() => setExpandedDates(current => expanded ? current.filter(date => date !== d.date) : [...current, d.date])} style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{halfDayDates.has(d.date) ? 'Half-day applied · ' : ''}{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · Break {formatDuration(s.takenBreakMinutes)} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text><Text style={styles.sessionToggle}>{expanded ? 'Hide punch details' : 'View punch details'}</Text></Pressable><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text><ClearDayControl date={d.date} onClear={onClear} compact /></View>{expanded && <View style={styles.sessionList}>{daySessions.map((session, index) => { const end = session.punchOutAt ? new Date(session.punchOutAt) : new Date(); const elapsed = Math.max(0, Math.floor((end.getTime() - new Date(session.punchInAt).getTime()) / 60000)); const sessionBreak = Math.min(elapsed, session.breakMinutes ?? 0); return <View key={`${session.punchInAt}-${index}`} style={styles.sessionEntry}><Text style={styles.sessionLabel}>Session {index + 1}</Text><Text style={styles.sessionTime}>{clock(session.punchInAt)} → {session.punchOutAt ? clock(session.punchOutAt) : 'In progress'}</Text><Text style={styles.sessionDuration}>{formatDuration(elapsed - sessionBreak)} work{sessionBreak ? ` · ${formatDuration(sessionBreak)} break` : ''}</Text></View>; })}<Pressable style={styles.outlineButton} onPress={() => onCorrect(d.date)}><Text style={styles.outlineText}>Correct punch times</Text></Pressable></View>}</View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
+  return <><View style={{ gap: 10, borderRadius: 16, backgroundColor: '#EFF6FF', padding: 14 }}><Text style={styles.sectionTitle}>This week · from {weekStart.toLocaleDateString([], { day: 'numeric', month: 'short' })}</Text><View style={{ flexDirection: 'row', justifyContent: 'space-between' }}><View><Text style={styles.statLabel}>NET WORK</Text><Text style={styles.monthStat}>{formatDuration(weekWorkMinutes)}</Text></View><View><Text style={styles.statLabel}>BREAKS</Text><Text style={styles.monthStat}>{formatDuration(weekBreakMinutes)}</Text></View><View><Text style={styles.statLabel}>DAYS</Text><Text style={styles.monthStat}>{weekRows.filter(item => getDaySessions(item).length).length}</Text></View></View></View><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><Pressable accessibilityRole="button" onPress={() => onAddMissed(`${month}-01`)} style={styles.outlineButton}><Text style={styles.outlineText}>＋ Add missed attendance</Text></Pressable><Pressable accessibilityRole="button" disabled={exporting || !rows.length} onPress={() => void exportPdf()} style={[styles.exportButton, (!rows.length || exporting) && styles.exportDisabled]}><Text style={styles.exportButtonText}>{exporting ? 'Preparing PDF…' : 'Export month as PDF'}</Text></Pressable><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{lateDates.length}</Text></View></View>{rows.length ? [...rows].sort((a, b) => b.date.localeCompare(a.date)).map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; const expanded = expandedDates.includes(d.date); return <View key={d.date} style={styles.historyDayCard}><View style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? 'Hide' : 'Show'} punches for ${d.date}`} onPress={() => setExpandedDates(current => expanded ? current.filter(date => date !== d.date) : [...current, d.date])} style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{halfDayDates.has(d.date) ? 'Half-day applied · ' : ''}{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · Break {formatDuration(s.takenBreakMinutes)} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text><Text style={styles.sessionToggle}>{expanded ? 'Hide punch details' : 'View punch details'}</Text></Pressable><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text><ClearDayControl date={d.date} onClear={onClear} compact /></View>{expanded && <View style={styles.sessionList}>{daySessions.map((session, index) => { const end = session.punchOutAt ? new Date(session.punchOutAt) : new Date(); const elapsed = Math.max(0, Math.floor((end.getTime() - new Date(session.punchInAt).getTime()) / 60000)); const sessionBreak = Math.min(elapsed, session.breakMinutes ?? 0); return <View key={`${session.punchInAt}-${index}`} style={styles.sessionEntry}><Text style={styles.sessionLabel}>Session {index + 1}</Text><Text style={styles.sessionTime}>{clock(session.punchInAt)} → {session.punchOutAt ? clock(session.punchOutAt) : 'In progress'}</Text><Text style={styles.sessionDuration}>{formatDuration(elapsed - sessionBreak)} work{sessionBreak ? ` · ${formatDuration(sessionBreak)} break` : ''}</Text></View>; })}<Pressable style={styles.outlineButton} onPress={() => onCorrect(d.date)}><Text style={styles.outlineText}>Correct punch times</Text></Pressable></View>}</View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
 }
 
 function ClearDayControl({ date, onClear, compact = false }: { date: string; onClear: (date: string) => Promise<void>; compact?: boolean }) {

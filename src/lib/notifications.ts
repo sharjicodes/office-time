@@ -179,6 +179,16 @@ export async function showWorkHourCongratulations(title: string, body: string): 
   return showAttendanceNotice('work-target', title, body);
 }
 
+export async function showChatNotification(title: string, body: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'granted')
+      new window.Notification(title, { body });
+    return;
+  }
+  const permission = await Notifications.getPermissionsAsync();
+  if (permission.granted) await Notifications.scheduleNotificationAsync({ content: { title, body, sound: 'default' }, trigger: null });
+}
+
 async function showAttendanceNotice(kind: string, title: string, body: string): Promise<boolean> {
   if (Platform.OS === 'web') {
     if (typeof window === 'undefined' || !('Notification' in window)) return false;

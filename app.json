@@ -1,13 +1,15 @@
 {
   "expo": {
-    "name": "OfficeTime",
+    "name": "Milo",
     "slug": "officetime-attendance",
+    "icon": "./assets/milo-icon.png",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./assets/milo-icon.png"
     },
     "ios": {
       "supportsTablet": true,

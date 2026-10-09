@@ -1,4 +1,4 @@
-# OfficeTime
+# Milo
 
 Responsive office attendance app built with React Native, Expo SDK 57, TypeScript, and Supabase. The same interface runs on iOS, Android, and the web. The role-gated HR view uses Supabase RLS and protected database functions for cross-employee reports and late-arrival approvals.
 
@@ -41,8 +41,8 @@ HR must confirm before official rollout:
 2. Whether punch times between 9:00 and 10:00 are late, flex-eligible, or both. The app currently counts only first punch-ins after 10:00 AM toward the four-login limit.
 3. What “a little late” means, whether the four approved occasions are a monthly cap, and how prior approval is recorded.
 4. Whether the half-day rule begins on the fourth or fifth after-10:00 AM occasion, and how pending, rejected, or missing manager approval affects the count.
-5. Whether the 60-minute break is a required minimum or an expected duration. OfficeTime records actual off-clock breaks from punch events and does not deduct the configured break target a second time.
-6. Whether this app can be an official attendance channel. The source currently identifies the office biometric system as official. OfficeTime is presented as a companion tracker.
+5. Whether the 60-minute break is a required minimum or an expected duration. Milo records actual off-clock breaks from punch events and does not deduct the configured break target a second time.
+6. Whether this app can be an official attendance channel. The source currently identifies the office biometric system as official. Milo is presented as a companion tracker.
 7. Approved notification behavior for leave, holidays, weekends, and work-from-home days. Late-login and work-goal notices use device-local notifications; delivery and sound depend on device permission/settings.
 
 No policy PDF was copied into the repository. The app and docs reflect the source clauses above; keep the source PDF in the team's policy records.
@@ -88,7 +88,7 @@ With Supabase variables omitted, the app supports local attendance and history o
 4. In Supabase Authentication URL Configuration, set the production Vercel URL as the Site URL and add the Preview URLs you intend to use as allowed redirect URLs.
 5. Run `npm run build:web` locally before deploying if you want to validate the production export.
 
-The web layout adapts to phone and desktop widths. Web attendance persists in browser storage and syncs to Supabase when configured; local-only web records stay in that browser. Chat media uploads, voice recording, and playback are supported in the HTTPS web app; microphone access requires browser permission. View-once means each signed-in viewer can open the image once in OfficeTime, using a one-minute private link. Recipients can still capture or copy media while it is visible. Browser work-target notifications require permission and the tab to remain open. The weekday morning reminder is scheduled by the native iOS/Android apps.
+The web layout adapts to phone and desktop widths. Web attendance persists in browser storage and syncs to Supabase when configured; local-only web records stay in that browser. Chat media uploads, voice recording, and playback are supported in the HTTPS web app; microphone access requires browser permission. View-once means each signed-in viewer can open the image once in Milo, using a one-minute private link. Recipients can still capture or copy media while it is visible. Browser work-target notifications require permission and the tab to remain open. The weekday morning reminder is scheduled by the native iOS/Android apps.
 
 ## HR account setup
 

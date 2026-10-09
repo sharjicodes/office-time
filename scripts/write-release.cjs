@@ -11,7 +11,7 @@ const runGit = (...args) => {
 const commit = process.env.VERCEL_GIT_COMMIT_SHA || runGit('rev-parse', 'HEAD');
 const buildId = process.env.VERCEL_DEPLOYMENT_ID || `${commit || 'local'}-${Date.now()}`;
 const commitSummary = process.env.VERCEL_GIT_COMMIT_MESSAGE || runGit('log', '-1', '--pretty=%s');
-const summary = (commitSummary.split(/\r?\n/, 1)[0] || `OfficeTime update ${buildId.slice(0, 8)}`).slice(0, 180);
+const summary = (commitSummary.split(/\r?\n/, 1)[0] || `Milo update ${buildId.slice(0, 8)}`).slice(0, 180);
 const release = { buildId, summary, deployedAt: new Date().toISOString() };
 
 mkdirSync(join(root, 'public'), { recursive: true });

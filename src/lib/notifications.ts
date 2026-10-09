@@ -126,7 +126,7 @@ export async function scheduleDailyReminder(): Promise<boolean> {
   for (const weekday of [2, 3, 4, 5, 6]) {
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: 'OfficeTime reminder',
+        title: 'Milo reminder',
         body: 'Your standard start time is 9:00 AM. Remember to punch in.',
         data: { kind: 'morning-attendance-reminder' },
       },

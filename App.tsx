@@ -219,7 +219,7 @@ function DeploymentUpdateNotice() {
     <View style={styles.updateOverlay}><View style={styles.updateCard}>
       <View style={styles.updateBadge}><Text style={styles.updateBadgeText}>NEW VERSION</Text></View>
       <Text style={styles.updateTitle}>A new update is here</Text>
-      <Text style={styles.updateSummary}>{release?.summary || BUILD_SUMMARY || 'OfficeTime has been updated.'}</Text>
+      <Text style={styles.updateSummary}>{release?.summary || BUILD_SUMMARY || 'Milo has been updated.'}</Text>
       {!!release?.deployedAt && <Text style={styles.updateMeta}>Deployed {new Date(release.deployedAt).toLocaleString()}</Text>}
       <Pressable accessibilityRole="button" onPress={reload} style={styles.updatePrimary}><Text style={styles.updatePrimaryText}>Reload to update</Text></Pressable>
       <Pressable accessibilityRole="button" onPress={dismiss} style={styles.updateLater}><Text style={styles.updateLaterText}>Later</Text></Pressable>
@@ -462,7 +462,7 @@ function OfficeTimeApp() {
     if (error) Alert.alert('Could not sign out', error.message);
   }
 
-  if (booting) return <SafeAreaView style={styles.safe}><View style={styles.center}><ActivityIndicator color={colors.blue} /><Text style={styles.muted}>Loading OfficeTime…</Text></View></SafeAreaView>;
+  if (booting) return <SafeAreaView style={styles.safe}><View style={styles.center}><ActivityIndicator color={colors.blue} /><Text style={styles.muted}>Loading Milo…</Text></View></SafeAreaView>;
   if (!session && isSupabaseConfigured && !offlineContinue) return <AuthScreen onContinue={() => setOfflineContinue(true)} onJoinChat={async name => {
     const guestUsername = `guest_${Math.random().toString(36).slice(2, 12)}`;
     const { error } = await supabase!.auth.signInAnonymously({ options: { data: { full_name: name, username: guestUsername } } });
@@ -478,7 +478,7 @@ function OfficeTimeApp() {
     {showPageAnimations && <PageAmbience />}
     <StatusBar style="dark" />
     <ScrollView contentContainerStyle={styles.page}>
-      <View style={styles.header}><View><Text style={styles.eyebrow}>ATTENDANCE, MADE SIMPLE</Text><Text style={styles.title}>OfficeTime</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={styles.avatar}><Text style={styles.avatarText}>{session?.user?.email?.[0]?.toUpperCase() ?? 'OT'}</Text></View></View>
+      <View style={styles.header}><View><Text style={styles.eyebrow}>YOUR OFFICE COMPANION</Text><Text style={styles.title}>Milo</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><MiloControlPanel now={now} onNavigate={nextTab => setTab(nextTab)} /></View>
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => { if (session) void signOut(); }}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}><>{(['Today', 'History', 'Games', 'Calls', 'Chat', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</></ScrollView>
       {tab === 'Today' && <WalkingCat />}
@@ -522,8 +522,8 @@ function OfficeTimeApp() {
       {tab === 'Games' && <GamesHub session={session} />}
       <CallsHub session={session} active={tab === 'Calls'} />
       {tab === 'HR' && <HRDashboard rows={hrRows} loading={busy} role={role} policyUploadBusy={policyUploadBusy} policyUploadedName={policyUploadedName} onUploadPolicy={uploadMiloPolicy} onRefresh={async () => { setBusy(true); const { data } = await supabase!.rpc('hr_attendance_report'); setHrRows(data ?? []); setBusy(false); }} onResolve={resolveReview} />}
-      <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. OfficeTime is a companion tracker until HR authorizes it for official use.</Text></View>
-      <Text style={styles.footer}>OfficeTime · Secure attendance for your team</Text>
+      <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. Milo is a companion tracker until HR authorizes it for official use.</Text></View>
+      <Text style={styles.footer}>Milo · Your office companion</Text>
     </ScrollView>
     {showPageAnimations && <PassingGlitterGif />}
     {showPageAnimations && <FallingSpiderMan />}
@@ -540,6 +540,39 @@ function OfficeTimeApp() {
     {officeOutSummary && <OfficeOutSummaryModal day={officeOutSummary} policy={policy} onClose={() => { setOfficeOutSummary(null); setCatGreeting('bye'); }} onUndo={undoOfficeOut} />}
     {fireworksId > 0 && <FireworksCelebration key={fireworksId} onDone={() => setFireworksId(0)} />}
   </SafeAreaView>;
+}
+
+function MiloControlPanel({ now, onNavigate }: { now: Date; onNavigate: (tab: Tab) => void }) {
+  const [open, setOpen] = useState(false);
+  const shortcuts: { label: string; icon: string; tab: Tab }[] = [
+    { label: 'Games', icon: '🎮', tab: 'Games' },
+    { label: 'History', icon: '🕘', tab: 'History' },
+    { label: 'Today', icon: '⏱️', tab: 'Today' },
+    { label: 'Chat', icon: '💬', tab: 'Chat' },
+  ];
+  return <>
+    <Pressable accessibilityRole="button" accessibilityLabel="Open Milo control panel" onPress={() => setOpen(true)} style={{ width: 48, height: 48, borderRadius: 16, backgroundColor: '#F8C9D0', borderWidth: 2, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', shadowColor: '#47218C', shadowOpacity: 0.18, shadowRadius: 8, elevation: 6 }}>
+      <Text style={{ fontSize: 22 }}>🎛️</Text>
+    </Pressable>
+    <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+      <View style={{ flex: 1, backgroundColor: 'rgba(32, 20, 70, 0.28)' }}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Close control panel" onPress={() => setOpen(false)} style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }} />
+        <View style={{ position: 'absolute', top: Platform.OS === 'web' ? 16 : 48, right: 12, width: '92%', maxWidth: 450, padding: 18, borderRadius: 34, backgroundColor: '#EAF5FF', borderWidth: 1, borderColor: '#FFFFFF', shadowColor: '#241052', shadowOpacity: 0.28, shadowRadius: 18, elevation: 12, gap: 14 }}>
+          <View style={{ height: 158, borderRadius: 28, backgroundColor: '#F8CDD1', paddingHorizontal: 22, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', overflow: 'hidden' }}>
+            <View><Text style={{ color: '#FFFFFF', fontSize: 42, lineHeight: 50, fontWeight: '900' }}>{now.toLocaleDateString([], { day: 'numeric' })} ♡</Text><Text style={{ color: '#FFFFFF', fontSize: 24, fontWeight: '800', letterSpacing: 1 }}>{now.toLocaleDateString([], { month: 'long' })}</Text></View>
+            <View style={{ alignItems: 'center' }}><Text style={{ fontSize: 52 }}>☁️</Text><Text style={{ color: '#FFFFFF', fontSize: 20, letterSpacing: 3 }}>˙ ˙ ˙ ˙</Text></View>
+          </View>
+          <View style={{ flexDirection: 'row', gap: 12, height: 178 }}>
+            <View style={{ flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+              {shortcuts.map(item => <Pressable key={item.tab} accessibilityRole="button" accessibilityLabel={item.label} onPress={() => { setOpen(false); onNavigate(item.tab); }} style={{ width: '47%' as any, height: 84, borderRadius: 22, backgroundColor: '#F7C2C8', borderWidth: 1, borderColor: '#FFE8EA', alignItems: 'center', justifyContent: 'center', shadowColor: '#783C61', shadowOpacity: 0.16, shadowRadius: 6, elevation: 4 }}><Text style={{ fontSize: 34 }}>{item.icon}</Text></Pressable>)}
+            </View>
+            <Pressable accessibilityRole="button" accessibilityLabel="Open calls" onPress={() => { setOpen(false); onNavigate('Calls'); }} style={{ flex: 0.9, borderRadius: 28, backgroundColor: '#F7C2C8', borderWidth: 1, borderColor: '#FFE8EA', alignItems: 'center', justifyContent: 'center', shadowColor: '#783C61', shadowOpacity: 0.16, shadowRadius: 6, elevation: 4 }}><Text style={{ fontSize: 76 }}>📞</Text></Pressable>
+          </View>
+          <Text style={{ textAlign: 'center', color: '#65517F', fontSize: 11, fontWeight: '700', letterSpacing: 1 }}>MILO · YOUR OFFICE COMPANION</Text>
+        </View>
+      </View>
+    </Modal>
+  </>;
 }
 
 function WalkingCat() {
@@ -710,7 +743,7 @@ function CallsHub({ session, active }: { session: any; active: boolean }) {
   const callRef = useRef<any>(null);
   const channelReady = useRef(false);
   const selfId = session?.user?.id as string | undefined;
-  const selfName = session?.user?.user_metadata?.full_name || 'OfficeTime user';
+  const selfName = session?.user?.user_metadata?.full_name || 'Milo user';
   const [remoteStreams, setRemoteStreams] = useState<Record<string, any>>({});
 
   const refreshHistory = useCallback(async () => {
@@ -950,7 +983,7 @@ function CallsHub({ session, active }: { session: any; active: boolean }) {
       <Pressable style={[styles.action, styles.primary, (!session || !username.trim() || busy) && styles.dim]} disabled={!session || !username.trim() || busy} onPress={() => void beginCall([username.trim()], 'voice')}><Text style={styles.actionText}>☎ Voice call</Text></Pressable>
       <Pressable style={[styles.action, styles.teal, (!session || !username.trim() || busy) && styles.dim]} disabled={!session || !username.trim() || busy} onPress={() => void beginCall([username.trim()], 'video')}><Text style={styles.actionText}>▣ Video call</Text></Pressable>
     </View>
-    <Text style={styles.helper}>The invited user receives a ringing prompt anywhere in OfficeTime.</Text>
+    <Text style={styles.helper}>The invited user receives a ringing prompt anywhere in Milo.</Text>
     {error ? <Text style={styles.chatError}>{error}</Text> : null}
     {call && <View style={styles.callActiveCard}>
       <View style={styles.cardHeading}><View><Text style={styles.sectionTitle}>{call.mode === 'video' ? 'Video call' : 'Voice call'}</Text><Text style={styles.chatPresence}>{members.filter(member => member.status === 'joined').map(member => member.display_name || member.username).join(' · ') || 'Connecting…'}</Text></View><Text style={styles.pill}>LIVE</Text></View>
@@ -1839,7 +1872,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
     {!!callError && <Text accessibilityRole="alert" style={styles.callError}>{callError}</Text>}
     {!!selectedRoom && <Text style={styles.callHint}>{callReady ? `Voice and video calls ready · ${selectedRoom.room_type === 'group' ? 'the room will be invited' : 'personal chat'}` : 'Connecting call service…'} · Allow microphone/camera access when your browser asks.</Text>}
     {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Enter the chat lobby</Text><Text style={styles.muted}>Set a display name to browse groups. You’ll need a room password to enter private groups.</Text><TextInput style={styles.input} value={displayName} onChangeText={value => { setDisplayName(value); setJoinError(''); }} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary, joining && styles.dim]} disabled={!displayName.trim() || joining} onPress={() => { setJoining(true); setJoinError(''); void onJoin(displayName.trim()).then(message => setJoinError(message ?? '')).catch(error => setJoinError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.')).finally(() => setJoining(false)); }}><Text style={styles.actionText}>{joining ? 'Please wait…' : 'Enter chat lobby'}</Text></Pressable>{!!joinError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{joinError}</Text>}</View> : miloMode ? <MiloPolicyAssistant session={session} /> : !selectedRoom && personalChatMode ? <>
-      <View style={{ gap: 8, padding: 12, backgroundColor: '#EFF6FF', borderRadius: 14 }}><Text style={styles.chatWelcome}>Start a personal chat</Text><Text style={styles.chatPresence}>Enter someone’s OfficeTime username to open your private conversation. Guests can chat and call using their shared username too.</Text><View style={{ flexDirection: 'row', gap: 8 }}><TextInput style={[styles.input, { flex: 1 }]} value={directUsername} onChangeText={setDirectUsername} placeholder="Username" autoCapitalize="none" autoCorrect={false} onSubmitEditing={() => void startDirectChat()}/><Pressable disabled={roomBusy || !directUsername.trim()} onPress={() => void startDirectChat()} style={[styles.action, styles.primary, (roomBusy || !directUsername.trim()) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Opening…' : 'Chat'}</Text></Pressable></View>
+      <View style={{ gap: 8, padding: 12, backgroundColor: '#EFF6FF', borderRadius: 14 }}><Text style={styles.chatWelcome}>Start a personal chat</Text><Text style={styles.chatPresence}>Enter someone’s Milo username to open your private conversation. Guests can chat and call using their shared username too.</Text><View style={{ flexDirection: 'row', gap: 8 }}><TextInput style={[styles.input, { flex: 1 }]} value={directUsername} onChangeText={setDirectUsername} placeholder="Username" autoCapitalize="none" autoCorrect={false} onSubmitEditing={() => void startDirectChat()}/><Pressable disabled={roomBusy || !directUsername.trim()} onPress={() => void startDirectChat()} style={[styles.action, styles.primary, (roomBusy || !directUsername.trim()) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Opening…' : 'Chat'}</Text></Pressable></View>
         {directChats.length > 0 && <View style={{ gap: 6, marginTop: 5 }}><Text style={styles.historyTitle}>Your personal chats</Text>{directChats.map(chat => <Pressable key={chat.room_id} onPress={() => setSelectedRoom({ room_id: chat.room_id, room_name: chat.room_name, creator_name: chat.peer_username, created_at: chat.created_at, member_count: 2, password_protected: false, joined: true, is_creator: false, room_type: 'direct' })} style={{ padding: 9, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderRadius: 10 }}><Text style={styles.historyTitle}>{chat.room_name}</Text><Text style={styles.chatPresence}>@{chat.peer_username}</Text></Pressable>)}</View>}
       </View>
     </> : !selectedRoom ? <>
@@ -1852,7 +1885,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       {showRoomSettings && selectedRoom.is_creator && <View style={{ gap: 10, padding: 12, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 14 }}>
         <Text style={styles.chatWelcome}>Room management</Text>
         {selectedRoom.room_type === 'group' && <View style={{ gap: 8, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}><Text style={styles.historyTitle}>Lobby name</Text><TextInput style={styles.input} value={updatedRoomName} onChangeText={setUpdatedRoomName} placeholder="Enter lobby name" maxLength={50} returnKeyType="done" onSubmitEditing={() => void renameRoom()}/><Pressable disabled={roomSettingsBusy || !updatedRoomName.trim() || updatedRoomName.trim() === selectedRoom.room_name} onPress={() => void renameRoom()} style={[styles.action, styles.primary, (roomSettingsBusy || !updatedRoomName.trim() || updatedRoomName.trim() === selectedRoom.room_name) && styles.dim]}><Text style={styles.actionText}>{roomSettingsBusy ? 'Saving…' : 'Save lobby name'}</Text></Pressable></View>}
-        {selectedRoom.room_type === 'group' && <View style={{ gap: 8, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}><Text style={styles.historyTitle}>Add a member by username</Text><View style={{ flexDirection: 'row', gap: 8 }}><TextInput style={[styles.input, { flex: 1 }]} value={inviteUsername} onChangeText={setInviteUsername} placeholder="Username" autoCapitalize="none" autoCorrect={false}/><Pressable disabled={roomSettingsBusy || !inviteUsername.trim()} onPress={() => void addMemberByUsername()} style={[styles.action, styles.primary, (roomSettingsBusy || !inviteUsername.trim()) && styles.dim]}><Text style={styles.actionText}>Add</Text></Pressable></View><Text style={styles.chatPresence}>They need an OfficeTime account. They’ll be added to this room immediately.</Text></View>}
+        {selectedRoom.room_type === 'group' && <View style={{ gap: 8, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}><Text style={styles.historyTitle}>Add a member by username</Text><View style={{ flexDirection: 'row', gap: 8 }}><TextInput style={[styles.input, { flex: 1 }]} value={inviteUsername} onChangeText={setInviteUsername} placeholder="Username" autoCapitalize="none" autoCorrect={false}/><Pressable disabled={roomSettingsBusy || !inviteUsername.trim()} onPress={() => void addMemberByUsername()} style={[styles.action, styles.primary, (roomSettingsBusy || !inviteUsername.trim()) && styles.dim]}><Text style={styles.actionText}>Add</Text></Pressable></View><Text style={styles.chatPresence}>They need an Milo account. They’ll be added to this room immediately.</Text></View>}
         <Text style={styles.muted}>{selectedRoom.password_protected ? 'This room currently requires a password.' : 'This room is open to anyone who enters the lobby.'} Enter a new password, or leave it empty to remove password protection.</Text>
         <TextInput style={styles.input} value={updatedRoomPassword} onChangeText={setUpdatedRoomPassword} placeholder="New password (4+ characters)" secureTextEntry maxLength={72}/>
         <Pressable disabled={roomSettingsBusy || (!!updatedRoomPassword && updatedRoomPassword.length < 4) || (!updatedRoomPassword && !selectedRoom.password_protected)} onPress={() => void saveRoomPassword()} style={[styles.action, styles.primary, (roomSettingsBusy || (!!updatedRoomPassword && updatedRoomPassword.length < 4) || (!updatedRoomPassword && !selectedRoom.password_protected)) && styles.dim]}><Text style={styles.actionText}>{roomSettingsBusy ? 'Saving…' : updatedRoomPassword ? 'Update room password' : 'Remove password'}</Text></Pressable>
@@ -1922,7 +1955,7 @@ function AuthScreen({ onContinue, onJoinChat }: { onContinue: () => void; onJoin
     catch (error) { setGuestError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.'); }
     finally { setBusy(false); }
   }
-  return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><View style={styles.avatarLarge}><Text style={styles.avatarText}>OT</Text></View><Text style={styles.title}>{authMode === 'signup' ? 'Create your account' : 'Welcome to OfficeTime'}</Text><Text style={styles.subtitle}>{authMode === 'signup' ? 'Sign up with your email, password, and a username others can use to find you.' : 'Log in with your email and password.'}</Text>{authMode === 'signup' && <TextInput style={styles.input} placeholder="Username (3–24 characters)" autoCapitalize="none" autoCorrect={false} value={username} onChangeText={value => { setUsername(value); setAuthMessage(''); }} maxLength={24}/>}<TextInput style={styles.input} placeholder="Email address (Gmail is supported)" autoCapitalize="none" keyboardType="email-address" autoComplete="email" value={email} onChangeText={value => { setEmail(value); setAuthMessage(''); }}/><TextInput style={styles.input} placeholder="Password" secureTextEntry autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'} value={password} onChangeText={value => { setPassword(value); setAuthMessage(''); }}/><Pressable style={[styles.action, styles.primary]} onPress={() => void submitAccount()} disabled={busy || !email.trim() || !password || (authMode === 'signup' && !username.trim())}><Text style={styles.actionText}>{busy ? 'Please wait…' : authMode === 'signup' ? 'Sign up' : 'Log in'}</Text></Pressable><Pressable style={styles.textButton} onPress={() => { setAuthMode(current => current === 'login' ? 'signup' : 'login'); setAuthMessage(''); }}><Text style={styles.outlineText}>{authMode === 'signup' ? 'Already have an account? Log in' : 'New here? Create an account'}</Text></Pressable>{!!authMessage && <Text accessibilityRole="alert" style={{ color: authMessage.startsWith('Account created') ? '#15803D' : '#B91C1C', fontSize: 12, lineHeight: 18 }}>{authMessage}</Text>}<View style={styles.chatJoinDivider}><View style={styles.chatDividerLine}/><Text style={styles.muted}>OR CHAT AS A GUEST</Text><View style={styles.chatDividerLine}/></View><TextInput style={styles.input} placeholder="Chat display name" autoCapitalize="words" value={guestName} onChangeText={value => { setGuestName(value); setGuestError(''); }} maxLength={40}/><Pressable style={[styles.action, styles.guestAction]} disabled={busy || !guestName.trim()} onPress={() => void joinGuestChat()}><Text style={styles.guestActionText}>{busy ? 'Please wait…' : 'Join office chat'}</Text></Pressable>{!!guestError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{guestError}</Text>}<Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
+  return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><Image accessibilityLabel="Milo app icon" source={require('./assets/milo-icon.png')} style={{ width: 64, height: 64, borderRadius: 18, alignSelf: 'center' }}/><Text style={styles.title}>{authMode === 'signup' ? 'Create your account' : 'Welcome to Milo'}</Text><Text style={styles.subtitle}>{authMode === 'signup' ? 'Sign up with your email, password, and a username others can use to find you.' : 'Log in with your email and password.'}</Text>{authMode === 'signup' && <TextInput style={styles.input} placeholder="Username (3–24 characters)" autoCapitalize="none" autoCorrect={false} value={username} onChangeText={value => { setUsername(value); setAuthMessage(''); }} maxLength={24}/>}<TextInput style={styles.input} placeholder="Email address (Gmail is supported)" autoCapitalize="none" keyboardType="email-address" autoComplete="email" value={email} onChangeText={value => { setEmail(value); setAuthMessage(''); }}/><TextInput style={styles.input} placeholder="Password" secureTextEntry autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'} value={password} onChangeText={value => { setPassword(value); setAuthMessage(''); }}/><Pressable style={[styles.action, styles.primary]} onPress={() => void submitAccount()} disabled={busy || !email.trim() || !password || (authMode === 'signup' && !username.trim())}><Text style={styles.actionText}>{busy ? 'Please wait…' : authMode === 'signup' ? 'Sign up' : 'Log in'}</Text></Pressable><Pressable style={styles.textButton} onPress={() => { setAuthMode(current => current === 'login' ? 'signup' : 'login'); setAuthMessage(''); }}><Text style={styles.outlineText}>{authMode === 'signup' ? 'Already have an account? Log in' : 'New here? Create an account'}</Text></Pressable>{!!authMessage && <Text accessibilityRole="alert" style={{ color: authMessage.startsWith('Account created') ? '#15803D' : '#B91C1C', fontSize: 12, lineHeight: 18 }}>{authMessage}</Text>}<View style={styles.chatJoinDivider}><View style={styles.chatDividerLine}/><Text style={styles.muted}>OR CHAT AS A GUEST</Text><View style={styles.chatDividerLine}/></View><TextInput style={styles.input} placeholder="Chat display name" autoCapitalize="words" value={guestName} onChangeText={value => { setGuestName(value); setGuestError(''); }} maxLength={40}/><Pressable style={[styles.action, styles.guestAction]} disabled={busy || !guestName.trim()} onPress={() => void joinGuestChat()}><Text style={styles.guestActionText}>{busy ? 'Please wait…' : 'Join Milo chat'}</Text></Pressable>{!!guestError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{guestError}</Text>}<Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
 }
 
 type MemoryTile = { id: number; pairKey: string; symbol?: string; faceSource?: ImageSourcePropType; matched: boolean };
@@ -2876,7 +2909,7 @@ function MiloPolicyAssistant({ session, compact = false }: { session: any; compa
 
 function HRDashboard({ rows, loading, role, policyUploadBusy, policyUploadedName, onUploadPolicy, onRefresh, onResolve }: { rows: any[]; loading: boolean; role: string; policyUploadBusy: boolean; policyUploadedName: string; onUploadPolicy: (file: File) => Promise<string | null>; onRefresh: () => void; onResolve: (id: string, status: 'approved' | 'rejected') => void }) {
   function choosePolicyPdf() {
-    if (Platform.OS !== 'web') return Alert.alert('Use the web app', 'Upload the company policy from the OfficeTime HR dashboard in a browser.');
+    if (Platform.OS !== 'web') return Alert.alert('Use the web app', 'Upload the company policy from the Milo HR dashboard in a browser.');
     const input = document.createElement('input');
     input.type = 'file'; input.accept = 'application/pdf,.pdf';
     input.onchange = () => {

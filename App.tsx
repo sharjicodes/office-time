@@ -28,12 +28,14 @@ export default function App() {
 }
 
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> };
+const PWA_INSTALL_DISMISSED_KEY = 'milo.pwa-install-dismissed.v1';
 
 function PwaInstallPrompt() {
   const [platform, setPlatform] = useState<'ios' | 'android' | 'desktop'>('desktop');
   const [installEvent, setInstallEvent] = useState<InstallPromptEvent | null>(null);
   const [showInstallSteps, setShowInstallSteps] = useState(false);
   const [installed, setInstalled] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
@@ -42,19 +44,46 @@ function PwaInstallPrompt() {
     const androidDevice = /android/i.test(navigator.userAgent);
     setPlatform(iosDevice ? 'ios' : androidDevice ? 'android' : 'desktop');
     setInstalled(standalone);
+    setDismissed(window.localStorage.getItem(PWA_INSTALL_DISMISSED_KEY) === 'true');
     const onBeforeInstall = (event: Event) => {
       event.preventDefault();
       setInstallEvent(event as InstallPromptEvent);
     };
     const onInstalled = () => { setInstalled(true); setInstallEvent(null); };
+    const onInstallButton = () => {
+      if (standalone || installed) {
+        Alert.alert('Milo is installed', 'Open Milo from your Home Screen or app list.');
+        return;
+      }
+      if (!installEvent) {
+        const instructions = iosDevice
+          ? 'In Safari, tap Share, then choose “Add to Home Screen”.'
+          : androidDevice
+            ? 'In Chrome, open ⋮ and choose “Install app” or “Add to Home screen”.'
+            : 'Use your browser menu and choose “Install Milo” or “Install app”.';
+        Alert.alert('Install Milo', instructions);
+        return;
+      }
+      const pending = installEvent;
+      void pending.prompt().then(() => pending.userChoice).then(choice => {
+        setInstallEvent(null);
+        if (choice.outcome === 'accepted') setInstalled(true);
+      });
+    };
+    const onPromptDismissed = () => setDismissed(window.localStorage.getItem(PWA_INSTALL_DISMISSED_KEY) === 'true');
     window.addEventListener('beforeinstallprompt', onBeforeInstall);
     window.addEventListener('appinstalled', onInstalled);
+    window.addEventListener('milo:install-button', onInstallButton);
+    window.addEventListener('milo:install-prompt-dismissed', onPromptDismissed);
     return () => {
       window.removeEventListener('beforeinstallprompt', onBeforeInstall);
       window.removeEventListener('appinstalled', onInstalled);
+      window.removeEventListener('milo:install-button', onInstallButton);
+      window.removeEventListener('milo:install-prompt-dismissed', onPromptDismissed);
     };
-  }, []);
+  }, [installEvent, installed]);
 
+  if (dismissed) return null;
   return <View style={styles.installCard}>
     <View style={styles.installCopy}><Text style={styles.installTitle}>{installed ? 'Milo is installed' : 'Install Milo'}</Text><Text style={styles.installDescription}>{installed ? 'Launch Milo from your Home Screen or app list.' : 'Add Milo to your device for quick, app-like access.'}</Text>{showInstallSteps && <Text style={styles.installDescription}>{platform === 'ios' ? 'In Safari, tap Share, then choose “Add to Home Screen”.' : platform === 'android' ? 'In Chrome, open ⋮ and choose “Install app” or “Add to Home screen”.' : 'Use your browser menu and choose “Install Milo” or “Install app”.'}</Text>}</View>
     <Pressable accessibilityRole="button" onPress={() => {
@@ -70,7 +99,25 @@ function PwaInstallPrompt() {
       }
       setShowInstallSteps(value => !value);
     }} style={styles.installButton}><Text style={styles.installButtonText}>{installed ? 'Install info' : installEvent ? 'Install' : 'How to install'}</Text></Pressable>
+    <Pressable accessibilityRole="button" accessibilityLabel="Close install suggestion" onPress={() => {
+      window.localStorage.setItem(PWA_INSTALL_DISMISSED_KEY, 'true');
+      setDismissed(true);
+      window.dispatchEvent(new Event('milo:install-prompt-dismissed'));
+    }} style={styles.installDismiss}><Text style={styles.installDismissText}>×</Text></Pressable>
   </View>;
+}
+
+function PwaInstallButton() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const syncVisibility = () => setVisible(window.localStorage.getItem(PWA_INSTALL_DISMISSED_KEY) === 'true');
+    syncVisibility();
+    window.addEventListener('milo:install-prompt-dismissed', syncVisibility);
+    return () => window.removeEventListener('milo:install-prompt-dismissed', syncVisibility);
+  }, []);
+  if (!visible) return null;
+  return <Pressable accessibilityRole="button" accessibilityLabel="Install Milo" onPress={() => window.dispatchEvent(new Event('milo:install-button'))} style={styles.installMiniButton}><Text style={styles.installMiniText}>↓</Text></Pressable>;
 }
 
 function PageAmbience() {
@@ -548,7 +595,7 @@ function OfficeTimeApp() {
     {showPageAnimations && <PageAmbience />}
     <StatusBar style="dark" />
     <ScrollView contentContainerStyle={styles.page}>
-      <View style={styles.header}><View><Text style={styles.eyebrow}>YOUR OFFICE COMPANION</Text><Text style={styles.title}>Milo</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><MiloControlPanel now={now} onNavigate={nextTab => setTab(nextTab)} /></View>
+      <View style={styles.header}><View><Text style={styles.eyebrow}>YOUR OFFICE COMPANION</Text><Text style={styles.title}>Milo</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}><PwaInstallButton /><MiloControlPanel now={now} onNavigate={nextTab => setTab(nextTab)} /></View></View>
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => { if (session) void signOut(); }}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
       {Platform.OS === 'web' && <PwaInstallPrompt />}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}><>{(['Today', 'History', 'Games', 'Calls', 'Chat', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</></ScrollView>
@@ -3105,7 +3152,7 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background }, ambienceLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden', zIndex: 0 }, correctionOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.58)', alignItems: 'center', justifyContent: 'center', padding: 12 }, correctionModal: { width: '100%', maxWidth: 620, height: '92%', maxHeight: 780, backgroundColor: colors.card, borderRadius: 18, padding: 15, gap: 12, overflow: 'hidden' }, correctionScroll: { flex: 1, minHeight: 0 }, correctionContent: { gap: 12, paddingBottom: 8 }, correctionRow: { gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }, correctionFields: { flexDirection: 'row', gap: 8 }, sessionBreakEditor: { gap: 6, backgroundColor: '#F8FAFC', padding: 9, borderRadius: 10 }, sessionBreakFields: { flexDirection: 'row', gap: 8 }, sessionBreakField: { flex: 1, gap: 4 }, correctionFooter: { flexShrink: 0, paddingTop: 2, backgroundColor: colors.card }, correctionSave: { flex: 0, alignSelf: 'stretch', height: 46, justifyContent: 'center' }, passingLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, overflow: 'hidden' }, fallLayer: { position: 'absolute', top: -36, left: 0, right: 0, bottom: 0, zIndex: 51, overflow: 'hidden' }, spiderThread: { position: 'absolute', top: 0, width: 2, backgroundColor: '#E2E8F0', opacity: 0.95, transformOrigin: 'top center' }, fallingSpider: { position: 'absolute', top: 0 }, passingGif: { position: 'absolute', top: '42%', left: 0 }, ambientGlow: { position: 'absolute', width: 260, height: 260, borderRadius: 140, opacity: 0.16 }, glowBlue: { top: '18%', left: -140, backgroundColor: '#BFDBFE' }, glowMint: { top: '54%', right: -145, backgroundColor: '#A7F3D0' }, floatPaw: { position: 'absolute', fontSize: 21, opacity: 0.15 }, floatPawOne: { top: '26%', left: '12%' }, floatPawTwo: { top: '66%', right: '14%' }, firefly: { position: 'absolute', color: '#F59E0B', fontSize: 23, fontWeight: '900' }, fireflyOne: { top: '38%', right: '23%' }, fireflyTwo: { top: '72%', left: '28%' }, runningPawTrail: { position: 'absolute', left: 0, bottom: 14, fontSize: 22, color: '#60A5FA', opacity: 0.25 }, spiderWeb: { position: 'absolute', width: 142, height: 142, top: -42, right: -42, borderRadius: 100 }, webRing: { position: 'absolute', borderWidth: 1, borderColor: '#60A5FA', borderRadius: 100 }, webRingOuter: { width: 128, height: 128, left: 7, top: 7 }, webRingMiddle: { width: 88, height: 88, left: 27, top: 27 }, webRingInner: { width: 48, height: 48, left: 47, top: 47 }, webSpoke: { position: 'absolute', width: 124, height: 1, top: 70, left: 70, backgroundColor: '#60A5FA' }, webSpider: { position: 'absolute', left: 57, top: 55, fontSize: 18 }, ambientRunner: { position: 'absolute', left: 0, bottom: 13, fontSize: 28, opacity: 0.38 }, page: { width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 38, gap: 16 }, center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   catScene: { height: 88, width: '100%', borderRadius: 18, overflow: 'hidden', backgroundColor: '#DFF4F3', borderWidth: 1, borderColor: '#C5E8E5' }, catSun: { position: 'absolute', right: 24, top: 13, width: 25, height: 25, borderRadius: 20, backgroundColor: '#FDE68A' }, catCloud: { position: 'absolute', right: 56, top: 9, fontSize: 15, opacity: 0.75 }, catTitle: { position: 'absolute', left: 13, top: 12, color: '#0F766E', fontSize: 8, fontWeight: '900', letterSpacing: 1.1 }, catCaption: { position: 'absolute', left: 13, top: 26, color: '#365F66', fontSize: 11, fontWeight: '700' }, catHorizon: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, backgroundColor: '#A7D9AC' }, catGrassLeft: { position: 'absolute', left: '30%', bottom: 8, height: 13, width: 55, borderTopLeftRadius: 35, borderTopRightRadius: 20, backgroundColor: '#86C694', transform: [{ rotate: '-5deg' }] }, catGrassRight: { position: 'absolute', right: '8%', bottom: 6, height: 16, width: 70, borderTopLeftRadius: 40, borderTopRightRadius: 25, backgroundColor: '#8BCB9A', transform: [{ rotate: '4deg' }] }, catPaws: { position: 'absolute', left: '42%', bottom: 13, fontSize: 11, letterSpacing: 4 }, walkingCat: { position: 'absolute', left: 0, bottom: 7 }, catEmoji: { fontSize: 31, lineHeight: 37 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 7 }, eyebrow: { color: colors.blue, fontSize: 10, fontWeight: '800', letterSpacing: 1.5 }, title: { color: colors.text, fontSize: 30, fontWeight: '800', marginTop: 4 }, subtitle: { color: colors.muted, fontSize: 14, marginTop: 4, lineHeight: 20 }, avatar: { width: 48, height: 48, borderRadius: 16, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center' }, avatarLarge: { width: 56, height: 56, borderRadius: 18, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center', alignSelf: 'center' }, avatarText: { color: colors.blue, fontWeight: '800', fontSize: 17 },
-  installCard: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 13, padding: 11, flexDirection: 'row', alignItems: 'center', gap: 10 }, installCopy: { flex: 1, gap: 3 }, installTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, installDescription: { color: colors.muted, fontSize: 10, lineHeight: 15 }, installButton: { backgroundColor: colors.blue, paddingHorizontal: 11, paddingVertical: 9, borderRadius: 10 }, installButtonText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' }, installDismiss: { paddingHorizontal: 3, paddingVertical: 4 }, installDismissText: { color: colors.muted, fontSize: 18, lineHeight: 20 },
+  installCard: { backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 13, padding: 11, flexDirection: 'row', alignItems: 'center', gap: 10 }, installCopy: { flex: 1, gap: 3 }, installTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, installDescription: { color: colors.muted, fontSize: 10, lineHeight: 15 }, installButton: { backgroundColor: colors.blue, paddingHorizontal: 11, paddingVertical: 9, borderRadius: 10 }, installButtonText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' }, installDismiss: { paddingHorizontal: 3, paddingVertical: 4 }, installDismissText: { color: colors.muted, fontSize: 18, lineHeight: 20 }, installMiniButton: { width: 34, height: 34, borderRadius: 12, backgroundColor: '#F7C2C8', borderWidth: 1, borderColor: '#FFE8EA', alignItems: 'center', justifyContent: 'center' }, installMiniText: { color: '#5B21B6', fontSize: 20, lineHeight: 23, fontWeight: '900' },
   connection: { backgroundColor: '#F0FDF4', padding: 11, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }, offline: { backgroundColor: '#FFFBEB' }, dot: { width: 7, height: 7, borderRadius: 5 }, connectionText: { fontSize: 11, color: colors.muted, flex: 1 }, link: { color: colors.blue, fontWeight: '700', fontSize: 12 }, tabs: { flexDirection: 'row', gap: 5, backgroundColor: '#E9EEF5', padding: 4, borderRadius: 14 }, tab: { width: 75, flexGrow: 0, paddingVertical: 10, borderRadius: 11, alignItems: 'center' }, tabActive: { backgroundColor: '#FFFFFF', elevation: 1 }, tabText: { fontSize: 13, fontWeight: '700', color: colors.muted }, tabTextActive: { color: colors.text }, fieldLabel: { color: colors.muted, fontSize: 11, fontWeight: '700' }, chatError: { color: '#B91C1C', fontSize: 12, lineHeight: 18 },
   hero: { position: 'relative', zIndex: 52, overflow: 'hidden', backgroundColor: colors.navy, borderRadius: 25, padding: 22, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 9 }, shadowOpacity: 0.13, shadowRadius: 17, elevation: 3 }, heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }, heroLabel: { color: '#BFDBFE', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, timerHero: { color: '#FFF', fontSize: 44, fontWeight: '800', fontVariant: ['tabular-nums'], letterSpacing: 1, marginTop: 5, marginBottom: 5 }, breakTimerCard: { marginTop: 12, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#451A1A', borderRadius: 12, borderWidth: 1, borderColor: '#7F1D1D' }, breakTimerLabel: { color: '#FCA5A5', fontSize: 9, fontWeight: '900', letterSpacing: 1 }, breakTimerValue: { color: '#F87171', fontSize: 23, fontWeight: '900', fontVariant: ['tabular-nums'], marginTop: 3 }, breakTimerHint: { color: '#FECACA', fontSize: 10, marginTop: 2 }, progressBadge: { backgroundColor: '#263A56', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, progressBadgeText: { color: '#DCEBFF', fontSize: 14, fontWeight: '800' }, progressTrack: { height: 8, backgroundColor: '#334155', borderRadius: 99, overflow: 'hidden', marginTop: 16 }, progressFill: { height: 8, backgroundColor: '#60A5FA', borderRadius: 99 }, progressMeta: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 9 }, heroSmall: { color: '#CBD5E1', fontSize: 11 }, shiftEstimate: { color: '#BFDBFE', fontSize: 11, fontWeight: '700', marginTop: 5 }, buttonRow: { flexDirection: 'row', gap: 10, marginTop: 21 }, action: { flex: 1, borderRadius: 13, paddingVertical: 14, alignItems: 'center' }, primary: { backgroundColor: colors.blue }, teal: { backgroundColor: '#0F766E' }, dim: { opacity: 0.45 }, actionText: { color: '#FFF', fontWeight: '800', fontSize: 14 }, helper: { color: '#CBD5E1', fontSize: 12, marginTop: 12, lineHeight: 18 },
   calcFields: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 }, calcButton: { flexGrow: 0, flexShrink: 0, flexBasis: 'auto', width: '100%', minHeight: 46, marginTop: 2, justifyContent: 'center' }, calcField: { flex: 1, minWidth: 90, gap: 6 }, calcResult: { backgroundColor: '#EFF6FF', borderRadius: 12, padding: 13, gap: 4 }, calcWorked: { color: colors.text, fontSize: 19, fontWeight: '800' }, calcStatus: { fontSize: 12, fontWeight: '700' }, calcMet: { color: '#15803D' }, calcPending: { color: colors.blue }, calcHint: { color: colors.muted, fontSize: 11, lineHeight: 16 },

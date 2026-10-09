@@ -1982,8 +1982,12 @@ function ludoTokenCanMove(tokens: number[][], playerIndex: number, tokenIndex: n
   const destination = position < 0 ? 0 : position + die;
   if (destination > 57) return false;
   const firstStep = position < 0 ? 0 : position + 1;
+  const safeSquares = ludoSafeSquaresFor(playerCount);
   for (let step = firstStep; step <= Math.min(destination, 51); step += 1) {
     const square = (ludoStarts[playerCount][playerIndex] + step) % 52;
+    // A blockade on a safe square must not prevent a piece from entering or
+    // passing through that square. Keep this in sync with the SQL validator.
+    if (safeSquares.includes(square)) continue;
     const opposingPieces = tokens.reduce((total, otherTokens, otherPlayer) => otherPlayer === playerIndex ? total : total + otherTokens.filter(otherPosition => otherPosition >= 0 && otherPosition < 52 && (ludoStarts[playerCount][otherPlayer] + otherPosition) % 52 === square).length, 0);
     if (opposingPieces >= 2) return false;
   }

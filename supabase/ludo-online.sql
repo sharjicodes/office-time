@@ -180,13 +180,14 @@ declare
   other_token integer;
   opposing_pieces integer;
   starts integer[];
+  safe_cells integer[];
 begin
   if token_index_in not between 0 and 3 or die_in not between 1 and 6 then return false; end if;
-  if player_count_in = 2 then starts := array[41,28];
-  elsif player_count_in = 3 then starts := array[41,28,15];
-  elsif player_count_in = 4 then starts := array[41,28,15,2];
-  elsif player_count_in = 5 then starts := array[0,9,18,27,36];
-  elsif player_count_in = 6 then starts := array[0,9,18,27,36,44];
+  if player_count_in = 2 then starts := array[41,28]; safe_cells := array[2,10,15,23,28,36,41,49];
+  elsif player_count_in = 3 then starts := array[41,28,15]; safe_cells := array[2,10,15,23,28,36,41,49];
+  elsif player_count_in = 4 then starts := array[41,28,15,2]; safe_cells := array[2,10,15,23,28,36,41,49];
+  elsif player_count_in = 5 then starts := array[0,9,18,27,36]; safe_cells := array[0,4,9,13,18,22,27,31,36,40,48];
+  elsif player_count_in = 6 then starts := array[0,9,18,27,36,44]; safe_cells := array[0,4,9,13,18,22,27,31,36,40,44,48];
   else return false; end if;
   if not player_id_in = any(player_ids_in) then return false; end if;
   position := (tokens_in -> player_id_in::text ->> token_index_in)::integer;
@@ -198,6 +199,8 @@ begin
   if first_step > least(destination, 51) then return true; end if;
   for step_index in first_step..least(destination, 51) loop
     square := (starts[array_position(player_ids_in, player_id_in)] + step_index) % 52;
+    -- Safe squares permit stacked pieces; a blockade there does not block movement.
+    if square = any(safe_cells) then continue; end if;
     opposing_pieces := 0;
     foreach other_player in array player_ids_in loop
       if other_player <> player_id_in then

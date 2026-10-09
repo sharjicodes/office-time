@@ -677,6 +677,18 @@ function inferredUploadMime(extension: string, mediaType: NonNullable<ChatMessag
   return mimeByExtension[extension] || `${mediaType}/octet-stream`;
 }
 
+function chooseCallOutput(outputs: any[], speaker: boolean) {
+  const terms = speaker ? /speaker|loudspeaker|built.in output/i : /earpiece|receiver|handset|phone/i;
+  return outputs.find(device => terms.test(device.label || '')) ?? (speaker ? outputs.find(device => device.deviceId === 'default') : undefined);
+}
+
+function applyCallAudioOutput(deviceId: string) {
+  if (typeof document === 'undefined') return;
+  document.querySelectorAll('[data-office-call-media]').forEach((element: any) => {
+    if (element.setSinkId) void element.setSinkId(deviceId).catch(() => undefined);
+  });
+}
+
 function CallsHub({ session, active }: { session: any; active: boolean }) {
   const [username, setUsername] = useState('');
   const [inviteUsername, setInviteUsername] = useState('');
@@ -686,6 +698,10 @@ function CallsHub({ session, active }: { session: any; active: boolean }) {
   const [members, setMembers] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [muted, setMuted] = useState(false);
+  const [speakerMode, setSpeakerMode] = useState(true);
+  const [audioOutputs, setAudioOutputs] = useState<any[]>([]);
+  const [cameraFacing, setCameraFacing] = useState<'user'|'environment'>('user');
   const inbox = useRef<any>(null);
   const channel = useRef<any>(null);
   const peers = useRef<Map<string, any>>(new Map());
@@ -748,7 +764,7 @@ function CallsHub({ session, active }: { session: any; active: boolean }) {
       } else if (payload.kind === 'ended') {
         setCall(null); callRef.current = null; setRing(null); setError('The call has ended.');
         peers.current.forEach(peer => peer.close()); peers.current.clear(); pendingIce.current.clear();
-        stream.current?.getTracks().forEach((track: any) => track.stop()); stream.current = null; setRemoteStreams({});
+        stream.current?.getTracks().forEach((track: any) => track.stop()); stream.current = null; setRemoteStreams({}); setMuted(false); setCameraFacing('user'); setSpeakerMode(true);
       }
     });
     const subscribed = new Promise<boolean>(resolve => ch.subscribe((status: string) => {
@@ -762,9 +778,46 @@ function CallsHub({ session, active }: { session: any; active: boolean }) {
   const ensureMedia = useCallback(async (callMode: 'voice'|'video') => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') throw new Error('Calls need a supported browser with microphone and camera access.');
     if (stream.current) return stream.current;
-    stream.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: callMode === 'video' });
+    stream.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: callMode === 'video' ? { facingMode: { ideal: 'user' } } : false });
+    if (navigator.mediaDevices.enumerateDevices) setAudioOutputs((await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter((device: any) => device.kind === 'audiooutput'));
     return stream.current;
   }, []);
+
+  const toggleMute = () => {
+    const next = !muted;
+    stream.current?.getAudioTracks().forEach((track: any) => { track.enabled = !next; });
+    setMuted(next);
+  };
+  const switchCamera = async () => {
+    if (!stream.current || !navigator.mediaDevices?.getUserMedia) return;
+    const nextFacing = cameraFacing === 'user' ? 'environment' : 'user';
+    try {
+      const currentTrack = stream.current.getVideoTracks()[0];
+      if (currentTrack?.applyConstraints) {
+        try { await currentTrack.applyConstraints({ facingMode: { exact: nextFacing } }); setCameraFacing(nextFacing); return; }
+        catch { /* Reacquire the camera if this browser cannot switch an active track. */ }
+      }
+      const cameraStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: nextFacing } } });
+      const nextTrack = cameraStream.getVideoTracks()[0];
+      if (!nextTrack) throw new Error('No other camera was found.');
+      const current = stream.current;
+      const previous = current.getVideoTracks()[0];
+      const combined = new MediaStream([...current.getAudioTracks(), nextTrack]);
+      await Promise.all([...peers.current.values()].map((peer: any) => peer.getSenders().find((sender: any) => sender.track?.kind === 'video')?.replaceTrack(nextTrack)));
+      previous?.stop(); cameraStream.getTracks().filter((track: any) => track !== nextTrack).forEach((track: any) => track.stop());
+      stream.current = combined; setCameraFacing(nextFacing);
+    } catch (cause: any) { setError(cause?.message || 'Could not switch camera.'); }
+  };
+  const toggleSpeaker = () => {
+    const nextSpeaker = !speakerMode;
+    const target = chooseCallOutput(audioOutputs, nextSpeaker);
+    if (typeof document === 'undefined' || !target || typeof (document.createElement('audio') as any).setSinkId !== 'function') {
+      setError('This browser does not expose a separate speaker and earpiece output. Change the audio route on your device.');
+      return;
+    }
+    setError(''); applyCallAudioOutput(target.deviceId); setSpeakerMode(nextSpeaker);
+  };
+  const sinkId = chooseCallOutput(audioOutputs, speakerMode)?.deviceId;
 
   const loadMembers = useCallback(async (callId: string) => {
     const { data, error: rpcError } = await supabase!.rpc('list_call_session_members', { call_id_in: callId });
@@ -868,7 +921,7 @@ function CallsHub({ session, active }: { session: any; active: boolean }) {
     channel.current = null; channelReady.current = false;
     peers.current.forEach(peer => peer.close()); peers.current.clear(); pendingIce.current.clear();
     stream.current?.getTracks().forEach((track: any) => track.stop()); stream.current = null;
-    setRemoteStreams({}); setCall(null); callRef.current = null; setMembers([]); void refreshHistory();
+    setRemoteStreams({}); setCall(null); callRef.current = null; setMembers([]); setMuted(false); setCameraFacing('user'); setSpeakerMode(true); void refreshHistory();
   };
   const addMember = async () => {
     if (!call || !supabase || !inviteUsername.trim()) return;
@@ -901,10 +954,10 @@ function CallsHub({ session, active }: { session: any; active: boolean }) {
     {error ? <Text style={styles.chatError}>{error}</Text> : null}
     {call && <View style={styles.callActiveCard}>
       <View style={styles.cardHeading}><View><Text style={styles.sectionTitle}>{call.mode === 'video' ? 'Video call' : 'Voice call'}</Text><Text style={styles.chatPresence}>{members.filter(member => member.status === 'joined').map(member => member.display_name || member.username).join(' · ') || 'Connecting…'}</Text></View><Text style={styles.pill}>LIVE</Text></View>
-      {call.mode === 'video' && <View style={styles.callVideoGrid}>{Object.entries(remoteStreams).map(([peerId, remote]: any) => <CallVideo key={peerId} stream={remote} />)}{stream.current && <CallVideo stream={stream.current} muted />}</View>}
-      {call.mode === 'voice' && Object.entries(remoteStreams).map(([peerId, remote]: any) => <CallAudio key={peerId} stream={remote} />)}
+      {call.mode === 'video' && <View style={styles.callVideoGrid}>{Object.entries(remoteStreams).map(([peerId, remote]: any) => <CallVideo key={peerId} stream={remote} sinkId={sinkId} />)}{stream.current && <CallVideo stream={stream.current} muted mirrored />}</View>}
+      {call.mode === 'voice' && Object.entries(remoteStreams).map(([peerId, remote]: any) => <CallAudio key={peerId} stream={remote} sinkId={sinkId} />)}
       <View style={styles.chatInputRow}><TextInput style={styles.chatInput} value={inviteUsername} onChangeText={setInviteUsername} placeholder="Add username to this call" autoCapitalize="none" autoCorrect={false} /><Pressable style={styles.chatTool} disabled={busy} onPress={() => void addMember()}><Text style={styles.chatToolText}>＋ Add</Text></Pressable></View>
-      <View style={styles.buttonRow}><Pressable style={[styles.action, styles.dangerAction]} onPress={() => void hangup()}><Text style={styles.actionText}>Leave call</Text></Pressable>{call.createdBy === selfId && <Pressable style={[styles.action, styles.outlineAction]} onPress={() => void hangup(true)}><Text style={styles.outlineText}>End for everyone</Text></Pressable>}</View>
+      <View style={styles.callModalActions}><Pressable accessibilityRole="button" onPress={toggleMute} style={[styles.callControl, muted && styles.callControlMuted]}><Text style={styles.callControlText}>{muted ? 'Unmute' : 'Mute'}</Text></Pressable><Pressable accessibilityRole="button" onPress={toggleSpeaker} style={styles.callControl}><Text style={styles.callControlText}>{speakerMode ? 'Speaker' : 'Normal audio'}</Text></Pressable>{call.mode === 'video' && <Pressable accessibilityRole="button" onPress={() => void switchCamera()} style={styles.callControl}><Text style={styles.callControlText}>{cameraFacing === 'user' ? 'Back camera' : 'Front camera'}</Text></Pressable>}<Pressable style={[styles.callControl, styles.callDecline]} onPress={() => void hangup()}><Text style={styles.callControlText}>Leave call</Text></Pressable>{call.createdBy === selfId && <Pressable style={[styles.callControl, styles.callControlMuted]} onPress={() => void hangup(true)}><Text style={styles.callControlText}>End for everyone</Text></Pressable>}</View>
     </View>}
     <Text style={styles.sectionTitle}>Call history</Text>
     {history.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>No calls yet</Text><Text style={styles.muted}>Calls you make or receive will appear here.</Text></View> : history.slice(0,30).map(item => {
@@ -917,16 +970,16 @@ function CallsHub({ session, active }: { session: any; active: boolean }) {
   </View>;
 }
 
-function CallVideo({ stream, muted = false }: { stream: any; muted?: boolean }) {
+function CallVideo({ stream, muted = false, sinkId, mirrored = false }: { stream: any; muted?: boolean; sinkId?: string; mirrored?: boolean }) {
   const ref = useRef<any>(null);
-  useEffect(() => { if (ref.current) { ref.current.srcObject = stream; void ref.current.play?.().catch(() => undefined); } }, [stream]);
+  useEffect(() => { if (ref.current) { ref.current.srcObject = stream; if (sinkId && ref.current.setSinkId) void ref.current.setSinkId(sinkId).catch(() => undefined); void ref.current.play?.().catch(() => undefined); } }, [stream, sinkId]);
   if (Platform.OS !== 'web') return <View style={styles.callVideo}><Text style={styles.muted}>Video is available in the web app.</Text></View>;
-  return React.createElement('video', { ref, autoPlay: true, playsInline: true, muted, style: { width: '100%', minHeight: 150, backgroundColor: '#0F172A', borderRadius: 12, objectFit: 'cover' } } as any);
+  return React.createElement('video', { ref, autoPlay: true, playsInline: true, muted, style: { width: '100%', minHeight: 150, backgroundColor: '#0F172A', borderRadius: 12, objectFit: 'cover', transform: mirrored ? 'scaleX(-1)' : undefined } } as any);
 }
 
-function CallAudio({ stream }: { stream: any }) {
+function CallAudio({ stream, sinkId }: { stream: any; sinkId?: string }) {
   const ref = useRef<any>(null);
-  useEffect(() => { if (ref.current) { ref.current.srcObject = stream; void ref.current.play?.().catch(() => undefined); } }, [stream]);
+  useEffect(() => { if (ref.current) { ref.current.srcObject = stream; if (sinkId && ref.current.setSinkId) void ref.current.setSinkId(sinkId).catch(() => undefined); void ref.current.play?.().catch(() => undefined); } }, [stream, sinkId]);
   if (Platform.OS !== 'web') return null;
   return React.createElement('audio', { ref, autoPlay: true, style: { position: 'absolute', width: 1, height: 1, opacity: 0 } } as any);
 }
@@ -982,6 +1035,9 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   const [callPeers, setCallPeers] = useState<CallPeer[]>([]);
   const [callMuted, setCallMuted] = useState(false);
   const [cameraDisabled, setCameraDisabled] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<'user'|'environment'>('user');
+  const [speakerMode, setSpeakerMode] = useState(true);
+  const [audioOutputDevices, setAudioOutputDevices] = useState<any[]>([]);
   const [viewed, setViewed] = useState<string[]>([]);
   const recorder = useRef<MediaRecorder | null>(null);
   const mediaStream = useRef<MediaStream | null>(null);
@@ -1107,6 +1163,14 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
     if (localCallVideo.current) localCallVideo.current.srcObject = localCallStream;
     if (remoteCallVideo.current) remoteCallVideo.current.srcObject = remoteCallStream;
   }, [localCallStream, remoteCallStream, activeCall?.mode]);
+
+  const callAudioSinkId = chooseCallOutput(audioOutputDevices, speakerMode)?.deviceId;
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    document.querySelectorAll('[data-office-call-media]').forEach((element: any) => {
+      if (callAudioSinkId && element.setSinkId) void element.setSinkId(callAudioSinkId).catch(() => undefined);
+    });
+  }, [callAudioSinkId, activeCall?.mode, localCallStream, remoteCallStream, groupCallStreams]);
 
   const refreshRooms = useCallback(async () => {
     if (!supabase || !isJoined) return [] as ChatRoom[];
@@ -1317,7 +1381,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
     Object.values(groupPeerConnections.current).forEach(connection => connection.close()); groupPeerConnections.current = {};
     localCallStreamRef.current?.getTracks().forEach(track => track.stop()); localCallStreamRef.current = null;
     setLocalCallStream(null); setRemoteCallStream(null); setGroupCallStreams({}); setCallPeers([]); setActiveCall(null); setIncomingCall(null); callPeersRef.current = [];
-    setCallMuted(false); setCameraDisabled(false); queuedCallIce.current = []; queuedGroupCallIce.current = {};
+    setCallMuted(false); setCameraDisabled(false); setCameraFacing('user'); setSpeakerMode(true); queuedCallIce.current = []; queuedGroupCallIce.current = {};
     if (call) { announcedCallIds.current.delete(call.callId); delete pendingLocalCallIce.current[call.callId]; }
   }
 
@@ -1325,7 +1389,9 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
     if (Platform.OS !== 'web' || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') {
       throw new Error('Voice and video calls are currently available in the web app.');
     }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' ? { facingMode: { ideal: 'user' } } : false });
+    if (navigator.mediaDevices.enumerateDevices) setAudioOutputDevices((await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter((device: any) => device.kind === 'audiooutput'));
+    setCameraFacing('user');
     localCallStreamRef.current = stream;
     setLocalCallStream(stream);
     const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
@@ -1460,7 +1526,9 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
 
   async function prepareGroupCallMedia(mode: CallMode) {
     if (Platform.OS !== 'web' || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) throw new Error('Group calls are currently available in the web app.');
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' ? { facingMode: { ideal: 'user' } } : false });
+    if (navigator.mediaDevices.enumerateDevices) setAudioOutputDevices((await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter((device: any) => device.kind === 'audiooutput'));
+    setCameraFacing('user');
     localCallStreamRef.current = stream;
     setLocalCallStream(stream);
   }
@@ -1538,6 +1606,44 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
     const next = !cameraDisabled;
     localCallStreamRef.current?.getVideoTracks().forEach(track => { track.enabled = !next; });
     setCameraDisabled(next);
+  }
+
+  async function switchCallCamera() {
+    const current = localCallStreamRef.current;
+    if (!current || !navigator.mediaDevices?.getUserMedia) return;
+    const nextFacing = cameraFacing === 'user' ? 'environment' : 'user';
+    let cameraStream: MediaStream | null = null;
+    try {
+      const currentTrack = current.getVideoTracks()[0];
+      if (currentTrack?.applyConstraints) {
+        try { await currentTrack.applyConstraints({ facingMode: { exact: nextFacing } }); setCameraFacing(nextFacing); return; }
+        catch { /* Reacquire the camera if this browser cannot switch an active track. */ }
+      }
+      cameraStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: nextFacing } } });
+      const nextTrack = cameraStream.getVideoTracks()[0];
+      const previous = current.getVideoTracks()[0];
+      if (!nextTrack) throw new Error('No other camera was found.');
+      nextTrack.enabled = !cameraDisabled;
+      const peers = [peerConnection.current, ...Object.values(groupPeerConnections.current)].filter(Boolean) as RTCPeerConnection[];
+      await Promise.all(peers.map(peer => peer.getSenders().find(sender => sender.track?.kind === 'video')?.replaceTrack(nextTrack)));
+      const updated = new MediaStream([...current.getAudioTracks(), nextTrack]);
+      previous?.stop();
+      cameraStream.getTracks().filter(track => track !== nextTrack).forEach(track => track.stop());
+      localCallStreamRef.current = updated; setLocalCallStream(updated); setCameraFacing(nextFacing);
+    } catch (error: any) {
+      cameraStream?.getTracks().forEach(track => track.stop());
+      setCallError(error?.message || 'Could not switch camera.');
+    }
+  }
+
+  function toggleCallSpeaker() {
+    const nextSpeaker = !speakerMode;
+    const target = chooseCallOutput(audioOutputDevices, nextSpeaker);
+    if (typeof document === 'undefined' || !target || typeof (document.createElement('audio') as any).setSinkId !== 'function') {
+      setCallError('This browser does not expose separate speaker and earpiece outputs. Change the audio route on your device.');
+      return;
+    }
+    setCallError(''); applyCallAudioOutput(target.deviceId); setSpeakerMode(nextSpeaker);
   }
 
   useEffect(() => {
@@ -1783,12 +1889,13 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       <View style={styles.cardHeading}><Text style={styles.sectionTitle}>{activeCall?.group ? `${selectedRoom?.room_name ?? 'Room'} call` : activeCall?.mode === 'video' ? 'Video call' : 'Voice call'}</Text><Text style={styles.onlineBadge}>{activeCall?.status.toUpperCase()}</Text></View>
       <Text style={styles.muted}>{activeCall?.group ? `${callPeers.length + 1} participant${callPeers.length === 0 ? '' : 's'} · ${activeCall?.mode === 'video' ? 'video' : 'voice'}` : activeCall?.direction === 'outgoing' ? `Calling ${activeCall.peerName}…` : `With ${activeCall?.peerName}`}</Text>
       {Platform.OS === 'web' && activeCall?.mode === 'video' ? <View style={[styles.callVideoStage, activeCall.group && styles.groupCallVideoStage]}>
-        <View style={[styles.callVideoTile, activeCall.group && styles.groupCallVideoTile]}>{React.createElement('video', { ref: (node: HTMLVideoElement | null) => { localCallVideo.current = node; if (node) node.srcObject = localCallStream; }, autoPlay: true, muted: true, playsInline: true, style: { width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)', background: '#0F172A' } })}<Text style={styles.callVideoLabel}>You{cameraDisabled ? ' · camera off' : ''}</Text></View>
-        {activeCall.group ? Object.entries(groupCallStreams).map(([peerId, stream]) => { const peer = callPeers.find(item => item.id === peerId); return <View key={peerId} style={[styles.callVideoTile, activeCall.group && styles.groupCallVideoTile]}>{React.createElement('video', { ref: (node: HTMLVideoElement | null) => { if (node) node.srcObject = stream; }, autoPlay: true, playsInline: true, style: { width: '100%', height: '100%', objectFit: 'cover', background: '#0F172A' } })}<Text style={styles.callVideoLabel}>{peer?.name ?? 'Room member'}</Text></View>; }) : <View style={[styles.callVideoTile, activeCall.group && styles.groupCallVideoTile]}>{React.createElement('video', { ref: (node: HTMLVideoElement | null) => { remoteCallVideo.current = node; if (node) node.srcObject = remoteCallStream; }, autoPlay: true, playsInline: true, style: { width: '100%', height: '100%', objectFit: 'cover', background: '#0F172A' } })}{!remoteCallStream && <Text style={styles.callVideoWaiting}>Waiting for video…</Text>}<Text style={styles.callVideoLabel}>{activeCall.peerName}</Text></View>}
+        <View style={[styles.callVideoTile, activeCall.group && styles.groupCallVideoTile]}>{React.createElement('video', { ref: (node: HTMLVideoElement | null) => { localCallVideo.current = node; if (node) node.srcObject = localCallStream; }, autoPlay: true, muted: true, playsInline: true, 'data-office-call-media': 'true', style: { width: '100%', height: '100%', objectFit: 'cover', transform: cameraFacing === 'user' ? 'scaleX(-1)' : undefined, background: '#0F172A' } })}<Text style={styles.callVideoLabel}>You{cameraDisabled ? ' · camera off' : ''}</Text></View>
+        {activeCall.group ? Object.entries(groupCallStreams).map(([peerId, stream]) => { const peer = callPeers.find(item => item.id === peerId); return <View key={peerId} style={[styles.callVideoTile, activeCall.group && styles.groupCallVideoTile]}>{React.createElement('video', { ref: (node: HTMLVideoElement | null) => { if (node) node.srcObject = stream; }, autoPlay: true, playsInline: true, 'data-office-call-media': 'true', style: { width: '100%', height: '100%', objectFit: 'cover', background: '#0F172A' } })}<Text style={styles.callVideoLabel}>{peer?.name ?? 'Room member'}</Text></View>; }) : <View style={[styles.callVideoTile, activeCall.group && styles.groupCallVideoTile]}>{React.createElement('video', { ref: (node: HTMLVideoElement | null) => { remoteCallVideo.current = node; if (node) node.srcObject = remoteCallStream; }, autoPlay: true, playsInline: true, 'data-office-call-media': 'true', style: { width: '100%', height: '100%', objectFit: 'cover', background: '#0F172A' } })}{!remoteCallStream && <Text style={styles.callVideoWaiting}>Waiting for video…</Text>}<Text style={styles.callVideoLabel}>{activeCall.peerName}</Text></View>}
         {activeCall.group && Object.keys(groupCallStreams).length === 0 && <Text style={styles.callVideoWaiting}>Waiting for room members…</Text>}
       </View> : <View style={styles.callVoiceStage}><View style={styles.callAvatar}><Text style={styles.callAvatarText}>{activeCall?.group ? '👥' : '☎'}</Text></View><Text style={styles.callPeerName}>{activeCall?.group ? selectedRoom?.room_name : activeCall?.peerName}</Text><Text style={styles.muted}>{activeCall?.group ? callPeers.map(peer => peer.name).join(' · ') || 'Waiting for members to join' : activeCall?.status}</Text></View>}
-      {Platform.OS === 'web' && activeCall?.mode === 'voice' && (activeCall.group ? Object.entries(groupCallStreams).map(([peerId, stream]) => React.createElement('video', { key: peerId, ref: (node: HTMLVideoElement | null) => { if (node) node.srcObject = stream; }, autoPlay: true, playsInline: true, style: { display: 'none' } })) : React.createElement('video', { ref: (node: HTMLVideoElement | null) => { remoteCallVideo.current = node; if (node) node.srcObject = remoteCallStream; }, autoPlay: true, playsInline: true, style: { display: 'none' } }))}
-      <View style={styles.callModalActions}><Pressable accessibilityRole="button" onPress={toggleCallMute} style={[styles.callControl, callMuted && styles.callControlMuted]}><Text style={styles.callControlText}>{callMuted ? 'Unmute' : 'Mute'}</Text></Pressable>{activeCall?.mode === 'video' && <Pressable accessibilityRole="button" onPress={toggleCallCamera} style={[styles.callControl, cameraDisabled && styles.callControlMuted]}><Text style={styles.callControlText}>{cameraDisabled ? 'Camera on' : 'Camera off'}</Text></Pressable>}<Pressable accessibilityRole="button" onPress={() => endCall()} style={[styles.callControl, styles.callDecline]}><Text style={styles.callControlText}>{activeCall?.group && activeCall.hostId !== session?.user?.id ? 'Leave call' : 'End call'}</Text></Pressable></View>
+      {Platform.OS === 'web' && activeCall?.mode === 'voice' && (activeCall.group ? Object.entries(groupCallStreams).map(([peerId, stream]) => React.createElement('video', { key: peerId, ref: (node: HTMLVideoElement | null) => { if (node) node.srcObject = stream; }, autoPlay: true, playsInline: true, 'data-office-call-media': 'true', style: { display: 'none' } })) : React.createElement('video', { ref: (node: HTMLVideoElement | null) => { remoteCallVideo.current = node; if (node) node.srcObject = remoteCallStream; }, autoPlay: true, playsInline: true, 'data-office-call-media': 'true', style: { display: 'none' } }))}
+      {!!callError && <Text style={styles.callError}>{callError}</Text>}
+      <View style={styles.callModalActions}><Pressable accessibilityRole="button" onPress={toggleCallMute} style={[styles.callControl, callMuted && styles.callControlMuted]}><Text style={styles.callControlText}>{callMuted ? 'Unmute mic' : 'Mute mic'}</Text></Pressable><Pressable accessibilityRole="button" onPress={toggleCallSpeaker} style={styles.callControl}><Text style={styles.callControlText}>{speakerMode ? 'Speaker' : 'Normal audio'}</Text></Pressable>{activeCall?.mode === 'video' && <><Pressable accessibilityRole="button" onPress={toggleCallCamera} style={[styles.callControl, cameraDisabled && styles.callControlMuted]}><Text style={styles.callControlText}>{cameraDisabled ? 'Camera on' : 'Camera off'}</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void switchCallCamera()} style={styles.callControl}><Text style={styles.callControlText}>{cameraFacing === 'user' ? 'Back camera' : 'Front camera'}</Text></Pressable></>}<Pressable accessibilityRole="button" onPress={() => endCall()} style={[styles.callControl, styles.callDecline]}><Text style={styles.callControlText}>{activeCall?.group && activeCall.hostId !== session?.user?.id ? 'Leave call' : 'End call'}</Text></Pressable></View>
     </View></View></Modal>
     <Modal visible={!!mediaView} transparent animationType="fade" onRequestClose={() => setMediaView(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{mediaView?.once ? 'View-once photo' : 'Shared media'}</Text><Pressable onPress={() => setMediaView(null)}><Text style={styles.link}>Close</Text></Pressable></View>{mediaView?.type === 'image' ? <Image source={{ uri: mediaView.url }} resizeMode="contain" style={styles.mediaImage}/> : Platform.OS === 'web' && mediaView ? React.createElement(mediaView.type === 'video' ? 'video' : 'audio', { src: mediaView.url, controls: true, playsInline: true, style: { width: '100%', maxHeight: 420 } }) : <Text style={styles.muted}>Open this media in the web app to play it.</Text>}{mediaView?.once && <Text style={styles.onceFootnote}>This view is now used. Close this window to hide the photo.</Text>}</View></View></Modal>
     <Modal visible={!!deleteAllTarget} transparent animationType="fade" onRequestClose={() => setDeleteAllTarget(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><Text style={styles.sectionTitle}>{deleteAllTarget?.sender_id === session?.user?.id ? 'Delete for everyone?' : 'Remove this message?'}</Text><Text style={styles.muted}>{deleteAllTarget?.sender_id === session?.user?.id ? 'This removes your message from the shared chat for all participants.' : 'As the room creator, you can remove this message for everyone in the room.'}</Text><View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}><Pressable style={styles.outlineButton} onPress={() => setDeleteAllTarget(null)}><Text style={styles.outlineText}>Cancel</Text></Pressable><Pressable disabled={!!deletingId} onPress={() => deleteAllTarget && void deleteForEveryone(deleteAllTarget)} style={[styles.action, { backgroundColor: '#B91C1C', paddingHorizontal: 14 }]}><Text style={styles.actionText}>{deletingId === deleteAllTarget?.id ? 'Deleting…' : 'Remove for everyone'}</Text></Pressable></View></View></View></Modal>

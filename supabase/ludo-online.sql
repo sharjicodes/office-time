@@ -152,7 +152,12 @@ begin
   select * into m from public.ludo_matches where id = match_id_in for update;
   if not found or auth.uid() <> m.player_user_ids[m.turn_index + 1] then raise exception 'It is not your turn.'; end if;
   if m.status <> 'active' or m.dice_value is not null then raise exception 'Finish your current move first.'; end if;
-  rolled := floor(random() * 6 + 1)::integer;
+  -- A lively Ludo die: six appears about one-third of the time; 1–5 share the rest.
+  if random() < (1.0 / 3.0) then
+    rolled := 6;
+  else
+    rolled := floor(random() * 5 + 1)::integer;
+  end if;
   if rolled = 6 and m.forfeit_triple_six and m.six_streak >= 2 then
     update public.ludo_matches set dice_value = null, six_streak = 0, turn_index = (turn_index + 1) % cardinality(player_user_ids), updated_at = now() where id = match_id_in;
     return 0;

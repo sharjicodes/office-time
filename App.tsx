@@ -30,23 +30,23 @@ export default function App() {
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> };
 
 function PwaInstallPrompt() {
-  const [platform, setPlatform] = useState<'ios' | 'prompt' | null>(null);
+  const [platform, setPlatform] = useState<'ios' | 'android' | 'desktop'>('desktop');
   const [installEvent, setInstallEvent] = useState<InstallPromptEvent | null>(null);
-  const [showIosSteps, setShowIosSteps] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
+  const [showInstallSteps, setShowInstallSteps] = useState(false);
+  const [installed, setInstalled] = useState(false);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
     const standalone = window.matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
-    if (standalone) return;
     const iosDevice = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    if (iosDevice) setPlatform('ios');
+    const androidDevice = /android/i.test(navigator.userAgent);
+    setPlatform(iosDevice ? 'ios' : androidDevice ? 'android' : 'desktop');
+    setInstalled(standalone);
     const onBeforeInstall = (event: Event) => {
       event.preventDefault();
       setInstallEvent(event as InstallPromptEvent);
-      setPlatform('prompt');
     };
-    const onInstalled = () => { setPlatform(null); setInstallEvent(null); };
+    const onInstalled = () => { setInstalled(true); setInstallEvent(null); };
     window.addEventListener('beforeinstallprompt', onBeforeInstall);
     window.addEventListener('appinstalled', onInstalled);
     return () => {
@@ -55,15 +55,21 @@ function PwaInstallPrompt() {
     };
   }, []);
 
-  if (!platform || dismissed) return null;
   return <View style={styles.installCard}>
-    <View style={styles.installCopy}><Text style={styles.installTitle}>Install Milo</Text><Text style={styles.installDescription}>{platform === 'ios' ? 'Add Milo to your Home Screen for a full-screen app and easier access.' : 'Add Milo to your device for quick, app-like access.'}</Text>{platform === 'ios' && showIosSteps && <Text style={styles.installDescription}>Tap Share in Safari, then choose “Add to Home Screen”.</Text>}</View>
+    <View style={styles.installCopy}><Text style={styles.installTitle}>{installed ? 'Milo is installed' : 'Install Milo'}</Text><Text style={styles.installDescription}>{installed ? 'Launch Milo from your Home Screen or app list.' : 'Add Milo to your device for quick, app-like access.'}</Text>{showInstallSteps && <Text style={styles.installDescription}>{platform === 'ios' ? 'In Safari, tap Share, then choose “Add to Home Screen”.' : platform === 'android' ? 'In Chrome, open ⋮ and choose “Install app” or “Add to Home screen”.' : 'Use your browser menu and choose “Install Milo” or “Install app”.'}</Text>}</View>
     <Pressable accessibilityRole="button" onPress={() => {
-      if (platform === 'ios') { setShowIosSteps(value => !value); return; }
-      if (!installEvent) return;
-      void installEvent.prompt().then(() => installEvent.userChoice).then(() => { setInstallEvent(null); setPlatform(null); });
-    }} style={styles.installButton}><Text style={styles.installButtonText}>{platform === 'ios' ? (showIosSteps ? 'Got it' : 'How to install') : 'Install'}</Text></Pressable>
-    <Pressable accessibilityRole="button" accessibilityLabel="Dismiss install suggestion" onPress={() => setDismissed(true)} style={styles.installDismiss}><Text style={styles.installDismissText}>×</Text></Pressable>
+      if (installed) { setShowInstallSteps(value => !value); return; }
+      if (installEvent) {
+        const pending = installEvent;
+        void pending.prompt().then(() => pending.userChoice).then(choice => {
+          setInstallEvent(null);
+          if (choice.outcome === 'accepted') setInstalled(true);
+          setShowInstallSteps(choice.outcome !== 'accepted');
+        });
+        return;
+      }
+      setShowInstallSteps(value => !value);
+    }} style={styles.installButton}><Text style={styles.installButtonText}>{installed ? 'Install info' : installEvent ? 'Install' : 'How to install'}</Text></Pressable>
   </View>;
 }
 

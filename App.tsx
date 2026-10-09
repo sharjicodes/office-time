@@ -563,8 +563,10 @@ function MiloControlPanel({ now, onNavigate }: { now: Date; onNavigate: (tab: Ta
             <View style={{ alignItems: 'center' }}><Text style={{ fontSize: 52 }}>☁️</Text><Text style={{ color: '#FFFFFF', fontSize: 20, letterSpacing: 3 }}>˙ ˙ ˙ ˙</Text></View>
           </View>
           <View style={{ flexDirection: 'row', gap: 12, height: 178 }}>
-            <View style={{ flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-              {shortcuts.map(item => <Pressable key={item.tab} accessibilityRole="button" accessibilityLabel={item.label} onPress={() => { setOpen(false); onNavigate(item.tab); }} style={{ width: '47%' as any, height: 84, borderRadius: 22, backgroundColor: '#F7C2C8', borderWidth: 1, borderColor: '#FFE8EA', alignItems: 'center', justifyContent: 'center', shadowColor: '#783C61', shadowOpacity: 0.16, shadowRadius: 6, elevation: 4 }}><Text style={{ fontSize: 34 }}>{item.icon}</Text></Pressable>)}
+            <View style={{ flex: 1, gap: 10 }}>
+              {[shortcuts.slice(0, 2), shortcuts.slice(2, 4)].map((row, rowIndex) => <View key={rowIndex} style={{ flex: 1, flexDirection: 'row', gap: 10 }}>
+                {row.map(item => <Pressable key={item.tab} accessibilityRole="button" accessibilityLabel={item.label} onPress={() => { setOpen(false); onNavigate(item.tab); }} style={{ flex: 1, minWidth: 0, borderRadius: 22, backgroundColor: '#F7C2C8', borderWidth: 1, borderColor: '#FFE8EA', alignItems: 'center', justifyContent: 'center', shadowColor: '#783C61', shadowOpacity: 0.16, shadowRadius: 6, elevation: 4 }}><Text style={{ fontSize: 34 }}>{item.icon}</Text></Pressable>)}
+              </View>)}
             </View>
             <Pressable accessibilityRole="button" accessibilityLabel="Open calls" onPress={() => { setOpen(false); onNavigate('Calls'); }} style={{ flex: 0.9, borderRadius: 28, backgroundColor: '#F7C2C8', borderWidth: 1, borderColor: '#FFE8EA', alignItems: 'center', justifyContent: 'center', shadowColor: '#783C61', shadowOpacity: 0.16, shadowRadius: 6, elevation: 4 }}><Text style={{ fontSize: 76 }}>📞</Text></Pressable>
           </View>

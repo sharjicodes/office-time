@@ -14,7 +14,7 @@ import { colors } from './src/theme';
 import { BUILD_ID, BUILD_SUMMARY } from './src/release';
 
 if (Platform.OS !== 'web') Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
-type Tab = 'Today' | 'History' | 'Chat' | 'Games' | 'HR';
+type Tab = 'Today' | 'History' | 'Games' | 'Calls' | 'Chat' | 'HR';
 const clock = (value: string | null) => value ? new Date(value).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '—';
 const monthName = (key: string) => new Date(`${key}-01T12:00:00`).toLocaleDateString([], { month: 'long', year: 'numeric' });
 const formatTimer = (seconds: number) => {
@@ -473,14 +473,14 @@ function OfficeTimeApp() {
 
   const lateDays = days.filter(d => d.date.startsWith(today.slice(0, 7)) && d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).afterFlexLimit);
   const halfDayToday = isHalfDayDate(days, today, policy);
-  const showPageAnimations = tab !== 'Chat' && tab !== 'Games';
+  const showPageAnimations = tab !== 'Chat' && tab !== 'Games' && tab !== 'Calls';
   return <SafeAreaView style={styles.safe}>
     {showPageAnimations && <PageAmbience />}
     <StatusBar style="dark" />
     <ScrollView contentContainerStyle={styles.page}>
       <View style={styles.header}><View><Text style={styles.eyebrow}>ATTENDANCE, MADE SIMPLE</Text><Text style={styles.title}>OfficeTime</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={styles.avatar}><Text style={styles.avatarText}>{session?.user?.email?.[0]?.toUpperCase() ?? 'OT'}</Text></View></View>
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => { if (session) void signOut(); }}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
-      <View style={styles.tabs}>{(['Today', 'History', 'Chat', 'Games', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}><>{(['Today', 'History', 'Games', 'Calls', 'Chat', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</></ScrollView>
       {tab === 'Today' && <WalkingCat />}
       {tab === 'Today' && <>
         <View style={styles.hero}>
@@ -520,6 +520,7 @@ function OfficeTimeApp() {
         return error?.message ?? null;
       }} />}
       {tab === 'Games' && <GamesHub session={session} />}
+      <CallsHub session={session} active={tab === 'Calls'} />
       {tab === 'HR' && <HRDashboard rows={hrRows} loading={busy} role={role} policyUploadBusy={policyUploadBusy} policyUploadedName={policyUploadedName} onUploadPolicy={uploadMiloPolicy} onRefresh={async () => { setBusy(true); const { data } = await supabase!.rpc('hr_attendance_report'); setHrRows(data ?? []); setBusy(false); }} onResolve={resolveReview} />}
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. OfficeTime is a companion tracker until HR authorizes it for official use.</Text></View>
       <Text style={styles.footer}>OfficeTime · Secure attendance for your team</Text>
@@ -632,6 +633,10 @@ type ChatRoomMember = { member_id: string; member_name: string; joined_at: strin
 type DirectChat = { room_id: string; room_name: string; peer_username: string; created_at: string };
 type ChatMessage = { id: string; room_id: string; sender_id: string; sender_name: string; body: string; media_path: string | null; media_type: 'image' | 'video' | 'audio' | null; view_once: boolean; sent_at: string; reply_to?: string | null };
 type ChatReaction = { message_id: string; user_id: string; emoji: string };
+type CallMode = 'voice' | 'video';
+type IncomingCall = { callId: string; roomId: string; fromId: string; fromName: string; toId?: string; mode: CallMode; group?: boolean; offer?: RTCSessionDescriptionInit };
+type ActiveCall = { callId: string; peerId: string; peerName: string; mode: CallMode; direction: 'incoming' | 'outgoing'; status: string; group: boolean; hostId: string };
+type CallPeer = { id: string; name: string };
 const QUICK_EMOJIS = ['😊', '❤️', '👍', '😂', '🎉', '🙏'];
 
 async function edgeFunctionErrorMessage(error: any, fallback: string) {
@@ -672,8 +677,263 @@ function inferredUploadMime(extension: string, mediaType: NonNullable<ChatMessag
   return mimeByExtension[extension] || `${mediaType}/octet-stream`;
 }
 
+function CallsHub({ session, active }: { session: any; active: boolean }) {
+  const [username, setUsername] = useState('');
+  const [inviteUsername, setInviteUsername] = useState('');
+  const [call, setCall] = useState<any>(null);
+  const [ring, setRing] = useState<any>(null);
+  const [history, setHistory] = useState<any[]>([]);
+  const [members, setMembers] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const inbox = useRef<any>(null);
+  const channel = useRef<any>(null);
+  const peers = useRef<Map<string, any>>(new Map());
+  const pendingIce = useRef<Map<string, any[]>>(new Map());
+  const stream = useRef<any>(null);
+  const callRef = useRef<any>(null);
+  const channelReady = useRef(false);
+  const selfId = session?.user?.id as string | undefined;
+  const selfName = session?.user?.user_metadata?.full_name || 'OfficeTime user';
+  const [remoteStreams, setRemoteStreams] = useState<Record<string, any>>({});
+
+  const refreshHistory = useCallback(async () => {
+    if (!supabase || !session) return;
+    const { data, error: rpcError } = await supabase.rpc('list_my_call_history');
+    if (!rpcError) setHistory(Array.isArray(data) ? data : []);
+  }, [session]);
+
+  const sendSignal = useCallback((targetId: string, kind: string, payload: any = {}) => {
+    if (channel.current && channelReady.current && selfId) void channel.current.send({ type: 'broadcast', event: 'call-signal', payload: { fromId: selfId, targetId, kind, payload } });
+  }, [selfId]);
+
+  const createPeer = useCallback((peerId: string, initiator: boolean) => {
+    if (!selfId || !stream.current || peers.current.has(peerId)) return;
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    peers.current.set(peerId, pc);
+    stream.current.getTracks().forEach((track: any) => pc.addTrack(track, stream.current));
+    pc.onicecandidate = (event: any) => { if (event.candidate) sendSignal(peerId, 'ice', event.candidate); };
+    pc.ontrack = (event: any) => setRemoteStreams(current => ({ ...current, [peerId]: event.streams[0] }));
+    pc.onconnectionstatechange = () => { if (['failed','closed'].includes(pc.connectionState)) { pc.close(); peers.current.delete(peerId); setRemoteStreams(current => { const next = { ...current }; delete next[peerId]; return next; }); } };
+    if (initiator) void pc.createOffer().then((offer: any) => pc.setLocalDescription(offer).then(() => sendSignal(peerId, 'offer', offer))).catch(() => setError('Could not start the media connection. Check your camera and microphone permissions.'));
+  }, [selfId, sendSignal]);
+
+  const attachCallChannel = useCallback(async (callId: string) => {
+    if (!supabase || !selfId) return false;
+    if (channel.current) await supabase.removeChannel(channel.current);
+    channelReady.current = false;
+    const ch = supabase.channel(`call-session:${callId}`, { config: { private: true } });
+    ch.on('broadcast', { event: 'call-signal' }, async ({ payload }: any) => {
+      if (payload?.targetId && payload.targetId !== selfId) return;
+      const fromId = payload?.fromId;
+      if (!fromId || fromId === selfId) return;
+      if (payload.kind === 'joined') {
+        createPeer(fromId, selfId < fromId);
+        if (supabase && callRef.current) void supabase.rpc('list_call_session_members', { call_id_in: callRef.current.id }).then(({ data }: any) => { if (Array.isArray(data)) setMembers(data); });
+      } else if (payload.kind === 'left') {
+        peers.current.get(fromId)?.close(); peers.current.delete(fromId);
+        setRemoteStreams(current => { const next = { ...current }; delete next[fromId]; return next; });
+      } else if (payload.kind === 'declined') {
+        setError('A user declined the call.');
+        if (callRef.current && supabase) void supabase.rpc('list_call_session_members', { call_id_in: callRef.current.id }).then(({ data }: any) => { if (Array.isArray(data)) setMembers(data); });
+      } else if (payload.kind === 'offer') {
+        createPeer(fromId, false);
+        const pc = peers.current.get(fromId);
+        if (pc) { await pc.setRemoteDescription(new RTCSessionDescription(payload.payload)); for (const candidate of pendingIce.current.get(fromId) || []) await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => undefined); pendingIce.current.delete(fromId); const answer = await pc.createAnswer(); await pc.setLocalDescription(answer); sendSignal(fromId, 'answer', answer); }
+      } else if (payload.kind === 'answer') {
+        const pc = peers.current.get(fromId); if (pc) { await pc.setRemoteDescription(new RTCSessionDescription(payload.payload)); for (const candidate of pendingIce.current.get(fromId) || []) await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => undefined); pendingIce.current.delete(fromId); }
+      } else if (payload.kind === 'ice') {
+        const pc = peers.current.get(fromId); if (pc?.remoteDescription) await pc.addIceCandidate(new RTCIceCandidate(payload.payload)).catch(() => undefined);
+        else pendingIce.current.set(fromId, [...(pendingIce.current.get(fromId) || []), payload.payload]);
+      } else if (payload.kind === 'ended') {
+        setCall(null); callRef.current = null; setRing(null); setError('The call has ended.');
+        peers.current.forEach(peer => peer.close()); peers.current.clear(); pendingIce.current.clear();
+        stream.current?.getTracks().forEach((track: any) => track.stop()); stream.current = null; setRemoteStreams({});
+      }
+    });
+    const subscribed = new Promise<boolean>(resolve => ch.subscribe((status: string) => {
+      if (status === 'SUBSCRIBED') { channelReady.current = true; resolve(true); }
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') resolve(false);
+    }));
+    channel.current = ch;
+    return subscribed;
+  }, [selfId, createPeer, sendSignal]);
+
+  const ensureMedia = useCallback(async (callMode: 'voice'|'video') => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') throw new Error('Calls need a supported browser with microphone and camera access.');
+    if (stream.current) return stream.current;
+    stream.current = await navigator.mediaDevices.getUserMedia({ audio: true, video: callMode === 'video' });
+    return stream.current;
+  }, []);
+
+  const loadMembers = useCallback(async (callId: string) => {
+    const { data, error: rpcError } = await supabase!.rpc('list_call_session_members', { call_id_in: callId });
+    if (rpcError) throw rpcError;
+    const list = Array.isArray(data) ? data : [];
+    setMembers(list);
+    return list;
+  }, []);
+
+  const setupInbox = useCallback(() => {
+    if (!supabase || !selfId || inbox.current) return;
+    const ch = supabase.channel(`call-inbox:${selfId}`, { config: { private: true } });
+    ch.on('broadcast', { event: 'incoming-call' }, async ({ payload }: any) => {
+      if (!payload?.callId) return;
+      if (callRef.current) { void supabase.rpc('respond_call_session', { call_id_in: payload.callId, action_in: 'decline' }); return; }
+      const ready = await attachCallChannel(payload.callId);
+      if (ready) setRing(payload);
+    });
+    ch.subscribe(); inbox.current = ch;
+  }, [selfId, attachCallChannel]);
+
+  useEffect(() => {
+    setupInbox(); void refreshHistory();
+    return () => {
+      if (supabase && inbox.current) void supabase.removeChannel(inbox.current);
+      if (supabase && channel.current) void supabase.removeChannel(channel.current);
+      peers.current.forEach(peer => peer.close());
+      stream.current?.getTracks().forEach((track: any) => track.stop());
+    };
+  }, [setupInbox, refreshHistory]);
+
+  const beginCall = async (usernames: string[], callMode: 'voice'|'video', seedCallId?: string) => {
+    if (!supabase || !session) { setError('Sign in to make calls.'); return; }
+    if (callRef.current && !seedCallId) { setError('Leave your current call before starting another one.'); return; }
+    setBusy(true); setError('');
+    try {
+      await ensureMedia(callMode);
+      let callId = seedCallId;
+      if (!callId) {
+        const { data, error: rpcError } = await supabase.rpc('create_call_session', { usernames_in: usernames, mode_in: callMode });
+        if (rpcError) throw rpcError;
+        callId = data;
+      }
+      if (!callId) throw new Error('Could not create the call.');
+        setCall({ id: callId, mode: callMode, createdBy: seedCallId ? ring?.callerId : selfId }); callRef.current = { id: callId, mode: callMode, createdBy: seedCallId ? ring?.callerId : selfId };
+      const ready = channelReady.current || await attachCallChannel(callId);
+      if (!ready) throw new Error('Could not connect to the call service. Run the latest Supabase chat schema.');
+      if (seedCallId && selfId) {
+        const { error: joinError } = await supabase.rpc('respond_call_session', { call_id_in: callId, action_in: 'join' });
+        if (joinError) throw joinError;
+        setRing(null);
+        const roster = await loadMembers(callId);
+        const callCreator = roster[0]?.call_creator;
+        if (callCreator) { setCall((current: any) => current ? { ...current, createdBy: callCreator } : current); callRef.current = { id: callId, mode: callMode, createdBy: callCreator }; }
+        for (const member of roster) if (member.status === 'joined' && member.user_id !== selfId) createPeer(member.user_id, !!selfId && selfId < member.user_id);
+        void channel.current?.send({ type: 'broadcast', event: 'call-signal', payload: { fromId: selfId, kind: 'joined' } });
+      } else {
+        const { data: roster } = await supabase.rpc('list_call_session_members', { call_id_in: callId });
+        for (const member of (Array.isArray(roster) ? roster : [])) {
+          if (member.status === 'invited') void sendCallInbox(member.user_id, { callId, callerId: selfId, callerName: selfName, mode: callMode });
+        }
+        await loadMembers(callId);
+      }
+      void refreshHistory();
+    } catch (cause: any) {
+      setError(cause?.message || 'Could not start the call.'); setCall(null); callRef.current = null;
+      if (supabase && channel.current) await supabase.removeChannel(channel.current);
+      channel.current = null; channelReady.current = false;
+      peers.current.forEach(peer => peer.close()); peers.current.clear(); pendingIce.current.clear();
+      stream.current?.getTracks().forEach((track: any) => track.stop()); stream.current = null;
+    }
+    finally { setBusy(false); }
+  };
+
+  const sendCallInbox = async (targetId: string, payload: any) => {
+    if (!supabase) return;
+    const ch = supabase.channel(`call-inbox:${targetId}`, { config: { private: true } });
+    await new Promise<void>(resolve => ch.subscribe((status: string) => { if (status === 'SUBSCRIBED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') resolve(); }));
+    if (ch.state !== 'joined') { await supabase.removeChannel(ch); throw new Error('Could not reach that user right now. Try again in a moment.'); }
+    await ch.send({ type: 'broadcast', event: 'incoming-call', payload });
+    await supabase.removeChannel(ch);
+  };
+
+  const answerCall = async () => {
+    if (!ring) return;
+    await beginCall([], ring.mode, ring.callId);
+  };
+  const declineCall = async () => {
+    if (ring && supabase) {
+      if (selfId) await channel.current?.send({ type: 'broadcast', event: 'call-signal', payload: { fromId: selfId, kind: 'declined' } });
+      await supabase.rpc('respond_call_session', { call_id_in: ring.callId, action_in: 'decline' });
+    }
+    setRing(null);
+  };
+  const hangup = async (everyone = false) => {
+    const activeCall = callRef.current;
+    if (!activeCall || !supabase) return;
+    if (selfId) await channel.current?.send({ type: 'broadcast', event: 'call-signal', payload: { fromId: selfId, kind: everyone ? 'ended' : 'left' } });
+    await supabase.rpc('respond_call_session', { call_id_in: activeCall.id, action_in: everyone ? 'end' : 'leave' });
+    if (supabase && channel.current) await supabase.removeChannel(channel.current);
+    channel.current = null; channelReady.current = false;
+    peers.current.forEach(peer => peer.close()); peers.current.clear(); pendingIce.current.clear();
+    stream.current?.getTracks().forEach((track: any) => track.stop()); stream.current = null;
+    setRemoteStreams({}); setCall(null); callRef.current = null; setMembers([]); void refreshHistory();
+  };
+  const addMember = async () => {
+    if (!call || !supabase || !inviteUsername.trim()) return;
+    setBusy(true); setError('');
+    try {
+      const { data, error: rpcError } = await supabase.rpc('invite_call_member', { call_id_in: call.id, username_in: inviteUsername.trim() });
+      if (rpcError) throw rpcError;
+      await sendCallInbox(data.user_id, { callId: call.id, callerId: selfId, callerName: selfName, mode: call.mode });
+      setInviteUsername(''); await loadMembers(call.id);
+    } catch (cause: any) { setError(cause?.message || 'Could not invite that username.'); }
+    finally { setBusy(false); }
+  };
+
+  const openFromHistory = async (item: any) => {
+    const targets = (item.members || []).filter((member: any) => member.status !== 'declined').map((member: any) => member.username);
+    if (!targets.length) { setError('There are no other users in this call history.'); return; }
+    await beginCall(targets, item.mode);
+  };
+
+  return <View style={[styles.card, !active && { display: 'none' }]}>
+    <View style={styles.cardHeading}><View><Text style={styles.sectionTitle}>Calls</Text><Text style={styles.chatPresence}>Call people by username or redial from history</Text></View><Text style={styles.chatPresence}>🔒 Private</Text></View>
+    {!session && <Text style={styles.muted}>Sign in or continue as a guest to call other users.</Text>}
+    <Text style={styles.fieldLabel}>Invite by username</Text>
+    <TextInput style={styles.input} value={username} onChangeText={setUsername} placeholder="e.g. guest_calm_fox_12" autoCapitalize="none" autoCorrect={false} editable={!busy} />
+    <View style={styles.buttonRow}>
+      <Pressable style={[styles.action, styles.primary, (!session || !username.trim() || busy) && styles.dim]} disabled={!session || !username.trim() || busy} onPress={() => void beginCall([username.trim()], 'voice')}><Text style={styles.actionText}>☎ Voice call</Text></Pressable>
+      <Pressable style={[styles.action, styles.teal, (!session || !username.trim() || busy) && styles.dim]} disabled={!session || !username.trim() || busy} onPress={() => void beginCall([username.trim()], 'video')}><Text style={styles.actionText}>▣ Video call</Text></Pressable>
+    </View>
+    <Text style={styles.helper}>The invited user receives a ringing prompt anywhere in OfficeTime.</Text>
+    {error ? <Text style={styles.chatError}>{error}</Text> : null}
+    {call && <View style={styles.callActiveCard}>
+      <View style={styles.cardHeading}><View><Text style={styles.sectionTitle}>{call.mode === 'video' ? 'Video call' : 'Voice call'}</Text><Text style={styles.chatPresence}>{members.filter(member => member.status === 'joined').map(member => member.display_name || member.username).join(' · ') || 'Connecting…'}</Text></View><Text style={styles.pill}>LIVE</Text></View>
+      {call.mode === 'video' && <View style={styles.callVideoGrid}>{Object.entries(remoteStreams).map(([peerId, remote]: any) => <CallVideo key={peerId} stream={remote} />)}{stream.current && <CallVideo stream={stream.current} muted />}</View>}
+      {call.mode === 'voice' && Object.entries(remoteStreams).map(([peerId, remote]: any) => <CallAudio key={peerId} stream={remote} />)}
+      <View style={styles.chatInputRow}><TextInput style={styles.chatInput} value={inviteUsername} onChangeText={setInviteUsername} placeholder="Add username to this call" autoCapitalize="none" autoCorrect={false} /><Pressable style={styles.chatTool} disabled={busy} onPress={() => void addMember()}><Text style={styles.chatToolText}>＋ Add</Text></Pressable></View>
+      <View style={styles.buttonRow}><Pressable style={[styles.action, styles.dangerAction]} onPress={() => void hangup()}><Text style={styles.actionText}>Leave call</Text></Pressable>{call.createdBy === selfId && <Pressable style={[styles.action, styles.outlineAction]} onPress={() => void hangup(true)}><Text style={styles.outlineText}>End for everyone</Text></Pressable>}</View>
+    </View>}
+    <Text style={styles.sectionTitle}>Call history</Text>
+    {history.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>No calls yet</Text><Text style={styles.muted}>Calls you make or receive will appear here.</Text></View> : history.slice(0,30).map(item => {
+      const people = (item.members || []).map((member: any) => member.display_name || `@${member.username}`).join(', ') || 'No other participants';
+      return <View key={item.id} style={styles.callHistoryRow}><View style={{ flex: 1 }}><Text style={styles.historyTitle}>{item.mode === 'video' ? '▣ Video' : '☎ Voice'} · {people}</Text><Text style={styles.historySub}>{new Date(item.created_at).toLocaleString()} {item.ended_at ? '· ended' : '· active'}</Text></View><Pressable style={styles.chatTool} onPress={() => void openFromHistory(item)}><Text style={styles.chatToolText}>Call again</Text></Pressable></View>;
+    })}
+    <Modal visible={!!ring} transparent animationType="fade" onRequestClose={() => void declineCall()}>
+      <View style={styles.miloOverlay}><View style={styles.callRingCard}><Text style={styles.callRingIcon}>{ring?.mode === 'video' ? '▣' : '☎'}</Text><Text style={styles.sectionTitle}>{ring?.callerName || 'Someone'} is calling</Text><Text style={styles.chatPresence}>Incoming {ring?.mode} call</Text><View style={styles.buttonRow}><Pressable style={[styles.action, styles.primary]} onPress={() => void answerCall()} disabled={busy}><Text style={styles.actionText}>Answer</Text></Pressable><Pressable style={[styles.action, styles.dangerAction]} onPress={() => void declineCall()}><Text style={styles.actionText}>Decline</Text></Pressable></View></View></View>
+    </Modal>
+  </View>;
+}
+
+function CallVideo({ stream, muted = false }: { stream: any; muted?: boolean }) {
+  const ref = useRef<any>(null);
+  useEffect(() => { if (ref.current) { ref.current.srcObject = stream; void ref.current.play?.().catch(() => undefined); } }, [stream]);
+  if (Platform.OS !== 'web') return <View style={styles.callVideo}><Text style={styles.muted}>Video is available in the web app.</Text></View>;
+  return React.createElement('video', { ref, autoPlay: true, playsInline: true, muted, style: { width: '100%', minHeight: 150, backgroundColor: '#0F172A', borderRadius: 12, objectFit: 'cover' } } as any);
+}
+
+function CallAudio({ stream }: { stream: any }) {
+  const ref = useRef<any>(null);
+  useEffect(() => { if (ref.current) { ref.current.srcObject = stream; void ref.current.play?.().catch(() => undefined); } }, [stream]);
+  if (Platform.OS !== 'web') return null;
+  return React.createElement('audio', { ref, autoPlay: true, style: { position: 'absolute', width: 1, height: 1, opacity: 0 } } as any);
+}
+
 function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) => Promise<string | null> }) {
   const [miloMode, setMiloMode] = useState(false);
+  const [personalChatMode, setPersonalChatMode] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [directChats, setDirectChats] = useState<DirectChat[]>([]);
@@ -711,15 +971,142 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   const [chatError, setChatError] = useState('');
   const [recording, setRecording] = useState(false);
   const [mediaView, setMediaView] = useState<{ url: string; type: string; once: boolean } | null>(null);
+  const [directPeer, setDirectPeer] = useState<{ id: string; name: string } | null>(null);
+  const [callReady, setCallReady] = useState(false);
+  const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
+  const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+  const [callError, setCallError] = useState('');
+  const [localCallStream, setLocalCallStream] = useState<MediaStream | null>(null);
+  const [remoteCallStream, setRemoteCallStream] = useState<MediaStream | null>(null);
+  const [groupCallStreams, setGroupCallStreams] = useState<Record<string, MediaStream>>({});
+  const [callPeers, setCallPeers] = useState<CallPeer[]>([]);
+  const [callMuted, setCallMuted] = useState(false);
+  const [cameraDisabled, setCameraDisabled] = useState(false);
   const [viewed, setViewed] = useState<string[]>([]);
   const recorder = useRef<MediaRecorder | null>(null);
   const mediaStream = useRef<MediaStream | null>(null);
+  const callChannel = useRef<any>(null);
+  const peerConnection = useRef<RTCPeerConnection | null>(null);
+  const groupPeerConnections = useRef<Record<string, RTCPeerConnection>>({});
+  const localCallStreamRef = useRef<MediaStream | null>(null);
+  const queuedCallIce = useRef<RTCIceCandidateInit[]>([]);
+  const queuedGroupCallIce = useRef<Record<string, RTCIceCandidateInit[]>>({});
+  const callPeersRef = useRef<CallPeer[]>([]);
+  const announcedCallIds = useRef(new Set<string>());
+  const pendingLocalCallIce = useRef<Record<string, RTCIceCandidateInit[]>>({});
+  const activeCallRef = useRef<ActiveCall | null>(null);
+  const callReadyRef = useRef(false);
+  const incomingCallRef = useRef<IncomingCall | null>(null);
+  const localCallVideo = useRef<HTMLVideoElement | null>(null);
+  const remoteCallVideo = useRef<HTMLVideoElement | null>(null);
   const chunks = useRef<Blob[]>([]);
   const messageScroll = useRef<ScrollView>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const isJoined = !!session?.user?.id;
   const isAnonymous = !!session?.user?.is_anonymous;
   const myName = session?.user?.user_metadata?.full_name || session?.user?.email?.split('@')[0] || 'Guest';
+
+  activeCallRef.current = activeCall;
+  incomingCallRef.current = incomingCall;
+  callReadyRef.current = callReady;
+  callPeersRef.current = callPeers;
+
+  useEffect(() => {
+    let alive = true;
+    setDirectPeer(null);
+    setCallReady(false);
+    setCallError('');
+    if (!supabase || !session?.user?.id || selectedRoom?.room_type !== 'direct') return () => { alive = false; };
+    void supabase.rpc('get_direct_chat_peer', { room_id_in: selectedRoom.room_id }).then(({ data, error }) => {
+      if (!alive) return;
+      const peer = Array.isArray(data) ? data[0] : null;
+      if (error) setCallError(`Calls need the latest chat database setup: ${error.message}`);
+      else if (peer?.peer_id) setDirectPeer({ id: peer.peer_id, name: peer.peer_name || selectedRoom.room_name });
+      else setCallError('Could not find the other person in this chat.');
+    });
+    return () => { alive = false; };
+  }, [session?.user?.id, selectedRoom?.room_id, selectedRoom?.room_type]);
+
+  useEffect(() => {
+    if (!supabase || !session?.user?.id || !selectedRoom || (selectedRoom.room_type === 'direct' && !directPeer)) return;
+    let alive = true;
+    const channel = supabase.channel(`chat-call:${selectedRoom.room_id}`, { config: { private: true } });
+    callChannel.current = channel;
+    channel
+      .on('broadcast', { event: 'call-offer' }, ({ payload }: any) => {
+        if (!alive || payload?.toId !== session.user.id || payload?.roomId !== selectedRoom.room_id) return;
+        if (activeCallRef.current || incomingCallRef.current) {
+          void channel.send({ type: 'broadcast', event: 'call-busy', payload: { callId: payload.callId, toId: payload.fromId, fromId: session.user.id } });
+          return;
+        }
+        setCallError('');
+        setIncomingCall(payload as IncomingCall);
+      })
+      .on('broadcast', { event: 'call-invite' }, ({ payload }: any) => {
+        if (!alive || selectedRoom.room_type !== 'group' || payload?.roomId !== selectedRoom.room_id || payload?.fromId === session.user.id) return;
+        if (activeCallRef.current || incomingCallRef.current) {
+          void channel.send({ type: 'broadcast', event: 'call-busy', payload: { callId: payload.callId, toId: payload.fromId, fromId: session.user.id } });
+          return;
+        }
+        setCallError('');
+        setIncomingCall({ ...payload, group: true } as IncomingCall);
+      })
+      .on('broadcast', { event: 'call-join' }, ({ payload }: any) => { void handleGroupJoin(payload); })
+      .on('broadcast', { event: 'call-roster' }, ({ payload }: any) => { void handleGroupRoster(payload); })
+      .on('broadcast', { event: 'group-offer' }, ({ payload }: any) => { void handleGroupOffer(payload); })
+      .on('broadcast', { event: 'group-answer' }, ({ payload }: any) => { void handleGroupAnswer(payload); })
+      .on('broadcast', { event: 'group-ice' }, ({ payload }: any) => { void handleGroupIce(payload); })
+      .on('broadcast', { event: 'call-leave' }, ({ payload }: any) => { handleGroupLeave(payload); })
+      .on('broadcast', { event: 'call-full' }, ({ payload }: any) => { if (payload?.callId === activeCallRef.current?.callId && payload?.toId === session.user.id) { endCall(false); setCallError('This room call is full. Up to six people can join.'); } })
+      .on('broadcast', { event: 'call-answer' }, async ({ payload }: any) => {
+        const active = activeCallRef.current;
+        if (!alive || !active || payload?.callId !== active.callId || !peerConnection.current) return;
+        try {
+          await peerConnection.current.setRemoteDescription(payload.answer);
+          for (const candidate of queuedCallIce.current.splice(0)) await peerConnection.current.addIceCandidate(candidate);
+          setActiveCall(current => current?.callId === active.callId ? { ...current, status: 'Connecting…' } : current);
+        } catch { setCallError('Could not establish the call. Please try again.'); }
+      })
+      .on('broadcast', { event: 'call-ice' }, async ({ payload }: any) => {
+        const active = activeCallRef.current;
+        const incoming = incomingCallRef.current;
+        if (!alive || (payload?.callId !== active?.callId && payload?.callId !== incoming?.callId)) return;
+        if (!peerConnection.current?.remoteDescription) queuedCallIce.current.push(payload.candidate);
+        else try { await peerConnection.current.addIceCandidate(payload.candidate); } catch { /* ignore stale ICE candidates */ }
+      })
+      .on('broadcast', { event: 'call-decline' }, ({ payload }: any) => {
+        if (payload?.callId === activeCallRef.current?.callId && !activeCallRef.current?.group) { endCall(false); setCallError('Call declined.'); }
+      })
+      .on('broadcast', { event: 'call-end' }, ({ payload }: any) => {
+        const active = activeCallRef.current;
+        if (payload?.callId && (payload.callId === active?.callId || payload.callId === incomingCallRef.current?.callId) && (!active?.group || payload.fromId === active.hostId)) endCall(false);
+      })
+      .on('broadcast', { event: 'call-busy' }, ({ payload }: any) => {
+        if (payload?.callId === activeCallRef.current?.callId && !activeCallRef.current?.group) { endCall(false); setCallError('They are already on another call.'); }
+      })
+      .subscribe((status: string) => {
+        if (!alive) return;
+        setCallReady(status === 'SUBSCRIBED');
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setCallError('Call connection unavailable. Check the private Realtime channel setup in Supabase.');
+      });
+    return () => {
+      alive = false;
+      setCallReady(false);
+      if (activeCallRef.current) { const call = activeCallRef.current; void channel.send({ type: 'broadcast', event: call.group && call.hostId !== session?.user?.id ? 'call-leave' : 'call-end', payload: { callId: call.callId, fromId: session?.user?.id } }); }
+      if (callChannel.current === channel) callChannel.current = null;
+      peerConnection.current?.close(); peerConnection.current = null;
+      Object.values(groupPeerConnections.current).forEach(connection => connection.close()); groupPeerConnections.current = {};
+      localCallStreamRef.current?.getTracks().forEach(track => track.stop()); localCallStreamRef.current = null;
+      setLocalCallStream(null); setRemoteCallStream(null); setGroupCallStreams({}); setCallPeers([]); setActiveCall(null); setIncomingCall(null); queuedCallIce.current = []; queuedGroupCallIce.current = {}; callPeersRef.current = [];
+      announcedCallIds.current.clear(); pendingLocalCallIce.current = {};
+      void supabase?.removeChannel(channel);
+    };
+  }, [session?.user?.id, selectedRoom?.room_id, selectedRoom?.room_type, directPeer?.id]);
+
+  useEffect(() => {
+    if (localCallVideo.current) localCallVideo.current.srcObject = localCallStream;
+    if (remoteCallVideo.current) remoteCallVideo.current.srcObject = remoteCallStream;
+  }, [localCallStream, remoteCallStream, activeCall?.mode]);
 
   const refreshRooms = useCallback(async () => {
     if (!supabase || !isJoined) return [] as ChatRoom[];
@@ -738,6 +1125,12 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   }, [isJoined]);
 
   useEffect(() => { if (isJoined) void refreshRooms(); }, [isJoined, refreshRooms]);
+
+  useEffect(() => {
+    if (!isJoined || selectedRoom || !personalChatMode || miloMode) return;
+    const refreshTimer = setInterval(() => { void refreshRooms(); }, 10000);
+    return () => clearInterval(refreshTimer);
+  }, [isJoined, selectedRoom?.room_id, personalChatMode, miloMode, refreshRooms]);
 
   useEffect(() => {
     if (!supabase || !isJoined || !session?.user?.id) return;
@@ -902,8 +1295,249 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   }
 
   function backToLobby() {
+    endCall();
     setSelectedRoom(null); setMessages([]); setReactions([]); setReplyTo(null); setDraft(''); setFile(null); setChatError(''); setRoomError(''); setRoomMembers([]); setShowRoomSettings(false); setDeleteRoomConfirm(false); setRoomNotice('');
     void refreshRooms();
+  }
+
+  async function sendCallSignal(event: string, payload: Record<string, unknown>) {
+    const channel = callChannel.current;
+    if (!channel || !callReadyRef.current) throw new Error('Call connection is still starting. Try again in a moment.');
+    const result = await channel.send({ type: 'broadcast', event, payload });
+    if (result !== 'ok') throw new Error('Could not send the call signal. Check your connection and try again.');
+  }
+
+  function endCall(notifyPeer = true) {
+    const call = activeCallRef.current;
+    if (notifyPeer && call && callChannel.current && callReadyRef.current) {
+      const event = call.group && call.hostId !== session?.user?.id ? 'call-leave' : 'call-end';
+      void callChannel.current.send({ type: 'broadcast', event, payload: { callId: call.callId, fromId: session?.user?.id } });
+    }
+    peerConnection.current?.close(); peerConnection.current = null;
+    Object.values(groupPeerConnections.current).forEach(connection => connection.close()); groupPeerConnections.current = {};
+    localCallStreamRef.current?.getTracks().forEach(track => track.stop()); localCallStreamRef.current = null;
+    setLocalCallStream(null); setRemoteCallStream(null); setGroupCallStreams({}); setCallPeers([]); setActiveCall(null); setIncomingCall(null); callPeersRef.current = [];
+    setCallMuted(false); setCameraDisabled(false); queuedCallIce.current = []; queuedGroupCallIce.current = {};
+    if (call) { announcedCallIds.current.delete(call.callId); delete pendingLocalCallIce.current[call.callId]; }
+  }
+
+  async function prepareCall(mode: CallMode, callId: string) {
+    if (Platform.OS !== 'web' || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') {
+      throw new Error('Voice and video calls are currently available in the web app.');
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' });
+    localCallStreamRef.current = stream;
+    setLocalCallStream(stream);
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    peerConnection.current = pc;
+    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+    pc.onicecandidate = event => {
+      if (!event.candidate) return;
+      const candidate = event.candidate.toJSON();
+      if (!announcedCallIds.current.has(callId)) { (pendingLocalCallIce.current[callId] ??= []).push(candidate); return; }
+      void sendCallSignal('call-ice', { callId, candidate }).catch(() => {});
+    };
+    pc.ontrack = event => {
+      let remote = event.streams[0];
+      if (!remote) { remote = new MediaStream(); remote.addTrack(event.track); }
+      setRemoteCallStream(remote);
+      setActiveCall(current => current?.callId === callId ? { ...current, status: 'Connected' } : current);
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') setActiveCall(current => current?.callId === callId ? { ...current, status: 'Connected' } : current);
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') setCallError('Call connection was lost. Try again or switch networks.');
+    };
+    return pc;
+  }
+
+  async function sendGroupSignal(event: string, payload: Record<string, unknown>) {
+    const channel = callChannel.current;
+    if (!channel || !callReadyRef.current) throw new Error('Call connection is still starting. Try again in a moment.');
+    const result = await channel.send({ type: 'broadcast', event, payload });
+    if (result !== 'ok') throw new Error('Could not send a group-call signal. Check your connection and try again.');
+  }
+
+  function rememberCallPeer(peer: CallPeer) {
+    if (peer.id === session?.user?.id) return;
+    const next = [...callPeersRef.current.filter(item => item.id !== peer.id), peer];
+    callPeersRef.current = next;
+    setCallPeers(next);
+  }
+
+  async function createGroupPeerConnection(peer: CallPeer, callId: string, makeOffer: boolean) {
+    if (groupPeerConnections.current[peer.id] || !localCallStreamRef.current || !session?.user?.id) return;
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    groupPeerConnections.current[peer.id] = pc;
+    localCallStreamRef.current.getTracks().forEach(track => pc.addTrack(track, localCallStreamRef.current!));
+    pc.onicecandidate = event => {
+      if (event.candidate) void sendGroupSignal('group-ice', { callId, fromId: session.user.id, toId: peer.id, candidate: event.candidate.toJSON() }).catch(() => {});
+    };
+    pc.ontrack = event => {
+      let stream = event.streams[0];
+      if (!stream) { stream = new MediaStream(); stream.addTrack(event.track); }
+      setGroupCallStreams(current => ({ ...current, [peer.id]: stream }));
+      setActiveCall(current => current?.callId === callId ? { ...current, status: 'Connected' } : current);
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed') setCallError(`Could not connect to ${peer.name}. Their network may block direct calls.`);
+    };
+    if (makeOffer) {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await sendGroupSignal('group-offer', { callId, fromId: session.user.id, toId: peer.id, offer: { type: pc.localDescription?.type, sdp: pc.localDescription?.sdp } });
+    }
+  }
+
+  async function handleGroupJoin(payload: any) {
+    const active = activeCallRef.current;
+    if (!active?.group || payload?.callId !== active.callId || payload?.fromId === session?.user?.id) return;
+    const peer = { id: payload.fromId as string, name: (payload.fromName as string) || 'Room member' };
+    if (callPeersRef.current.length >= 5) { void sendGroupSignal('call-full', { callId: active.callId, fromId: session.user.id, toId: peer.id }); return; }
+    rememberCallPeer(peer);
+    try {
+      await sendGroupSignal('call-roster', { callId: active.callId, toId: peer.id, peers: [{ id: session.user.id, name: myName }, ...callPeersRef.current] });
+      if (session.user.id < peer.id) await createGroupPeerConnection(peer, active.callId, true);
+    } catch (error: any) { setCallError(error?.message || 'Could not connect this room member.'); }
+  }
+
+  async function handleGroupRoster(payload: any) {
+    const active = activeCallRef.current;
+    if (!active?.group || payload?.callId !== active.callId || payload?.toId !== session?.user?.id || !Array.isArray(payload?.peers)) return;
+    try {
+      for (const peer of payload.peers as CallPeer[]) {
+        if (!peer?.id || peer.id === session.user.id) continue;
+        rememberCallPeer(peer);
+        if (session.user.id < peer.id) await createGroupPeerConnection(peer, active.callId, true);
+      }
+    } catch (error: any) { setCallError(error?.message || 'Could not connect to the room call.'); }
+  }
+
+  async function handleGroupOffer(payload: any) {
+    const active = activeCallRef.current;
+    if (!active?.group || payload?.callId !== active.callId || payload?.toId !== session?.user?.id || !payload?.fromId) return;
+    const peer = callPeersRef.current.find(item => item.id === payload.fromId) || { id: payload.fromId, name: 'Room member' };
+    try {
+      if (!groupPeerConnections.current[peer.id]) await createGroupPeerConnection(peer, active.callId, false);
+      const pc = groupPeerConnections.current[peer.id];
+      await pc.setRemoteDescription(payload.offer);
+      for (const candidate of queuedGroupCallIce.current[peer.id] ?? []) await pc.addIceCandidate(candidate);
+      delete queuedGroupCallIce.current[peer.id];
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await sendGroupSignal('group-answer', { callId: active.callId, fromId: session.user.id, toId: peer.id, answer: { type: pc.localDescription?.type, sdp: pc.localDescription?.sdp } });
+    } catch (error: any) { setCallError(error?.message || `Could not answer ${peer.name}.`); }
+  }
+
+  async function handleGroupAnswer(payload: any) {
+    const active = activeCallRef.current;
+    const pc = payload?.fromId ? groupPeerConnections.current[payload.fromId] : null;
+    if (!active?.group || payload?.callId !== active.callId || payload?.toId !== session?.user?.id || !pc) return;
+    try {
+      await pc.setRemoteDescription(payload.answer);
+      for (const candidate of queuedGroupCallIce.current[payload.fromId] ?? []) await pc.addIceCandidate(candidate);
+      delete queuedGroupCallIce.current[payload.fromId];
+    } catch { setCallError('Could not finish connecting a room member.'); }
+  }
+
+  async function handleGroupIce(payload: any) {
+    const active = activeCallRef.current;
+    if (!active?.group || payload?.callId !== active.callId || payload?.toId !== session?.user?.id || !payload?.fromId) return;
+    const pc = groupPeerConnections.current[payload.fromId];
+    if (!pc?.remoteDescription) { (queuedGroupCallIce.current[payload.fromId] ??= []).push(payload.candidate); return; }
+    try { await pc.addIceCandidate(payload.candidate); } catch { /* ignore stale ICE candidates */ }
+  }
+
+  function handleGroupLeave(payload: any) {
+    const active = activeCallRef.current;
+    if (!active?.group || payload?.callId !== active.callId || !payload?.fromId) return;
+    groupPeerConnections.current[payload.fromId]?.close();
+    delete groupPeerConnections.current[payload.fromId];
+    delete queuedGroupCallIce.current[payload.fromId];
+    setGroupCallStreams(current => { const next = { ...current }; delete next[payload.fromId]; return next; });
+    const next = callPeersRef.current.filter(peer => peer.id !== payload.fromId);
+    callPeersRef.current = next; setCallPeers(next);
+  }
+
+  async function prepareGroupCallMedia(mode: CallMode) {
+    if (Platform.OS !== 'web' || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) throw new Error('Group calls are currently available in the web app.');
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' });
+    localCallStreamRef.current = stream;
+    setLocalCallStream(stream);
+  }
+
+  async function startGroupCall(mode: CallMode) {
+    if (!selectedRoom || selectedRoom.room_type !== 'group' || !session?.user?.id || !callReady || activeCallRef.current || incomingCallRef.current) return;
+    setCallError('');
+    const callId = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setActiveCall({ callId, peerId: '', peerName: selectedRoom.room_name, mode, direction: 'outgoing', status: 'Inviting room members…', group: true, hostId: session.user.id });
+    try {
+      await prepareGroupCallMedia(mode);
+      await sendGroupSignal('call-invite', { callId, roomId: selectedRoom.room_id, fromId: session.user.id, fromName: myName, mode, group: true });
+      setActiveCall(current => current?.callId === callId ? { ...current, status: 'Waiting for members…' } : current);
+    } catch (error: any) { endCall(false); setCallError(error?.message || 'Could not start the group call.'); }
+  }
+
+  async function startCall(mode: CallMode) {
+    if (selectedRoom?.room_type === 'group') { await startGroupCall(mode); return; }
+    if (!directPeer || selectedRoom?.room_type !== 'direct' || !session?.user?.id || !callReady || activeCallRef.current || incomingCallRef.current) return;
+    setCallError('');
+    const callId = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setActiveCall({ callId, peerId: directPeer.id, peerName: directPeer.name, mode, direction: 'outgoing', status: 'Calling…', group: false, hostId: session.user.id });
+    try {
+      const pc = await prepareCall(mode, callId);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await sendCallSignal('call-offer', { callId, roomId: selectedRoom.room_id, fromId: session.user.id, fromName: myName, toId: directPeer.id, mode, offer: { type: pc.localDescription?.type, sdp: pc.localDescription?.sdp } });
+      announcedCallIds.current.add(callId);
+      for (const candidate of pendingLocalCallIce.current[callId] ?? []) await sendCallSignal('call-ice', { callId, candidate });
+      delete pendingLocalCallIce.current[callId];
+    } catch (error: any) {
+      endCall(false);
+      setCallError(error?.message || 'Could not start the call. Check microphone and camera permissions.');
+    }
+  }
+
+  async function acceptCall() {
+    const invitation = incomingCallRef.current;
+    if (!invitation) return;
+    setIncomingCall(null);
+    setActiveCall({ callId: invitation.callId, peerId: invitation.fromId, peerName: invitation.fromName, mode: invitation.mode, direction: 'incoming', status: invitation.group ? 'Joining room call…' : 'Connecting…', group: !!invitation.group, hostId: invitation.fromId });
+    try {
+      if (invitation.group) {
+        await prepareGroupCallMedia(invitation.mode);
+        setCallPeers([{ id: invitation.fromId, name: invitation.fromName }]);
+        await sendGroupSignal('call-join', { callId: invitation.callId, roomId: invitation.roomId, fromId: session.user.id, fromName: myName });
+        return;
+      }
+      const pc = await prepareCall(invitation.mode, invitation.callId);
+      if (!invitation.offer) throw new Error('The call invitation is incomplete. Ask them to call again.');
+      await pc.setRemoteDescription(invitation.offer);
+      for (const candidate of queuedCallIce.current.splice(0)) await pc.addIceCandidate(candidate);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await sendCallSignal('call-answer', { callId: invitation.callId, answer: { type: pc.localDescription?.type, sdp: pc.localDescription?.sdp } });
+    } catch (error: any) {
+      endCall(false);
+      setCallError(error?.message || 'Could not answer the call. Check microphone and camera permissions.');
+    }
+  }
+
+  function declineCall() {
+    const invitation = incomingCallRef.current;
+    if (invitation && callChannel.current) void callChannel.current.send({ type: 'broadcast', event: 'call-decline', payload: { callId: invitation.callId } });
+    setIncomingCall(null);
+  }
+
+  function toggleCallMute() {
+    const next = !callMuted;
+    localCallStreamRef.current?.getAudioTracks().forEach(track => { track.enabled = !next; });
+    setCallMuted(next);
+  }
+
+  function toggleCallCamera() {
+    const next = !cameraDisabled;
+    localCallStreamRef.current?.getVideoTracks().forEach(track => { track.enabled = !next; });
+    setCameraDisabled(next);
   }
 
   useEffect(() => {
@@ -1084,16 +1718,25 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
   if (!supabase) return <View style={styles.card}><Text style={styles.sectionTitle}>Team chat</Text><Text style={styles.muted}>Shared chat needs Supabase configured. Set up the chat schema and media function using the README instructions.</Text></View>;
 
   return <View style={styles.chatCard}>
-    <View style={styles.chatHeading}><View style={styles.chatAvatar}><Text style={styles.chatAvatarText}>{miloMode ? '🐱' : '✦'}</Text></View><View style={{ flex: 1 }}><Text style={styles.sectionTitle}>{miloMode ? 'Ask Milo' : selectedRoom?.room_name ?? (isJoined ? 'Chat Lobby' : 'Office chat')}</Text><Text style={styles.chatPresence}>{miloMode ? 'Answers grounded in the company HR policy' : selectedRoom ? `${selectedRoom.member_count} members · private group · live` : 'Find a group or create your own'}</Text></View>{selectedRoom ? <Pressable onPress={backToLobby}><Text style={styles.link}>← Lobby</Text></Pressable> : <Text style={styles.onlineBadge}>{miloMode ? 'POLICY AI' : '● LIVE'}</Text>}</View>
-    {isJoined && !selectedRoom && <View style={styles.miloModeRow}><Pressable onPress={() => setMiloMode(false)} style={[styles.miloModeButton, !miloMode && styles.miloModeSelected]}><Text style={[styles.miloModeText, !miloMode && styles.miloModeTextSelected]}>Team chat</Text></Pressable><Pressable onPress={() => setMiloMode(true)} style={[styles.miloModeButton, miloMode && styles.miloModeSelected]}><Text style={[styles.miloModeText, miloMode && styles.miloModeTextSelected]}>Ask Milo 🐱</Text></Pressable></View>}
+    <View style={styles.chatHeading}><View style={styles.chatAvatar}><Text style={styles.chatAvatarText}>{miloMode ? '🐱' : '✦'}</Text></View><View style={{ flex: 1 }}><Text style={styles.sectionTitle}>{miloMode ? 'Ask Milo' : selectedRoom?.room_name ?? (isJoined ? personalChatMode ? 'Personal chat' : 'Chat Lobby' : 'Office chat')}</Text><Text style={styles.chatPresence}>{miloMode ? 'Answers grounded in the company HR policy' : selectedRoom ? `${selectedRoom.member_count} members · ${selectedRoom.room_type === 'direct' ? 'personal chat' : 'private group'} · live` : personalChatMode ? 'Start or open a personal conversation' : 'Find a group or create your own'}</Text></View>{!!selectedRoom && <View style={styles.callActions}><Pressable accessibilityRole="button" accessibilityLabel={selectedRoom?.room_type === 'group' ? 'Start group voice call' : 'Start voice call'} disabled={!callReady || !!activeCall || !!incomingCall} onPress={() => void startCall('voice')} style={[styles.callButton, (!callReady || !!activeCall || !!incomingCall) && styles.dim]}><Text style={styles.callButtonText}>☎</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={selectedRoom?.room_type === 'group' ? 'Start group video call' : 'Start video call'} disabled={!callReady || !!activeCall || !!incomingCall} onPress={() => void startCall('video')} style={[styles.callButton, (!callReady || !!activeCall || !!incomingCall) && styles.dim]}><Text style={styles.callButtonText}>▣</Text></Pressable></View>}{selectedRoom ? <Pressable onPress={backToLobby}><Text style={styles.link}>← Lobby</Text></Pressable> : <Text style={styles.onlineBadge}>{miloMode ? 'POLICY AI' : '● LIVE'}</Text>}</View>
+    {isJoined && !selectedRoom && <>
+      <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Browsing as {myName}{isAnonymous ? ' · guest' : ''}</Text>{!!myUsername && <Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800', marginTop: 4 }}>{isAnonymous ? 'Share this easy username: ' : 'Your username: '}@{myUsername}</Text>}</View>
+      <View style={styles.miloModeRow}>
+        <Pressable onPress={() => { setMiloMode(false); setPersonalChatMode(false); }} style={[styles.miloModeButton, !miloMode && !personalChatMode && styles.miloModeSelected]}><Text style={[styles.miloModeText, !miloMode && !personalChatMode && styles.miloModeTextSelected]}>Team chat</Text></Pressable>
+        <Pressable onPress={() => { setMiloMode(false); setPersonalChatMode(true); }} style={[styles.miloModeButton, !miloMode && personalChatMode && styles.miloModeSelected]}><Text style={[styles.miloModeText, !miloMode && personalChatMode && styles.miloModeTextSelected]}>Personal chat</Text></Pressable>
+        <Pressable onPress={() => { setMiloMode(true); setPersonalChatMode(false); }} style={[styles.miloModeButton, miloMode && styles.miloModeSelected]}><Text style={[styles.miloModeText, miloMode && styles.miloModeTextSelected]}>Ask Milo 🐱</Text></Pressable>
+      </View>
+    </>}
     {!!roomError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{roomError}</Text>}
     {!!roomNotice && <Text style={{ color: '#15803D', fontSize: 12, lineHeight: 18 }}>{roomNotice}</Text>}
     {!!chatError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{chatError}</Text>}
-    {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Enter the chat lobby</Text><Text style={styles.muted}>Set a display name to browse groups. You’ll need a room password to enter private groups.</Text><TextInput style={styles.input} value={displayName} onChangeText={value => { setDisplayName(value); setJoinError(''); }} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary, joining && styles.dim]} disabled={!displayName.trim() || joining} onPress={() => { setJoining(true); setJoinError(''); void onJoin(displayName.trim()).then(message => setJoinError(message ?? '')).catch(error => setJoinError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.')).finally(() => setJoining(false)); }}><Text style={styles.actionText}>{joining ? 'Please wait…' : 'Enter chat lobby'}</Text></Pressable>{!!joinError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{joinError}</Text>}</View> : miloMode ? <MiloPolicyAssistant session={session} /> : !selectedRoom ? <>
-      <View style={styles.chatIdentity}><Text style={styles.chatIdentityText}>Browsing as {myName}{isAnonymous ? ' · guest' : ''}</Text>{!!myUsername && <Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800', marginTop: 4 }}>{isAnonymous ? 'Share this easy username: ' : 'Your username: '}@{myUsername}</Text>}</View>
-      {!isAnonymous && <View style={{ gap: 8, padding: 12, backgroundColor: '#EFF6FF', borderRadius: 14 }}><Text style={styles.chatWelcome}>Start a personal chat</Text><Text style={styles.chatPresence}>Enter someone’s username to open your private conversation.</Text><View style={{ flexDirection: 'row', gap: 8 }}><TextInput style={[styles.input, { flex: 1 }]} value={directUsername} onChangeText={setDirectUsername} placeholder="Username" autoCapitalize="none" autoCorrect={false} onSubmitEditing={() => void startDirectChat()}/><Pressable disabled={roomBusy || !directUsername.trim()} onPress={() => void startDirectChat()} style={[styles.action, styles.primary, (roomBusy || !directUsername.trim()) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Opening…' : 'Chat'}</Text></Pressable></View>
+    {!!callError && <Text accessibilityRole="alert" style={styles.callError}>{callError}</Text>}
+    {!!selectedRoom && <Text style={styles.callHint}>{callReady ? `Voice and video calls ready · ${selectedRoom.room_type === 'group' ? 'the room will be invited' : 'personal chat'}` : 'Connecting call service…'} · Allow microphone/camera access when your browser asks.</Text>}
+    {!isJoined ? <View style={styles.chatJoin}><Text style={styles.chatWelcome}>Enter the chat lobby</Text><Text style={styles.muted}>Set a display name to browse groups. You’ll need a room password to enter private groups.</Text><TextInput style={styles.input} value={displayName} onChangeText={value => { setDisplayName(value); setJoinError(''); }} placeholder="Your name" maxLength={40} /><Pressable style={[styles.action, styles.primary, joining && styles.dim]} disabled={!displayName.trim() || joining} onPress={() => { setJoining(true); setJoinError(''); void onJoin(displayName.trim()).then(message => setJoinError(message ?? '')).catch(error => setJoinError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.')).finally(() => setJoining(false)); }}><Text style={styles.actionText}>{joining ? 'Please wait…' : 'Enter chat lobby'}</Text></Pressable>{!!joinError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{joinError}</Text>}</View> : miloMode ? <MiloPolicyAssistant session={session} /> : !selectedRoom && personalChatMode ? <>
+      <View style={{ gap: 8, padding: 12, backgroundColor: '#EFF6FF', borderRadius: 14 }}><Text style={styles.chatWelcome}>Start a personal chat</Text><Text style={styles.chatPresence}>Enter someone’s OfficeTime username to open your private conversation. Guests can chat and call using their shared username too.</Text><View style={{ flexDirection: 'row', gap: 8 }}><TextInput style={[styles.input, { flex: 1 }]} value={directUsername} onChangeText={setDirectUsername} placeholder="Username" autoCapitalize="none" autoCorrect={false} onSubmitEditing={() => void startDirectChat()}/><Pressable disabled={roomBusy || !directUsername.trim()} onPress={() => void startDirectChat()} style={[styles.action, styles.primary, (roomBusy || !directUsername.trim()) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Opening…' : 'Chat'}</Text></Pressable></View>
         {directChats.length > 0 && <View style={{ gap: 6, marginTop: 5 }}><Text style={styles.historyTitle}>Your personal chats</Text>{directChats.map(chat => <Pressable key={chat.room_id} onPress={() => setSelectedRoom({ room_id: chat.room_id, room_name: chat.room_name, creator_name: chat.peer_username, created_at: chat.created_at, member_count: 2, password_protected: false, joined: true, is_creator: false, room_type: 'direct' })} style={{ padding: 9, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderRadius: 10 }}><Text style={styles.historyTitle}>{chat.room_name}</Text><Text style={styles.chatPresence}>@{chat.peer_username}</Text></Pressable>)}</View>}
-      </View>}
+      </View>
+    </> : !selectedRoom ? <>
       <Pressable onPress={() => { setShowCreateRoom(value => !value); setRoomError(''); }} style={[styles.action, styles.primary]}><Text style={styles.actionText}>{showCreateRoom ? 'Cancel room creation' : '+ Create a chat room'}</Text></Pressable>
       {showCreateRoom && <View style={{ gap: 9, padding: 12, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 14 }}><Text style={styles.chatWelcome}>Create a private group</Text><TextInput style={styles.input} value={roomName} onChangeText={setRoomName} placeholder="Room name" maxLength={50}/><TextInput style={styles.input} value={roomPassword} onChangeText={setRoomPassword} placeholder="Create a password (4+ characters)" secureTextEntry maxLength={72}/><Pressable disabled={roomBusy || !roomName.trim() || roomPassword.length < 4} onPress={() => void createRoom()} style={[styles.action, styles.primary, (roomBusy || !roomName.trim() || roomPassword.length < 4) && styles.dim]}><Text style={styles.actionText}>{roomBusy ? 'Creating…' : 'Create room'}</Text></Pressable></View>}
       <View style={{ gap: 9 }}><Text style={styles.chatWelcome}>Available groups</Text>{roomsLoading && rooms.length === 0 ? <Text style={styles.muted}>Loading groups…</Text> : rooms.map(room => <View key={room.room_id} style={{ gap: 8, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: '#FFFFFF' }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><View style={{ flex: 1 }}><Text style={styles.historyTitle}>{room.room_name}</Text><Text style={styles.chatPresence}>{room.creator_name} · {room.member_count} {room.member_count === 1 ? 'member' : 'members'} · {room.password_protected ? '🔒 Password protected' : 'Open room'}</Text></View>{room.joined && <Text style={styles.onlineBadge}>JOINED</Text>}</View>{room.joined ? <Pressable onPress={() => void enterRoom(room)} style={[styles.action, styles.primary]}><Text style={styles.actionText}>Enter room</Text></Pressable> : joinRoomId === room.room_id ? null : <Pressable onPress={() => { setJoinRoomId(room.room_id); setJoinPassword(''); setRoomError(''); }} style={styles.outlineButton}><Text style={styles.outlineText}>{room.password_protected ? 'Enter password' : 'Join room'}</Text></Pressable>}{!room.joined && joinRoomId === room.room_id && <View style={{ gap: 8 }}>{room.password_protected && <TextInput style={[styles.input, { width: '100%' }]} value={joinPassword} onChangeText={setJoinPassword} placeholder="Room password" secureTextEntry returnKeyType="go" onSubmitEditing={() => void enterRoom(room, joinPassword)}/>}<View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}><Pressable accessibilityRole="button" accessibilityLabel="Cancel joining lobby" onPress={() => { setJoinRoomId(null); setJoinPassword(''); }} hitSlop={8}><Text style={styles.link}>Cancel</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={room.password_protected ? 'Enter lobby' : 'Join lobby'} disabled={roomBusy || (room.password_protected && !joinPassword)} onPress={() => void enterRoom(room, joinPassword)} style={[styles.lobbySubmit, (roomBusy || (room.password_protected && !joinPassword)) && styles.dim]}><Text style={styles.lobbySubmitText}>{roomBusy ? '…' : '✓'}</Text></Pressable></View></View>}</View>)}</View>
@@ -1135,6 +1778,18 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       {file?.type.startsWith('image/') && <Pressable onPress={() => setViewOnce(value => !value)} style={styles.onceToggle}><Text style={styles.onceCheckbox}>{viewOnce ? '✓' : ''}</Text><Text style={styles.onceText}>View once (each person can open this photo once)</Text></Pressable>}
       <View style={styles.chatComposer}>{!!replyTo && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#EFF6FF', borderRadius: 10, padding: 9 }}><View style={{ flex: 1 }}><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800' }}>Replying to {replyTo.sender_name}</Text><Text numberOfLines={1} style={styles.muted}>{replyTo.body || (replyTo.media_type ? `${replyTo.media_type} attachment` : '')}</Text></View><Pressable accessibilityLabel="Cancel reply" onPress={() => setReplyTo(null)}><Text style={styles.link}>×</Text></Pressable></View>}<View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>{QUICK_EMOJIS.map(emoji => <Pressable key={emoji} accessibilityLabel={`Insert ${emoji}`} onPress={() => setDraft(current => `${current}${emoji}`)} style={{ paddingHorizontal: 5, paddingVertical: 3 }}><Text style={{ fontSize: 18 }}>{emoji}</Text></Pressable>)}</View><View style={styles.chatTools}><Pressable accessibilityLabel="Add photo or video" onPress={chooseFile} style={styles.chatTool}><Text style={styles.chatToolText}>＋ Media</Text></Pressable><Pressable accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice message'} onPress={recording ? stopVoiceRecording : () => void startVoiceRecording()} style={[styles.chatTool, recording && styles.recordingTool]}><Text style={[styles.chatToolText, recording && styles.recordingText]}>{recording ? '■ Stop' : '● Voice'}</Text></Pressable></View>{Platform.OS === 'web' && <input ref={fileInput} type="file" accept="image/*,video/*" onChange={handleFileSelection} aria-label="Choose a photo or video" style={{ position: 'fixed', width: 1, height: 1, opacity: 0, overflow: 'hidden', left: -100, bottom: 0 }} />}<View style={styles.chatInputRow}><TextInput style={styles.chatInput} multiline maxLength={1000} value={draft} onChangeText={setDraft} placeholder="Message the team…"/><Pressable accessibilityLabel="Send message" disabled={sending || (!draft.trim() && !file)} onPress={() => void sendMessage()} style={[styles.sendButton, (sending || (!draft.trim() && !file)) && styles.dim]}><Text style={styles.sendButtonText}>{sending ? '…' : '↑'}</Text></Pressable></View></View>
     </>}
+    <Modal visible={!!incomingCall} transparent animationType="fade" onRequestClose={declineCall}><View style={styles.mediaOverlay}><View style={styles.callModal}><View style={styles.callAvatar}><Text style={styles.callAvatarText}>{incomingCall?.mode === 'video' ? '▣' : '☎'}</Text></View><Text style={styles.sectionTitle}>{incomingCall?.mode === 'video' ? 'Incoming video call' : 'Incoming voice call'}</Text><Text style={styles.muted}>{incomingCall?.group ? `${incomingCall.fromName} started a group call in ${selectedRoom?.room_name ?? 'this room'}.` : `${incomingCall?.fromName || 'Someone'} is calling you.`}</Text><View style={styles.callModalActions}><Pressable accessibilityRole="button" onPress={declineCall} style={[styles.callControl, styles.callDecline]}><Text style={styles.callControlText}>Decline</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void acceptCall()} style={[styles.callControl, styles.callAccept]}><Text style={styles.callControlText}>Accept</Text></Pressable></View></View></View></Modal>
+    <Modal visible={!!activeCall} transparent animationType="fade" onRequestClose={() => endCall()}><View style={styles.mediaOverlay}><View style={styles.callModal}>
+      <View style={styles.cardHeading}><Text style={styles.sectionTitle}>{activeCall?.group ? `${selectedRoom?.room_name ?? 'Room'} call` : activeCall?.mode === 'video' ? 'Video call' : 'Voice call'}</Text><Text style={styles.onlineBadge}>{activeCall?.status.toUpperCase()}</Text></View>
+      <Text style={styles.muted}>{activeCall?.group ? `${callPeers.length + 1} participant${callPeers.length === 0 ? '' : 's'} · ${activeCall?.mode === 'video' ? 'video' : 'voice'}` : activeCall?.direction === 'outgoing' ? `Calling ${activeCall.peerName}…` : `With ${activeCall?.peerName}`}</Text>
+      {Platform.OS === 'web' && activeCall?.mode === 'video' ? <View style={[styles.callVideoStage, activeCall.group && styles.groupCallVideoStage]}>
+        <View style={[styles.callVideoTile, activeCall.group && styles.groupCallVideoTile]}>{React.createElement('video', { ref: (node: HTMLVideoElement | null) => { localCallVideo.current = node; if (node) node.srcObject = localCallStream; }, autoPlay: true, muted: true, playsInline: true, style: { width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)', background: '#0F172A' } })}<Text style={styles.callVideoLabel}>You{cameraDisabled ? ' · camera off' : ''}</Text></View>
+        {activeCall.group ? Object.entries(groupCallStreams).map(([peerId, stream]) => { const peer = callPeers.find(item => item.id === peerId); return <View key={peerId} style={[styles.callVideoTile, activeCall.group && styles.groupCallVideoTile]}>{React.createElement('video', { ref: (node: HTMLVideoElement | null) => { if (node) node.srcObject = stream; }, autoPlay: true, playsInline: true, style: { width: '100%', height: '100%', objectFit: 'cover', background: '#0F172A' } })}<Text style={styles.callVideoLabel}>{peer?.name ?? 'Room member'}</Text></View>; }) : <View style={[styles.callVideoTile, activeCall.group && styles.groupCallVideoTile]}>{React.createElement('video', { ref: (node: HTMLVideoElement | null) => { remoteCallVideo.current = node; if (node) node.srcObject = remoteCallStream; }, autoPlay: true, playsInline: true, style: { width: '100%', height: '100%', objectFit: 'cover', background: '#0F172A' } })}{!remoteCallStream && <Text style={styles.callVideoWaiting}>Waiting for video…</Text>}<Text style={styles.callVideoLabel}>{activeCall.peerName}</Text></View>}
+        {activeCall.group && Object.keys(groupCallStreams).length === 0 && <Text style={styles.callVideoWaiting}>Waiting for room members…</Text>}
+      </View> : <View style={styles.callVoiceStage}><View style={styles.callAvatar}><Text style={styles.callAvatarText}>{activeCall?.group ? '👥' : '☎'}</Text></View><Text style={styles.callPeerName}>{activeCall?.group ? selectedRoom?.room_name : activeCall?.peerName}</Text><Text style={styles.muted}>{activeCall?.group ? callPeers.map(peer => peer.name).join(' · ') || 'Waiting for members to join' : activeCall?.status}</Text></View>}
+      {Platform.OS === 'web' && activeCall?.mode === 'voice' && (activeCall.group ? Object.entries(groupCallStreams).map(([peerId, stream]) => React.createElement('video', { key: peerId, ref: (node: HTMLVideoElement | null) => { if (node) node.srcObject = stream; }, autoPlay: true, playsInline: true, style: { display: 'none' } })) : React.createElement('video', { ref: (node: HTMLVideoElement | null) => { remoteCallVideo.current = node; if (node) node.srcObject = remoteCallStream; }, autoPlay: true, playsInline: true, style: { display: 'none' } }))}
+      <View style={styles.callModalActions}><Pressable accessibilityRole="button" onPress={toggleCallMute} style={[styles.callControl, callMuted && styles.callControlMuted]}><Text style={styles.callControlText}>{callMuted ? 'Unmute' : 'Mute'}</Text></Pressable>{activeCall?.mode === 'video' && <Pressable accessibilityRole="button" onPress={toggleCallCamera} style={[styles.callControl, cameraDisabled && styles.callControlMuted]}><Text style={styles.callControlText}>{cameraDisabled ? 'Camera on' : 'Camera off'}</Text></Pressable>}<Pressable accessibilityRole="button" onPress={() => endCall()} style={[styles.callControl, styles.callDecline]}><Text style={styles.callControlText}>{activeCall?.group && activeCall.hostId !== session?.user?.id ? 'Leave call' : 'End call'}</Text></Pressable></View>
+    </View></View></Modal>
     <Modal visible={!!mediaView} transparent animationType="fade" onRequestClose={() => setMediaView(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{mediaView?.once ? 'View-once photo' : 'Shared media'}</Text><Pressable onPress={() => setMediaView(null)}><Text style={styles.link}>Close</Text></Pressable></View>{mediaView?.type === 'image' ? <Image source={{ uri: mediaView.url }} resizeMode="contain" style={styles.mediaImage}/> : Platform.OS === 'web' && mediaView ? React.createElement(mediaView.type === 'video' ? 'video' : 'audio', { src: mediaView.url, controls: true, playsInline: true, style: { width: '100%', maxHeight: 420 } }) : <Text style={styles.muted}>Open this media in the web app to play it.</Text>}{mediaView?.once && <Text style={styles.onceFootnote}>This view is now used. Close this window to hide the photo.</Text>}</View></View></Modal>
     <Modal visible={!!deleteAllTarget} transparent animationType="fade" onRequestClose={() => setDeleteAllTarget(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><Text style={styles.sectionTitle}>{deleteAllTarget?.sender_id === session?.user?.id ? 'Delete for everyone?' : 'Remove this message?'}</Text><Text style={styles.muted}>{deleteAllTarget?.sender_id === session?.user?.id ? 'This removes your message from the shared chat for all participants.' : 'As the room creator, you can remove this message for everyone in the room.'}</Text><View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}><Pressable style={styles.outlineButton} onPress={() => setDeleteAllTarget(null)}><Text style={styles.outlineText}>Cancel</Text></Pressable><Pressable disabled={!!deletingId} onPress={() => deleteAllTarget && void deleteForEveryone(deleteAllTarget)} style={[styles.action, { backgroundColor: '#B91C1C', paddingHorizontal: 14 }]}><Text style={styles.actionText}>{deletingId === deleteAllTarget?.id ? 'Deleting…' : 'Remove for everyone'}</Text></Pressable></View></View></View></Modal>
   </View>;
@@ -2138,7 +2793,7 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background }, ambienceLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden', zIndex: 0 }, correctionOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.58)', alignItems: 'center', justifyContent: 'center', padding: 12 }, correctionModal: { width: '100%', maxWidth: 620, height: '92%', maxHeight: 780, backgroundColor: colors.card, borderRadius: 18, padding: 15, gap: 12, overflow: 'hidden' }, correctionScroll: { flex: 1, minHeight: 0 }, correctionContent: { gap: 12, paddingBottom: 8 }, correctionRow: { gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }, correctionFields: { flexDirection: 'row', gap: 8 }, sessionBreakEditor: { gap: 6, backgroundColor: '#F8FAFC', padding: 9, borderRadius: 10 }, sessionBreakFields: { flexDirection: 'row', gap: 8 }, sessionBreakField: { flex: 1, gap: 4 }, correctionFooter: { flexShrink: 0, paddingTop: 2, backgroundColor: colors.card }, correctionSave: { flex: 0, alignSelf: 'stretch', height: 46, justifyContent: 'center' }, passingLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, overflow: 'hidden' }, fallLayer: { position: 'absolute', top: -36, left: 0, right: 0, bottom: 0, zIndex: 51, overflow: 'hidden' }, spiderThread: { position: 'absolute', top: 0, width: 2, backgroundColor: '#E2E8F0', opacity: 0.95, transformOrigin: 'top center' }, fallingSpider: { position: 'absolute', top: 0 }, passingGif: { position: 'absolute', top: '42%', left: 0 }, ambientGlow: { position: 'absolute', width: 260, height: 260, borderRadius: 140, opacity: 0.16 }, glowBlue: { top: '18%', left: -140, backgroundColor: '#BFDBFE' }, glowMint: { top: '54%', right: -145, backgroundColor: '#A7F3D0' }, floatPaw: { position: 'absolute', fontSize: 21, opacity: 0.15 }, floatPawOne: { top: '26%', left: '12%' }, floatPawTwo: { top: '66%', right: '14%' }, firefly: { position: 'absolute', color: '#F59E0B', fontSize: 23, fontWeight: '900' }, fireflyOne: { top: '38%', right: '23%' }, fireflyTwo: { top: '72%', left: '28%' }, runningPawTrail: { position: 'absolute', left: 0, bottom: 14, fontSize: 22, color: '#60A5FA', opacity: 0.25 }, spiderWeb: { position: 'absolute', width: 142, height: 142, top: -42, right: -42, borderRadius: 100 }, webRing: { position: 'absolute', borderWidth: 1, borderColor: '#60A5FA', borderRadius: 100 }, webRingOuter: { width: 128, height: 128, left: 7, top: 7 }, webRingMiddle: { width: 88, height: 88, left: 27, top: 27 }, webRingInner: { width: 48, height: 48, left: 47, top: 47 }, webSpoke: { position: 'absolute', width: 124, height: 1, top: 70, left: 70, backgroundColor: '#60A5FA' }, webSpider: { position: 'absolute', left: 57, top: 55, fontSize: 18 }, ambientRunner: { position: 'absolute', left: 0, bottom: 13, fontSize: 28, opacity: 0.38 }, page: { width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 38, gap: 16 }, center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   catScene: { height: 88, width: '100%', borderRadius: 18, overflow: 'hidden', backgroundColor: '#DFF4F3', borderWidth: 1, borderColor: '#C5E8E5' }, catSun: { position: 'absolute', right: 24, top: 13, width: 25, height: 25, borderRadius: 20, backgroundColor: '#FDE68A' }, catCloud: { position: 'absolute', right: 56, top: 9, fontSize: 15, opacity: 0.75 }, catTitle: { position: 'absolute', left: 13, top: 12, color: '#0F766E', fontSize: 8, fontWeight: '900', letterSpacing: 1.1 }, catCaption: { position: 'absolute', left: 13, top: 26, color: '#365F66', fontSize: 11, fontWeight: '700' }, catHorizon: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, backgroundColor: '#A7D9AC' }, catGrassLeft: { position: 'absolute', left: '30%', bottom: 8, height: 13, width: 55, borderTopLeftRadius: 35, borderTopRightRadius: 20, backgroundColor: '#86C694', transform: [{ rotate: '-5deg' }] }, catGrassRight: { position: 'absolute', right: '8%', bottom: 6, height: 16, width: 70, borderTopLeftRadius: 40, borderTopRightRadius: 25, backgroundColor: '#8BCB9A', transform: [{ rotate: '4deg' }] }, catPaws: { position: 'absolute', left: '42%', bottom: 13, fontSize: 11, letterSpacing: 4 }, walkingCat: { position: 'absolute', left: 0, bottom: 7 }, catEmoji: { fontSize: 31, lineHeight: 37 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 7 }, eyebrow: { color: colors.blue, fontSize: 10, fontWeight: '800', letterSpacing: 1.5 }, title: { color: colors.text, fontSize: 30, fontWeight: '800', marginTop: 4 }, subtitle: { color: colors.muted, fontSize: 14, marginTop: 4, lineHeight: 20 }, avatar: { width: 48, height: 48, borderRadius: 16, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center' }, avatarLarge: { width: 56, height: 56, borderRadius: 18, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center', alignSelf: 'center' }, avatarText: { color: colors.blue, fontWeight: '800', fontSize: 17 },
-  connection: { backgroundColor: '#F0FDF4', padding: 11, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }, offline: { backgroundColor: '#FFFBEB' }, dot: { width: 7, height: 7, borderRadius: 5 }, connectionText: { fontSize: 11, color: colors.muted, flex: 1 }, link: { color: colors.blue, fontWeight: '700', fontSize: 12 }, tabs: { flexDirection: 'row', gap: 8, backgroundColor: '#E9EEF5', padding: 4, borderRadius: 14 }, tab: { flex: 1, paddingVertical: 10, borderRadius: 11, alignItems: 'center' }, tabActive: { backgroundColor: '#FFFFFF', elevation: 1 }, tabText: { fontSize: 13, fontWeight: '700', color: colors.muted }, tabTextActive: { color: colors.text },
+  connection: { backgroundColor: '#F0FDF4', padding: 11, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }, offline: { backgroundColor: '#FFFBEB' }, dot: { width: 7, height: 7, borderRadius: 5 }, connectionText: { fontSize: 11, color: colors.muted, flex: 1 }, link: { color: colors.blue, fontWeight: '700', fontSize: 12 }, tabs: { flexDirection: 'row', gap: 5, backgroundColor: '#E9EEF5', padding: 4, borderRadius: 14 }, tab: { width: 75, flexGrow: 0, paddingVertical: 10, borderRadius: 11, alignItems: 'center' }, tabActive: { backgroundColor: '#FFFFFF', elevation: 1 }, tabText: { fontSize: 13, fontWeight: '700', color: colors.muted }, tabTextActive: { color: colors.text }, fieldLabel: { color: colors.muted, fontSize: 11, fontWeight: '700' }, chatError: { color: '#B91C1C', fontSize: 12, lineHeight: 18 },
   hero: { position: 'relative', zIndex: 52, overflow: 'hidden', backgroundColor: colors.navy, borderRadius: 25, padding: 22, shadowColor: '#0F172A', shadowOffset: { width: 0, height: 9 }, shadowOpacity: 0.13, shadowRadius: 17, elevation: 3 }, heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }, heroLabel: { color: '#BFDBFE', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, timerHero: { color: '#FFF', fontSize: 44, fontWeight: '800', fontVariant: ['tabular-nums'], letterSpacing: 1, marginTop: 5, marginBottom: 5 }, breakTimerCard: { marginTop: 12, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#451A1A', borderRadius: 12, borderWidth: 1, borderColor: '#7F1D1D' }, breakTimerLabel: { color: '#FCA5A5', fontSize: 9, fontWeight: '900', letterSpacing: 1 }, breakTimerValue: { color: '#F87171', fontSize: 23, fontWeight: '900', fontVariant: ['tabular-nums'], marginTop: 3 }, breakTimerHint: { color: '#FECACA', fontSize: 10, marginTop: 2 }, progressBadge: { backgroundColor: '#263A56', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, progressBadgeText: { color: '#DCEBFF', fontSize: 14, fontWeight: '800' }, progressTrack: { height: 8, backgroundColor: '#334155', borderRadius: 99, overflow: 'hidden', marginTop: 16 }, progressFill: { height: 8, backgroundColor: '#60A5FA', borderRadius: 99 }, progressMeta: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 9 }, heroSmall: { color: '#CBD5E1', fontSize: 11 }, shiftEstimate: { color: '#BFDBFE', fontSize: 11, fontWeight: '700', marginTop: 5 }, buttonRow: { flexDirection: 'row', gap: 10, marginTop: 21 }, action: { flex: 1, borderRadius: 13, paddingVertical: 14, alignItems: 'center' }, primary: { backgroundColor: colors.blue }, teal: { backgroundColor: '#0F766E' }, dim: { opacity: 0.45 }, actionText: { color: '#FFF', fontWeight: '800', fontSize: 14 }, helper: { color: '#CBD5E1', fontSize: 12, marginTop: 12, lineHeight: 18 },
   calcFields: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 }, calcButton: { flexGrow: 0, flexShrink: 0, flexBasis: 'auto', width: '100%', minHeight: 46, marginTop: 2, justifyContent: 'center' }, calcField: { flex: 1, minWidth: 90, gap: 6 }, calcResult: { backgroundColor: '#EFF6FF', borderRadius: 12, padding: 13, gap: 4 }, calcWorked: { color: colors.text, fontSize: 19, fontWeight: '800' }, calcStatus: { fontSize: 12, fontWeight: '700' }, calcMet: { color: '#15803D' }, calcPending: { color: colors.blue }, calcHint: { color: colors.muted, fontSize: 11, lineHeight: 16 },
   statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, statCard: { flexBasis: '47%', flexGrow: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 14, gap: 8 }, statLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 }, statValue: { color: colors.text, fontSize: 16, fontWeight: '800' }, card: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 17, gap: 13 }, cardHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, sectionTitle: { color: colors.text, fontSize: 17, fontWeight: '800' }, row: { flexDirection: 'row', justifyContent: 'space-between', gap: 10 }, rowLabel: { color: colors.muted, fontSize: 12, flex: 1 }, rowValue: { color: colors.text, fontSize: 12, fontWeight: '700', textAlign: 'right', flex: 1 }, pill: { backgroundColor: '#DCFCE7', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 99 }, pillWarn: { backgroundColor: '#FEF3C7' }, pillText: { color: '#15803D', fontSize: 10, fontWeight: '800' }, policyNote: { color: '#854D0E', fontSize: 11, lineHeight: 17, backgroundColor: '#FFFBEB', padding: 10, borderRadius: 10 }, outlineButton: { borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 11, padding: 11, alignItems: 'center', backgroundColor: '#F8FBFF' }, outlineText: { color: colors.blue, fontSize: 12, fontWeight: '800' }, lobbySubmit: { width: 46, height: 46, borderRadius: 14, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' }, lobbySubmitText: { color: '#FFFFFF', fontSize: 23, lineHeight: 27, fontWeight: '900' }, muted: { color: colors.muted, fontSize: 12, lineHeight: 18 }, stepper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, stepActions: { flexDirection: 'row', alignItems: 'center', gap: 10 }, stepButton: { width: 30, height: 30, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' }, stepText: { fontSize: 20, color: colors.text }, stepValue: { minWidth: 64, textAlign: 'center', fontWeight: '800', color: colors.text, fontSize: 12 }, settingChoice: { gap: 8 }, choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, choice: { backgroundColor: '#F1F5F9', paddingVertical: 7, paddingHorizontal: 10, borderRadius: 99 }, choiceSelected: { backgroundColor: '#DBEAFE' }, choiceText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, choiceTextSelected: { color: colors.blue },
@@ -2149,6 +2804,8 @@ const styles = StyleSheet.create({
   chatJoinDivider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }, chatDividerLine: { flex: 1, height: 1, backgroundColor: colors.border }, guestAction: { backgroundColor: '#0F766E' }, guestActionText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   heroCatLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }, heroCatImage: { position: 'absolute', width: '100%', height: '100%' }, heroCatShade: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.navy }, heroCatPaw: { position: 'absolute', left: '55%', bottom: '15%', width: 45, height: 88, transformOrigin: 'bottom center' }, heroCatPawArm: { position: 'absolute', left: 15, bottom: 0, width: 15, height: 62, borderRadius: 10, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatPawPalm: { position: 'absolute', left: 3, top: 8, width: 40, height: 34, borderRadius: 20, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatToe: { position: 'absolute', top: 2, width: 12, height: 17, borderRadius: 9, backgroundColor: '#E8953D', borderWidth: 1, borderColor: '#FFD17A' }, heroCatToeOne: { left: 5 }, heroCatToeTwo: { left: 17, top: -1 }, heroCatToeThree: { left: 29 }, heroCatBlink: { position: 'absolute', left: '31%', top: '24%', width: '9%', height: '4%', borderRadius: 99, backgroundColor: '#EAA34B', alignItems: 'center', justifyContent: 'center' }, heroCatBlinkLine: { width: '72%', height: 1.5, borderRadius: 2, backgroundColor: '#60351E', transform: [{ rotate: '-5deg' }] }, greetingPill: { backgroundColor: 'rgba(15, 118, 110, 0.92)', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, greetingPillText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' }, catGreetingCard: { width: '100%', maxWidth: 420, backgroundColor: '#FFFFFF', borderRadius: 26, paddingHorizontal: 24, paddingVertical: 27, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#CFECE8' }, catSpeech: { backgroundColor: '#DCFCE7', paddingHorizontal: 18, paddingVertical: 9, borderRadius: 16, borderBottomLeftRadius: 4 }, catSpeechText: { color: '#166534', fontSize: 15, fontWeight: '900' }, catGreetingTitle: { color: colors.text, fontSize: 23, fontWeight: '900', textAlign: 'center' }, catGreetingBody: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', maxWidth: 280 }, actionPrimarySmall: { backgroundColor: colors.blue, borderRadius: 12, paddingVertical: 11, paddingHorizontal: 20, marginTop: 7 }, officeByeRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F0FDF4', borderRadius: 13, padding: 10 }, officeOutActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }, officeOutButton: { backgroundColor: '#B91C1C', borderRadius: 13, paddingVertical: 12, paddingHorizontal: 9, alignItems: 'center', marginTop: 12 }, officeOutText: { color: '#FFFFFF', fontWeight: '900', fontSize: 12, textAlign: 'center' }, undoOfficeOutButton: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#B91C1C', borderRadius: 13, paddingVertical: 11, paddingHorizontal: 12 }, undoOfficeOutText: { color: '#B91C1C', fontWeight: '800', fontSize: 11 }, officeSummaryModal: { width: '100%', maxWidth: 560, maxHeight: '90%', backgroundColor: colors.card, borderRadius: 18, padding: 16, gap: 13 }, officeSummaryTotals: { flexDirection: 'row', gap: 10, padding: 12, backgroundColor: '#F1F5F9', borderRadius: 12 }, officeSummaryWork: { color: colors.blue, fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryBreak: { color: '#B91C1C', fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F8FAFC', borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 10 }, officeSummaryText: { color: colors.text, fontSize: 12, fontWeight: '800' },
   miloFab: { position: 'absolute', zIndex: 90, elevation: 12, right: 18, bottom: 20, width: 68, height: 68, borderRadius: 34, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#D9E9E8', padding: 7, alignItems: 'center', justifyContent: 'center', shadowColor: '#0F172A', shadowOpacity: 0.2, shadowRadius: 14, shadowOffset: { width: 0, height: 5 } }, miloFabHovered: { width: 226, height: 68, borderRadius: 36, paddingHorizontal: 8, paddingVertical: 7, flexDirection: 'row', justifyContent: 'flex-start', gap: 10 }, miloFabAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: '#DFF4F3', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }, miloFabEmoji: { fontSize: 32, lineHeight: 40 }, miloFabCopy: { flex: 1 }, miloFabName: { color: '#122033', fontSize: 15, lineHeight: 20, fontWeight: '800' }, miloFabCaption: { color: '#527078', fontSize: 11, lineHeight: 15, fontWeight: '600' }, miloOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.54)', padding: 14 }, miloModalCard: { width: '100%', maxWidth: 560, height: '84%', maxHeight: 720, minHeight: 360, backgroundColor: colors.card, borderRadius: 20, padding: 16, gap: 12 }, miloPanelCompact: { flex: 1, minHeight: 0 }, miloMessagesCompact: { flex: 1, minHeight: 140 },
+  callActions: { flexDirection: 'row', alignItems: 'center', gap: 6 }, callButton: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE' }, callButtonText: { color: colors.blue, fontSize: 18, fontWeight: '900' }, callHint: { color: colors.muted, fontSize: 10, lineHeight: 15 }, callError: { color: '#B91C1C', fontSize: 12, lineHeight: 18 }, callModal: { width: '100%', maxWidth: 460, backgroundColor: colors.card, borderRadius: 22, padding: 20, gap: 13, alignItems: 'center' }, callAvatar: { width: 82, height: 82, borderRadius: 41, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center' }, callAvatarText: { color: colors.blue, fontSize: 35, fontWeight: '900' }, callModalActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, flexWrap: 'wrap', marginTop: 8 }, callControl: { minWidth: 92, paddingHorizontal: 16, paddingVertical: 12, borderRadius: 14, backgroundColor: '#475569', alignItems: 'center' }, callControlText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' }, callAccept: { backgroundColor: '#15803D' }, callDecline: { backgroundColor: '#B91C1C' }, callControlMuted: { backgroundColor: '#64748B' }, callVideoStage: { width: '100%', minHeight: 240, maxHeight: 390, flexDirection: 'row', gap: 8 }, groupCallVideoStage: { flexWrap: 'wrap', maxHeight: 500 }, groupCallVideoTile: { height: 150, minWidth: 120, flexBasis: '44%' }, callVideoTile: { flex: 1, minWidth: 140, height: 260, borderRadius: 14, overflow: 'hidden', backgroundColor: '#0F172A', alignItems: 'center', justifyContent: 'center' }, callVideoLabel: { position: 'absolute', left: 8, bottom: 8, color: '#FFFFFF', fontSize: 10, fontWeight: '800', backgroundColor: 'rgba(15,23,42,0.7)', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8 }, callVideoWaiting: { position: 'absolute', color: '#FFFFFF', fontSize: 11 }, callVoiceStage: { minHeight: 185, alignItems: 'center', justifyContent: 'center', gap: 8 }, callPeerName: { color: colors.text, fontSize: 18, fontWeight: '800' },
+  callActiveCard: { backgroundColor: '#F0FDF4', borderWidth: 1, borderColor: '#BBF7D0', borderRadius: 15, padding: 12, gap: 11 }, callVideoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, callVideo: { minHeight: 120, flex: 1, backgroundColor: '#0F172A', borderRadius: 12, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }, callHistoryRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, borderTopWidth: 1, borderTopColor: colors.border }, callRingCard: { width: '100%', maxWidth: 370, backgroundColor: colors.card, borderRadius: 20, padding: 22, alignItems: 'center', gap: 12 }, callRingIcon: { color: colors.blue, fontSize: 38, fontWeight: '900' }, dangerAction: { backgroundColor: '#B91C1C' }, outlineAction: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border },
   chatCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 16, gap: 13 }, miloModeRow: { flexDirection: 'row', backgroundColor: '#E9EEF5', padding: 4, borderRadius: 12, gap: 5 }, miloModeButton: { flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 9 }, miloModeSelected: { backgroundColor: '#FFFFFF', elevation: 1 }, miloModeText: { color: colors.muted, fontSize: 12, fontWeight: '700' }, miloModeTextSelected: { color: colors.blue }, miloPanel: { gap: 12, paddingTop: 2 }, miloIntro: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#F0FDF4', borderRadius: 14, padding: 12 }, miloAvatar: { width: 42, height: 42, borderRadius: 14, backgroundColor: '#DCFCE7', alignItems: 'center', justifyContent: 'center' }, miloAvatarText: { fontSize: 23 }, miloMessages: { maxHeight: 390, minHeight: 190, backgroundColor: '#F8FAFC', borderRadius: 14 }, miloMessagesContent: { padding: 11, gap: 9 }, miloBubble: { maxWidth: '92%', borderRadius: 14, padding: 11, gap: 6 }, miloBubbleUser: { alignSelf: 'flex-end', backgroundColor: '#DBEAFE', borderBottomRightRadius: 4 }, miloBubbleAgent: { alignSelf: 'flex-start', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderBottomLeftRadius: 4 }, miloThinking: { flexDirection: 'row', alignItems: 'center', gap: 8 }, miloBubbleText: { color: colors.text, fontSize: 13, lineHeight: 19 }, miloSource: { color: colors.blue, fontSize: 10, fontWeight: '700', marginTop: 3 }, miloSuggestions: { gap: 6 }, miloSuggestion: { borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 10, backgroundColor: '#F8FBFF', padding: 9 }, miloSuggestionText: { color: colors.blue, fontSize: 11, fontWeight: '700' }, miloError: { color: '#B91C1C', fontSize: 12, lineHeight: 18 }, miloDisclaimer: { color: colors.muted, fontSize: 10, lineHeight: 15 }, miloUploadSuccess: { color: '#15803D', fontSize: 11, fontWeight: '700' }, chatHeading: { flexDirection: 'row', alignItems: 'center', gap: 11 }, chatAvatar: { width: 43, height: 43, borderRadius: 15, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center' }, chatAvatarText: { color: colors.blue, fontSize: 22, fontWeight: '800' }, chatPresence: { color: colors.muted, fontSize: 10, marginTop: 3 }, onlineBadge: { color: '#15803D', fontSize: 9, fontWeight: '900', backgroundColor: '#DCFCE7', overflow: 'hidden', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 6 }, chatJoin: { gap: 12, paddingVertical: 12 }, chatWelcome: { color: colors.text, fontSize: 17, fontWeight: '800' }, chatIdentity: { borderRadius: 10, backgroundColor: '#F8FAFC', padding: 9 }, chatIdentityText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, chatMessages: { maxHeight: 430, minHeight: 220, backgroundColor: '#F8FAFC', borderRadius: 16 }, chatMessagesContent: { flexGrow: 1, justifyContent: 'flex-end', padding: 12, gap: 9 }, chatEmpty: { flex: 1, minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: 7 }, chatEmptyIcon: { fontSize: 30 }, chatBubble: { maxWidth: '88%', borderRadius: 15, paddingHorizontal: 12, paddingVertical: 9, gap: 5 }, chatBubbleMine: { alignSelf: 'flex-end', backgroundColor: '#DBEAFE', borderBottomRightRadius: 5 }, chatBubbleOther: { alignSelf: 'flex-start', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, borderBottomLeftRadius: 5 }, chatSender: { color: colors.blue, fontSize: 10, fontWeight: '800' }, chatBody: { color: colors.text, fontSize: 13, lineHeight: 19 }, chatTime: { color: colors.muted, fontSize: 9, alignSelf: 'flex-end' }, mediaButton: { minWidth: 185, flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: 11, padding: 10, backgroundColor: 'rgba(255,255,255,0.75)', borderWidth: 1, borderColor: colors.border }, mediaIcon: { color: colors.blue, fontSize: 19, fontWeight: '800' }, mediaTitle: { color: colors.text, fontSize: 11, fontWeight: '800' }, mediaHint: { color: colors.muted, fontSize: 9, marginTop: 2 }, mediaChevron: { color: colors.blue, fontSize: 21 }, chatComposer: { gap: 9 }, chatTools: { flexDirection: 'row', gap: 8 }, chatTool: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingHorizontal: 11, paddingVertical: 8 }, chatToolText: { color: colors.blue, fontSize: 10, fontWeight: '800' }, recordingTool: { backgroundColor: '#FEE2E2' }, recordingText: { color: '#B91C1C' }, chatInputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 }, chatInput: { flex: 1, maxHeight: 110, minHeight: 43, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 13, paddingHorizontal: 12, paddingVertical: 11, color: colors.text, fontSize: 13 }, sendButton: { width: 43, height: 43, borderRadius: 13, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' }, sendButtonText: { color: '#FFFFFF', fontSize: 24, lineHeight: 28, fontWeight: '800' }, attachmentPreview: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#EFF6FF', borderRadius: 10, padding: 10 }, attachmentText: { color: colors.text, fontSize: 10, fontWeight: '700', flex: 1 }, onceToggle: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 3 }, onceCheckbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 1, borderColor: colors.blue, backgroundColor: '#EFF6FF', textAlign: 'center', overflow: 'hidden', color: colors.blue, fontSize: 12, fontWeight: '900' }, onceText: { color: colors.muted, fontSize: 10, flex: 1 }, mediaOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.82)', padding: 18 }, mediaModal: { width: '100%', maxWidth: 620, maxHeight: '90%', backgroundColor: colors.card, borderRadius: 18, padding: 15, gap: 12 }, mediaImage: { width: '100%', height: 420 }, onceFootnote: { color: colors.muted, fontSize: 10, textAlign: 'center' },
   updateOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.58)', alignItems: 'center', justifyContent: 'center', padding: 22 }, updateCard: { width: '100%', maxWidth: 420, backgroundColor: colors.card, borderRadius: 24, padding: 25, gap: 13, borderWidth: 1, borderColor: colors.border, shadowColor: '#0F172A', shadowOpacity: 0.2, shadowRadius: 24, elevation: 8 }, updateBadge: { alignSelf: 'flex-start', backgroundColor: '#DBEAFE', borderRadius: 99, paddingHorizontal: 10, paddingVertical: 6 }, updateBadgeText: { color: colors.blue, fontSize: 10, fontWeight: '900', letterSpacing: 1 }, updateTitle: { color: colors.text, fontSize: 24, lineHeight: 30, fontWeight: '900' }, updateSummary: { color: colors.muted, fontSize: 14, lineHeight: 21 }, updateMeta: { color: colors.muted, fontSize: 11 }, updatePrimary: { backgroundColor: colors.blue, paddingVertical: 14, borderRadius: 13, alignItems: 'center', marginTop: 4 }, updatePrimaryText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 }, updateLater: { paddingVertical: 9, alignItems: 'center' }, updateLaterText: { color: colors.muted, fontWeight: '700', fontSize: 12 },
   monthBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 }, monthArrow: { fontSize: 28, color: colors.blue, paddingHorizontal: 10 }, monthTitle: { color: colors.text, fontSize: 18, fontWeight: '800' }, summaryStrip: { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: '#EFF6FF', borderRadius: 15, padding: 16 }, monthStat: { color: colors.text, fontSize: 18, fontWeight: '800', marginTop: 5 }, historyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, padding: 12 }, historyDate: { width: 43, height: 48, borderRadius: 11, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' }, historyDay: { color: colors.blue, fontSize: 9, fontWeight: '700' }, historyNum: { color: colors.text, fontSize: 16, fontWeight: '800' }, historyMain: { flex: 1, gap: 5 }, historyTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, historySub: { color: colors.muted, fontSize: 10 }, historyHours: { color: colors.text, fontSize: 12, fontWeight: '800' }, clearCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 14, flexDirection: 'row', justifyContent: 'flex-end' }, clearCompact: { alignItems: 'flex-end', gap: 5 }, clearText: { color: colors.text, fontSize: 12, flex: 1 }, clearActions: { flexDirection: 'row', gap: 14, alignItems: 'center' }, clearDanger: { color: '#B91C1C', fontWeight: '800', fontSize: 12 }, empty: { padding: 26, alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: 15, gap: 6 }, emptyTitle: { color: colors.text, fontWeight: '800', fontSize: 14 }, hrRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderTopWidth: 1, borderTopColor: colors.border, gap: 10 }, hrActions: { gap: 9 }, approve: { color: '#15803D', fontWeight: '800', fontSize: 11 }, reject: { color: '#B91C1C', fontWeight: '800', fontSize: 11 },

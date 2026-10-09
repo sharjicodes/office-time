@@ -236,6 +236,39 @@ language sql stable security definer set search_path = '' as $$
   order by r.created_at desc;
 $$;
 
+create or replace function public.get_direct_chat_peer(room_id_in uuid)
+returns table (peer_id uuid, peer_name text)
+language plpgsql stable security definer set search_path = '' as $$
+declare target_type text;
+begin
+  if auth.uid() is null or not public.is_chat_room_member(room_id_in) then raise exception 'Join this chat to start a call.'; end if;
+  select r.room_type into target_type from public.chat_rooms r where r.id = room_id_in;
+  if target_type <> 'direct' then raise exception 'Calls are available in personal chats.'; end if;
+  return query
+    select rm.user_id, coalesce(nullif(u.raw_user_meta_data->>'full_name', ''), p.username)
+    from public.chat_room_members rm
+    join auth.users u on u.id = rm.user_id
+    join public.profiles p on p.id = rm.user_id
+    where rm.room_id = room_id_in and rm.user_id <> auth.uid()
+    limit 1;
+end; $$;
+
+create or replace function public.can_access_chat_call_topic(topic_in text)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select auth.uid() is not null and (
+    exists (
+      select 1 from public.chat_direct_pairs dp
+      where topic_in = 'chat-call:' || dp.room_id::text
+        and auth.uid() in (dp.user_low, dp.user_high)
+    ) or exists (
+      select 1 from public.chat_room_members rm
+      join public.chat_rooms r on r.id = rm.room_id and r.room_type = 'group'
+      where topic_in = 'chat-call:' || rm.room_id::text
+        and rm.user_id = auth.uid()
+    )
+  );
+$$;
+
 create or replace function public.my_chat_username()
 returns text language sql stable security definer set search_path = '' as $$
   select p.username from public.profiles p where p.id = auth.uid();
@@ -431,6 +464,7 @@ revoke all on function public.add_chat_room_member_by_username(uuid,text) from p
 revoke all on function public.list_direct_chats() from public, anon;
 revoke all on function public.my_chat_username() from public, anon;
 revoke all on function public.open_direct_chat(text) from public, anon;
+revoke all on function public.get_direct_chat_peer(uuid) from public, anon;
 grant execute on function public.list_chat_rooms() to authenticated;
 grant execute on function public.create_chat_room(text,text) to authenticated;
 grant execute on function public.join_chat_room(uuid,text) to authenticated;
@@ -447,6 +481,20 @@ grant execute on function public.add_chat_room_member_by_username(uuid,text) to 
 grant execute on function public.list_direct_chats() to authenticated;
 grant execute on function public.my_chat_username() to authenticated;
 grant execute on function public.open_direct_chat(text) to authenticated;
+grant execute on function public.get_direct_chat_peer(uuid) to authenticated;
+revoke all on function public.can_access_chat_call_topic(text) from public, anon;
+grant execute on function public.can_access_chat_call_topic(text) to authenticated;
+
+-- WebRTC signaling uses private direct-chat or group-room Broadcast channels. In Supabase Dashboard,
+-- Realtime Settings, disable "Allow public access" so these policies are enforced.
+drop policy if exists "Direct chat members can receive call signals" on realtime.messages;
+drop policy if exists "Direct chat members can send call signals" on realtime.messages;
+drop policy if exists "Chat room members can receive call signals" on realtime.messages;
+create policy "Chat room members can receive call signals" on realtime.messages
+  for select to authenticated using (extension = 'broadcast' and public.can_access_chat_call_topic(realtime.topic()));
+drop policy if exists "Chat room members can send call signals" on realtime.messages;
+create policy "Chat room members can send call signals" on realtime.messages
+  for insert to authenticated with check (extension = 'broadcast' and public.can_access_chat_call_topic(realtime.topic()));
 
 create or replace function public.limit_chat_message_rate()
 returns trigger language plpgsql security definer set search_path = '' as $$
@@ -511,3 +559,136 @@ do $$ begin
   alter publication supabase_realtime add table public.chat_room_members;
 exception when duplicate_object then null;
 end $$;
+
+-- App-wide voice/video call sessions, invitations, and reusable call history.
+create table if not exists public.call_sessions (
+  id uuid primary key default gen_random_uuid(),
+  created_by uuid not null references auth.users(id) on delete cascade,
+  mode text not null check (mode in ('voice','video')),
+  created_at timestamptz not null default now(),
+  ended_at timestamptz
+);
+create table if not exists public.call_session_members (
+  call_id uuid not null references public.call_sessions(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  status text not null default 'invited' check (status in ('invited','joined','declined','left')),
+  invited_at timestamptz not null default now(),
+  joined_at timestamptz,
+  primary key (call_id,user_id)
+);
+create index if not exists call_members_user_history_idx on public.call_session_members(user_id, invited_at desc);
+alter table public.call_sessions enable row level security;
+alter table public.call_session_members enable row level security;
+revoke all on public.call_sessions, public.call_session_members from public, anon, authenticated;
+
+create or replace function public.create_call_session(usernames_in text[], mode_in text)
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare call_id_out uuid; target_id uuid; invited text; invite_count integer := 0;
+begin
+  if auth.uid() is null then raise exception 'Sign in to make a call.'; end if;
+  if mode_in not in ('voice','video') then raise exception 'Choose voice or video call.'; end if;
+  if coalesce(cardinality(usernames_in),0) < 1 or cardinality(usernames_in) > 5 then raise exception 'Invite between 1 and 5 people.'; end if;
+  insert into public.call_sessions(created_by,mode) values(auth.uid(),mode_in) returning id into call_id_out;
+  insert into public.call_session_members(call_id,user_id,status,joined_at) values(call_id_out,auth.uid(),'joined',now());
+  foreach invited in array usernames_in loop
+    select p.id into target_id from public.profiles p where lower(p.username)=lower(btrim(invited));
+    if target_id is null then raise exception 'Username not found: %', invited; end if;
+    if target_id <> auth.uid() then
+      insert into public.call_session_members(call_id,user_id,status) values(call_id_out,target_id,'invited') on conflict(call_id,user_id) do nothing;
+      invite_count := invite_count + 1;
+    end if;
+  end loop;
+  if invite_count = 0 then raise exception 'Enter another user’s username.'; end if;
+  return call_id_out;
+end; $$;
+
+create or replace function public.invite_call_member(call_id_in uuid, username_in text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare target_id uuid; target_username text; target_name text;
+begin
+  if not exists(select 1 from public.call_session_members m join public.call_sessions c on c.id=m.call_id where m.call_id=call_id_in and m.user_id=auth.uid() and m.status='joined' and c.ended_at is null) then raise exception 'Only a current caller can invite people.'; end if;
+  perform 1 from public.call_sessions where id=call_id_in and ended_at is null for update;
+  select p.id,p.username,p.display_name into target_id,target_username,target_name from public.profiles p where lower(p.username)=lower(btrim(username_in));
+  if target_id is null then raise exception 'Username not found.'; end if;
+  if target_id=auth.uid() then raise exception 'You are already on this call.'; end if;
+  if exists(select 1 from public.call_session_members m where m.call_id=call_id_in and m.user_id=target_id and m.status in ('invited','joined')) then raise exception 'That user is already invited or on the call.'; end if;
+  if (select count(*) from public.call_session_members m where m.call_id=call_id_in and m.status in ('invited','joined')) >= 6 then raise exception 'Calls support up to 6 people.'; end if;
+  insert into public.call_session_members(call_id,user_id,status) values(call_id_in,target_id,'invited') on conflict(call_id,user_id) do update set status='invited', invited_at=now();
+  return jsonb_build_object('user_id',target_id,'username',target_username,'display_name',target_name);
+end; $$;
+
+create or replace function public.respond_call_session(call_id_in uuid, action_in text)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  if action_in not in ('join','decline','leave','end') then raise exception 'Invalid call action.'; end if;
+  if action_in='end' then
+    update public.call_sessions set ended_at=now() where id=call_id_in and created_by=auth.uid() and ended_at is null;
+    if not found then raise exception 'Only the call creator can end this call for everyone.'; end if;
+  else
+    update public.call_session_members set status=case action_in when 'join' then 'joined' else action_in end,
+      joined_at=case when action_in='join' then now() else joined_at end
+      where call_id=call_id_in and user_id=auth.uid() and status in ('invited','joined')
+        and exists(select 1 from public.call_sessions c where c.id=call_id_in and c.ended_at is null);
+    if not found then raise exception 'Call invitation not found.'; end if;
+    if action_in='leave' and not exists(select 1 from public.call_session_members m where m.call_id=call_id_in and m.status='joined') then
+      update public.call_sessions set ended_at=now() where id=call_id_in and ended_at is null;
+    end if;
+  end if;
+end; $$;
+
+create or replace function public.list_call_session_members(call_id_in uuid)
+returns jsonb language sql stable security definer set search_path = '' as $$
+  select coalesce(jsonb_agg(jsonb_build_object('user_id',p.id,'username',p.username,'display_name',p.display_name,'status',m.status,'call_creator',(select c.created_by from public.call_sessions c where c.id=call_id_in)) order by m.invited_at),'[]'::jsonb)
+  from public.call_session_members m join public.profiles p on p.id=m.user_id
+  where m.call_id=call_id_in and exists(select 1 from public.call_session_members mine where mine.call_id=call_id_in and mine.user_id=auth.uid());
+$$;
+
+create or replace function public.list_my_call_history()
+returns jsonb language sql stable security definer set search_path = '' as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id',c.id,'mode',c.mode,'created_at',c.created_at,'ended_at',c.ended_at,'created_by',c.created_by,
+    'members',(select coalesce(jsonb_agg(jsonb_build_object('user_id',p.id,'username',p.username,'display_name',p.display_name,'status',m.status) order by m.invited_at),'[]'::jsonb)
+      from public.call_session_members m join public.profiles p on p.id=m.user_id where m.call_id=c.id and m.user_id<>auth.uid())
+  ) order by c.created_at desc),'[]'::jsonb)
+  from public.call_sessions c where exists(select 1 from public.call_session_members mine where mine.call_id=c.id and mine.user_id=auth.uid());
+$$;
+
+create or replace function public.can_access_call_realtime_topic(topic_in text)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select auth.uid() is not null and exists(
+    select 1 from public.call_sessions c join public.call_session_members m on m.call_id=c.id
+    where topic_in='call-session:'||c.id::text and c.ended_at is null and m.user_id=auth.uid() and m.status in ('invited','joined')
+  );
+$$;
+create or replace function public.can_receive_call_inbox(topic_in text)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select auth.uid() is not null and topic_in='call-inbox:'||auth.uid()::text;
+$$;
+create or replace function public.can_send_call_inbox(topic_in text)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select auth.uid() is not null and exists(
+    select 1 from public.call_sessions c
+    join public.call_session_members sender on sender.call_id=c.id and sender.user_id=auth.uid() and sender.status='joined'
+    join public.call_session_members recipient on recipient.call_id=c.id and recipient.status='invited'
+    where c.ended_at is null and topic_in='call-inbox:'||recipient.user_id::text
+  );
+$$;
+create or replace function public.can_access_call_inbox(topic_in text)
+returns boolean language sql stable security definer set search_path = '' as $$
+  select public.can_receive_call_inbox(topic_in) or public.can_send_call_inbox(topic_in);
+$$;
+revoke all on function public.create_call_session(text[],text), public.invite_call_member(uuid,text), public.respond_call_session(uuid,text), public.list_call_session_members(uuid), public.list_my_call_history(), public.can_access_call_realtime_topic(text), public.can_receive_call_inbox(text), public.can_send_call_inbox(text), public.can_access_call_inbox(text) from public, anon;
+grant execute on function public.create_call_session(text[],text), public.invite_call_member(uuid,text), public.respond_call_session(uuid,text), public.list_call_session_members(uuid), public.list_my_call_history(), public.can_access_call_realtime_topic(text), public.can_receive_call_inbox(text), public.can_send_call_inbox(text), public.can_access_call_inbox(text) to authenticated;
+
+drop policy if exists "Call session members can receive signals" on realtime.messages;
+drop policy if exists "Call session members can send signals" on realtime.messages;
+drop policy if exists "Users receive their call invitations" on realtime.messages;
+drop policy if exists "Call members can send invitations" on realtime.messages;
+create policy "Call session members can receive signals" on realtime.messages for select to authenticated
+  using (extension='broadcast' and public.can_access_call_realtime_topic(realtime.topic()));
+create policy "Call session members can send signals" on realtime.messages for insert to authenticated
+  with check (extension='broadcast' and public.can_access_call_realtime_topic(realtime.topic()));
+create policy "Users receive their call invitations" on realtime.messages for select to authenticated
+  using (extension='broadcast' and public.can_access_call_inbox(realtime.topic()));
+create policy "Call members can send invitations" on realtime.messages for insert to authenticated
+  with check (extension='broadcast' and public.can_send_call_inbox(realtime.topic()));

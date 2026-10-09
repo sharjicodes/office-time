@@ -48,6 +48,44 @@ export async function loadDays(): Promise<AttendanceDay[]> {
   try { return JSON.parse(await AsyncStorage.getItem(await daysKey()) || '[]'); } catch { return []; }
 }
 
+/** Move attendance created in offline mode into the first real account used on this device. */
+export async function migrateDeviceAttendanceToAccount(userId: string) {
+  if (!userId) return;
+  const deviceKey = `${DAYS_KEY}.device`;
+  const accountKey = `${DAYS_KEY}.${userId}`;
+  try {
+    const [deviceValue, accountValue] = await Promise.all([
+      AsyncStorage.getItem(deviceKey),
+      AsyncStorage.getItem(accountKey),
+    ]);
+    const deviceDays = JSON.parse(deviceValue || '[]') as AttendanceDay[];
+    if (!deviceDays.length) {
+      await AsyncStorage.setItem(LAST_ATTENDANCE_OWNER_KEY, userId);
+      return;
+    }
+
+    const accountDays = JSON.parse(accountValue || '[]') as AttendanceDay[];
+    const merged = [...accountDays];
+    for (const day of deviceDays) {
+      const index = merged.findIndex(existing => existing.date === day.date);
+      // Preserve the offline copy for matching dates; it may contain the latest punches.
+      const transferred = { ...day, synced: false };
+      if (index >= 0) merged[index] = transferred;
+      else merged.push(transferred);
+    }
+    merged.sort((a, b) => b.date.localeCompare(a.date));
+
+    // Save to the account cache before clearing the device cache, so interrupted
+    // sign-ins can safely retry without losing the local attendance records.
+    await AsyncStorage.setItem(accountKey, JSON.stringify(merged));
+    await AsyncStorage.setItem(LAST_ATTENDANCE_OWNER_KEY, userId);
+    await AsyncStorage.setItem(deviceKey, JSON.stringify([]));
+    await syncPending(merged);
+  } catch {
+    // Keep the device copy if storage or sync is temporarily unavailable.
+  }
+}
+
 async function loadDeletedDays(): Promise<string[]> {
   try { return JSON.parse(await AsyncStorage.getItem(`${DELETED_DAYS_KEY}.${(await daysKey()).split('.').pop()}`) || '[]'); }
   catch { return []; }

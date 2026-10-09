@@ -8,7 +8,7 @@ import * as Notifications from 'expo-notifications';
 import NetInfo from '@react-native-community/netinfo';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AttendanceDay, AttendanceSession, DEFAULT_POLICY, formatDuration, getAttendanceSummary, getDaySessions, isHalfDayDate, localDateKey, MONTHLY_LATE_LOGIN_LIMIT, monthLateCount, PolicyConfig } from './src/lib/attendance';
-import { clearDay, loadDays, loadPolicy, saveDay, savePolicy, syncPending } from './src/lib/storage';
+import { clearDay, loadDays, loadPolicy, migrateDeviceAttendanceToAccount, saveDay, savePolicy, syncPending } from './src/lib/storage';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
 import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, showChatNotification, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
 import { colors } from './src/theme';
@@ -297,8 +297,17 @@ function OfficeTimeApp() {
     void AsyncStorage.getItem('milo.break-reminders.v1').then(value => { if (value !== null) setBreakReminderEnabled(value === 'true'); });
     void Promise.all([refresh(), scheduleDailyReminder()]).finally(() => { if (mounted) setBooting(false); });
     if (supabase) {
-      void supabase.auth.getSession().then(({ data }) => { if (mounted) setSession(data.session); });
-      const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); void refresh(); });
+      void supabase.auth.getSession().then(async ({ data }) => {
+        if (!mounted) return;
+        if (data.session?.user && !data.session.user.is_anonymous) await migrateDeviceAttendanceToAccount(data.session.user.id);
+        if (mounted) { setSession(data.session); await refresh(); }
+      });
+      const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange((_event, next) => {
+        setSession(next);
+        if (next?.user && !next.user.is_anonymous) {
+          setTimeout(() => { void migrateDeviceAttendanceToAccount(next.user.id).then(refresh); }, 0);
+        } else setTimeout(() => { void refresh(); }, 0);
+      });
       return () => { mounted = false; subscription(); clearInterval(timer); authSubscription.unsubscribe(); };
     }
     return () => { mounted = false; subscription(); clearInterval(timer); };

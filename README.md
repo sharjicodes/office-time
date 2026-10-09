@@ -142,3 +142,11 @@ Use Apple signing/TestFlight for iOS distribution and a Play Console signing key
 - Web work-target reminders are foreground-tab timers and are not push notifications; browser storage is local to that browser unless Supabase sync is configured.
 - Custom native late-login and goal-achievement sounds are bundled through the Expo notifications config plugin. Rebuild and reinstall the iOS/Android app after changing notification sound assets or app config. Expo Go does not contain this project's custom sound files; use an EAS/development build to hear them. Focus/silent modes and device volume can suppress or reduce notification sounds.
 - No timesheet/Git integration, leave calendar, public holiday calendar, CSV export, or employee/team directory is included.
+# Install Milo on a phone
+
+Milo's web build can be installed as a Progressive Web App (PWA). Deploy the site over HTTPS, then:
+
+- **iPhone/iPad:** Open Milo in Safari, tap **Share**, and choose **Add to Home Screen**. Launch Milo from the new Home Screen icon for the standalone app view.
+- **Android:** Open Milo in Chrome and tap **Install** in Milo's install card or use Chrome's **Install app** menu item.
+
+The PWA manifest uses Milo's app icon and standalone display mode. Its service worker caches the app shell and Expo JavaScript bundles for relaunching after a prior visit; authenticated API, attendance, and chat responses are never cached. Local browser notifications can appear through the service worker while Milo is open. Background web push delivery still needs a push subscription and server-side sender configured separately.

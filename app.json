@@ -9,7 +9,16 @@
     "newArchEnabled": true,
     "web": {
       "bundler": "metro",
-      "favicon": "./assets/milo-icon.png"
+      "favicon": "./assets/milo-icon.png",
+      "name": "Milo · Your Office Companion",
+      "shortName": "Milo",
+      "description": "A friendly office companion for attendance, team chat, calls, and games.",
+      "scope": "/",
+      "startUrl": "/",
+      "display": "standalone",
+      "orientation": "portrait-primary",
+      "themeColor": "#f7fafc",
+      "backgroundColor": "#f7fafc"
     },
     "ios": {
       "supportsTablet": true,

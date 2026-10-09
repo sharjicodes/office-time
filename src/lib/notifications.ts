@@ -7,6 +7,18 @@ const LATE_CHANNEL = 'late-login-alerts-v1';
 const CHEER_CHANNEL = 'work-hour-cheers-v1';
 let webAudioContext: AudioContext | null = null;
 
+async function showPwaNotification(title: string, body: string) {
+  if (typeof window === 'undefined' || !('Notification' in window) || window.Notification.permission !== 'granted') return;
+  if ('serviceWorker' in navigator) {
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.showNotification(title, { body, icon: '/icons/milo-192.png', badge: '/icons/milo-192.png', data: { url: '/' } });
+      return;
+    } catch { /* Fall back to a foreground browser notification. */ }
+  }
+  new window.Notification(title, { body });
+}
+
 export function prepareAttendanceNotificationAudio() {
   if (Platform.OS !== 'web' || typeof window === 'undefined' || !window.AudioContext) return;
   webAudioContext ??= new window.AudioContext();
@@ -146,8 +158,7 @@ export async function scheduleTimedReminder(kind: string, title: string, body: s
     const old = browserTimers.get(kind);
     if (old) clearTimeout(old);
     const timer = setTimeout(() => {
-      new window.Notification(title, { body });
-      if (kind === 'work-target') playWebNoticeTone(false);
+      void showPwaNotification(title, body).then(() => { if (kind === 'work-target') playWebNoticeTone(false); });
       browserTimers.delete(kind);
     }, Math.max(1000, milliseconds));
     browserTimers.set(kind, timer);
@@ -182,7 +193,7 @@ export async function showWorkHourCongratulations(title: string, body: string): 
 export async function showChatNotification(title: string, body: string): Promise<void> {
   if (Platform.OS === 'web') {
     if (typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'granted')
-      new window.Notification(title, { body });
+      await showPwaNotification(title, body);
     return;
   }
   const permission = await Notifications.getPermissionsAsync();
@@ -194,7 +205,7 @@ async function showAttendanceNotice(kind: string, title: string, body: string): 
     if (typeof window === 'undefined' || !('Notification' in window)) return false;
     if (window.Notification.permission !== 'granted') await window.Notification.requestPermission();
     if (window.Notification.permission !== 'granted') return false;
-    new window.Notification(title, { body });
+    await showPwaNotification(title, body);
     return true;
   }
   const permission = await Notifications.requestPermissionsAsync();

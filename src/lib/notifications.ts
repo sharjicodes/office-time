@@ -109,10 +109,27 @@ async function configureSoundChannels() {
   });
 }
 
-export async function scheduleDailyReminder(): Promise<boolean> {
+export async function scheduleDailyReminder(config: { enabled?: boolean; time?: string; workDays?: number[] } = {}): Promise<boolean> {
   // Expo local notifications are native-only. Browser notifications require a
   // foreground tab and an explicit user gesture, so don't prompt on page load.
-  if (Platform.OS === 'web') return false;
+  if (Platform.OS === 'web') {
+    const old = browserTimers.get('daily-attendance');
+    if (old) clearTimeout(old);
+    if (config.enabled === false || typeof window === 'undefined' || !('Notification' in window) || window.Notification.permission !== 'granted') return false;
+    const [hour, minute] = (config.time ?? '08:50').split(':').map(Number);
+    const workDays = config.workDays?.length ? config.workDays : [1, 2, 3, 4, 5];
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(Number.isFinite(hour) ? hour : 8, Number.isFinite(minute) ? minute : 50, 0, 0);
+    while (!workDays.includes(next.getDay()) || next <= now) next.setDate(next.getDate() + 1);
+    const timer = setTimeout(() => {
+      void showPwaNotification('Milo reminder', 'Your workday is about to begin. Remember to punch in.');
+      void scheduleDailyReminder(config);
+    }, next.getTime() - now.getTime());
+    browserTimers.set('daily-attendance', timer);
+    return true;
+  }
+  const { enabled = true, time = '08:50', workDays = [1, 2, 3, 4, 5] } = config;
   const permission = await Notifications.requestPermissionsAsync();
   if (!permission.granted) return false;
 
@@ -134,15 +151,17 @@ export async function scheduleDailyReminder(): Promise<boolean> {
     }
   }
 
-  // Policy workweek is Monday-Friday. Expo weekday values use Sunday=1.
-  for (const weekday of [2, 3, 4, 5, 6]) {
+  if (!enabled) return true;
+  const [hour, minute] = time.split(':').map(Number);
+  // JavaScript weekday 0=Sunday, Expo weekday 1=Sunday.
+  for (const day of workDays) {
     await Notifications.scheduleNotificationAsync({
       content: {
         title: 'Milo reminder',
-        body: 'Your standard start time is 9:00 AM. Remember to punch in.',
+        body: 'Your workday is about to begin. Remember to punch in.',
         data: { kind: 'morning-attendance-reminder' },
       },
-      trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday, hour: 8, minute: 50 },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday: day + 1, hour: Number.isFinite(hour) ? hour : 8, minute: Number.isFinite(minute) ? minute : 50 },
     });
   }
   return true;

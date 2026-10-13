@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ActivityIndicator, Alert, Animated, Easing, Image, ImageSourcePropType, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Easing, Image, ImageSourcePropType, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -8,8 +8,9 @@ import * as Notifications from 'expo-notifications';
 import NetInfo from '@react-native-community/netinfo';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AttendanceDay, AttendanceSession, DEFAULT_POLICY, formatDuration, getAttendanceSummary, getDaySessions, isHalfDayDate, localDateKey, MONTHLY_LATE_LOGIN_LIMIT, monthLateCount, PolicyConfig } from './src/lib/attendance';
-import { clearDay, loadDays, loadPolicy, migrateDeviceAttendanceToAccount, saveDay, savePolicy, syncPending } from './src/lib/storage';
+import { clearDay, DEFAULT_PREFERENCES, loadDays, loadPolicy, loadPreferences, migrateDeviceAttendanceToAccount, MiloPreferences, saveDay, savePolicy, savePreferences, syncPending } from './src/lib/storage';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
+import { getMiloPushEnabled, subscribeToMiloPush, unsubscribeFromMiloPush } from './src/lib/webPush';
 import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, showChatNotification, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
 import { colors } from './src/theme';
 import { BUILD_ID, BUILD_SUMMARY } from './src/release';
@@ -22,6 +23,16 @@ const formatTimer = (seconds: number) => {
   const safe = Math.max(0, Math.floor(seconds));
   return `${String(Math.floor(safe / 3600)).padStart(2, '0')}:${String(Math.floor(safe % 3600 / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
 };
+
+function downloadTextFile(filename: string, contents: string, mimeType: string) {
+  const blob = new Blob([contents], { type: `${mimeType};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
 
 export default function App() {
   return <SafeAreaProvider><OfficeTimeApp /><DeploymentUpdateNotice /></SafeAreaProvider>;
@@ -327,7 +338,7 @@ function OfficeTimeApp() {
   const [booting, setBooting] = useState(true);
   const [days, setDays] = useState<AttendanceDay[]>([]);
   const [policy, setPolicy] = useState<PolicyConfig>(DEFAULT_POLICY);
-  const [tab, setTab] = useState<Tab>(() => typeof window !== 'undefined' && (new URL(window.location.href).searchParams.has('match') || new URL(window.location.href).searchParams.has('ludo')) ? 'Games' : 'Today');
+  const [tab, setTab] = useState<Tab>(() => typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('call') ? 'Calls' : typeof window !== 'undefined' && (new URL(window.location.href).searchParams.has('match') || new URL(window.location.href).searchParams.has('ludo')) ? 'Games' : 'Today');
   const [online, setOnline] = useState(true);
   const [offlineContinue, setOfflineContinue] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -342,6 +353,8 @@ function OfficeTimeApp() {
   const [catGreeting, setCatGreeting] = useState<'hi' | 'bye' | null>(null);
   const [fireworksId, setFireworksId] = useState(0);
   const [breakReminderEnabled, setBreakReminderEnabled] = useState(true);
+  const [preferences, setPreferences] = useState(DEFAULT_PREFERENCES);
+  const [pushEnabled, setPushEnabled] = useState(false);
   const previousTargetState = useRef<{ date: string; reached: boolean } | null>(null);
   const today = localDateKey(now);
   const day = days.find(item => item.date === today) ?? { date: today, punchInAt: null, punchOutAt: null, breakMinutes: policy.defaultBreakMinutes, managerApproval: false, synced: true };
@@ -380,15 +393,32 @@ function OfficeTimeApp() {
   }, [booting, today, summary.targetReached, policy.recordedWorkTargetMinutes]);
 
   const refresh = useCallback(async () => {
-    setDays(await loadDays()); setPolicy(await loadPolicy());
+    const [loadedDays, loadedPolicy, loadedPreferences] = await Promise.all([loadDays(), loadPolicy(), loadPreferences()]);
+    setDays(loadedDays); setPolicy(loadedPolicy); setPreferences(loadedPreferences);
+    setBreakReminderEnabled(loadedPreferences.breakEndReminderEnabled);
   }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    document.body.classList.toggle('milo-large-text', preferences.largerText);
+    document.body.classList.toggle('milo-reduced-motion', preferences.reducedMotion);
+    document.body.classList.toggle('milo-high-contrast', preferences.highContrast);
+    document.documentElement.classList.toggle('milo-motion-enabled', !preferences.reducedMotion);
+  }, [preferences.largerText, preferences.reducedMotion, preferences.highContrast]);
 
   useEffect(() => {
     let mounted = true;
     const subscription = NetInfo.addEventListener(state => { setOnline(!!state.isConnected); if (state.isConnected) void syncPending().then(refresh); });
     const timer = setInterval(() => setNow(new Date()), 1_000);
-    void AsyncStorage.getItem('milo.break-reminders.v1').then(value => { if (value !== null) setBreakReminderEnabled(value === 'true'); });
-    void Promise.all([refresh(), scheduleDailyReminder()]).finally(() => { if (mounted) setBooting(false); });
+    void refresh().then(async () => {
+      const pref = await loadPreferences();
+      if (mounted) {
+        setPreferences(pref);
+        setBreakReminderEnabled(pref.breakEndReminderEnabled);
+        setPushEnabled(await getMiloPushEnabled());
+      }
+      await scheduleDailyReminder({ enabled: pref.reminderEnabled, time: pref.reminderTime, workDays: pref.workDays });
+    }).finally(() => { if (mounted) setBooting(false); });
     if (supabase) {
       void supabase.auth.getSession().then(async ({ data }) => {
         if (!mounted) return;
@@ -427,6 +457,7 @@ function OfficeTimeApp() {
     if (kind === 'in' && active) return Alert.alert('Already punched in', 'Punch out of your current session before starting another.');
     if (kind === 'out' && !active) return Alert.alert('No active session', 'Punch in before punching out.');
     await prepareAttendanceNotifications();
+    await scheduleDailyReminder({ enabled: preferences.reminderEnabled, time: preferences.reminderTime, workDays: preferences.workDays });
     const stamp = new Date();
     if (kind === 'out' && stamp <= new Date(activeSession!.punchInAt)) return Alert.alert('Invalid time', 'Punch-out must be later than punch-in.');
     const stampText = stamp.toISOString();
@@ -444,7 +475,7 @@ function OfficeTimeApp() {
     const firstLoginIsLate = kind === 'in' && sessions.length === 0 && updatedSummary.afterFlexLimit;
     if (kind === 'in') {
       await cancelNotice('break-reminder');
-      await scheduleTimedNotice('missing-punch-out', 'Don’t forget to punch out', 'Your attendance session is still open.', 9 * 60 * 60 * 1000);
+      if (preferences.punchOutReminderEnabled) await scheduleTimedNotice('missing-punch-out', 'Don’t forget to punch out', 'Your attendance session is still open.', 9 * 60 * 60 * 1000);
       if (!updatedSummary.targetReached) await scheduleWorkTarget(policy, updatedSummary, updated);
       if (firstLoginIsLate) {
         const monthCount = monthLateCount([updated, ...days.filter(item => item.date !== updated.date)], updated.date.slice(0, 7), policy);
@@ -510,7 +541,7 @@ function OfficeTimeApp() {
     if (date === today) {
       const correctedSummary = getAttendanceSummary(updated, now, policy);
       const openSession = allSessions.some(item => !item.punchOutAt);
-      if (openSession) await scheduleTimedNotice('missing-punch-out', 'Don’t forget to punch out', 'Your attendance session is still open.', 9 * 60 * 60 * 1000);
+      if (openSession && preferences.punchOutReminderEnabled) await scheduleTimedNotice('missing-punch-out', 'Don’t forget to punch out', 'Your attendance session is still open.', 9 * 60 * 60 * 1000);
       else await cancelNotice('missing-punch-out');
       if (correctedSummary.targetReached) await cancelNotice('work-target');
       else if (allSessions.length) await scheduleWorkTarget(policy, correctedSummary, updated);
@@ -536,6 +567,45 @@ function OfficeTimeApp() {
     const next = { ...policy, [key]: value }; setPolicy(next); await savePolicy(next);
     if (day.punchInAt && ['recordedWorkTargetMinutes', 'defaultBreakMinutes', 'breakDeductionMode'].includes(key))
       await scheduleWorkTarget(next, getAttendanceSummary(day, now, next), day);
+  }
+  async function changePreferences(next: MiloPreferences) {
+    setPreferences(next);
+    setBreakReminderEnabled(next.breakEndReminderEnabled);
+    await savePreferences(next);
+    await scheduleDailyReminder({ enabled: next.reminderEnabled, time: next.reminderTime, workDays: next.workDays });
+    if (!next.punchOutReminderEnabled) await cancelNotice('missing-punch-out');
+    else if (active) await scheduleTimedNotice('missing-punch-out', 'Don’t forget to punch out', 'Your attendance session is still open.', 9 * 60 * 60 * 1000);
+  }
+  async function togglePushNotifications() {
+    try {
+      const message = pushEnabled ? await unsubscribeFromMiloPush() : await subscribeToMiloPush();
+      setPushEnabled(!pushEnabled);
+      Alert.alert('Milo notifications', message);
+    } catch (error: any) { Alert.alert('Could not update notifications', error?.message || 'Try again from the deployed Milo site.'); }
+  }
+  async function exportAttendanceBackup() {
+    const payload = JSON.stringify({ app: 'Milo', version: 1, exportedAt: new Date().toISOString(), days, policy, preferences }, null, 2);
+    if (Platform.OS === 'web' && typeof document !== 'undefined') downloadTextFile(`milo-backup-${localDateKey()}.json`, payload, 'application/json');
+    else await Share.share({ title: 'Milo attendance backup', message: payload });
+  }
+  async function restoreAttendanceBackup(backup: any) {
+    if (backup?.app !== 'Milo' || !Array.isArray(backup.days)) throw new Error('This is not a valid Milo backup file.');
+    const validDays = backup.days.filter((item: any) => typeof item?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.date) && (item.punchInAt === null || typeof item.punchInAt === 'string')) as AttendanceDay[];
+    if (!validDays.length && backup.days.length) throw new Error('No valid attendance days were found in this backup.');
+    for (const item of validDays) await saveDay({ ...item, synced: false });
+    if (backup.policy && typeof backup.policy === 'object') await savePolicy({ ...DEFAULT_POLICY, ...backup.policy });
+    if (backup.preferences && typeof backup.preferences === 'object') await changePreferences({ ...DEFAULT_PREFERENCES, ...backup.preferences });
+    await refresh();
+    Alert.alert('Backup restored', `${validDays.length} attendance day${validDays.length === 1 ? '' : 's'} imported. Existing entries with matching dates were replaced.`);
+  }
+  async function exportAttendanceCalendar() {
+    const escapeIcs = (value: string) => value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
+    const stamp = (value: string) => new Date(value).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    const events = days.flatMap(record => getDaySessions(record).flatMap((item, index) => item.punchOutAt ? [`BEGIN:VEVENT\r\nUID:milo-${record.date}-${index}-${encodeURIComponent(item.punchInAt)}@milo\r\nDTSTAMP:${stamp(new Date().toISOString())}\r\nDTSTART:${stamp(item.punchInAt)}\r\nDTEND:${stamp(item.punchOutAt)}\r\nSUMMARY:Work session · Milo\r\nDESCRIPTION:${escapeIcs(`Net work tracker session${item.breakMinutes ? ` · ${item.breakMinutes} break minutes` : ''}`)}\r\nEND:VEVENT`] : [])).join('\r\n');
+    if (!events) return Alert.alert('No calendar entries', 'Punch out of a session before exporting it to your calendar.');
+    const calendar = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Milo//Attendance//EN\r\nCALSCALE:GREGORIAN\r\n${events}\r\nEND:VCALENDAR\r\n`;
+    if (Platform.OS === 'web' && typeof document !== 'undefined') downloadTextFile('milo-work-sessions.ics', calendar, 'text/calendar');
+    else await Share.share({ title: 'Milo calendar export', message: calendar });
   }
   async function resolveReview(reviewId: string, status: 'approved' | 'rejected') {
     if (!supabase) return;
@@ -590,7 +660,7 @@ function OfficeTimeApp() {
 
   const lateDays = days.filter(d => d.date.startsWith(today.slice(0, 7)) && d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).afterFlexLimit);
   const halfDayToday = isHalfDayDate(days, today, policy);
-  const showPageAnimations = tab !== 'Chat' && tab !== 'Games' && tab !== 'Calls';
+  const showPageAnimations = tab !== 'Chat' && tab !== 'Games' && tab !== 'Calls' && !preferences.reducedMotion;
   return <SafeAreaView style={styles.safe}>
     {showPageAnimations && <PageAmbience />}
     <StatusBar style="dark" />
@@ -599,7 +669,7 @@ function OfficeTimeApp() {
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => { if (session) void signOut(); }}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
       {Platform.OS === 'web' && <PwaInstallPrompt />}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}><>{(['Today', 'History', 'Games', 'Calls', 'Chat', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</></ScrollView>
-      {tab === 'Today' && <WalkingCat />}
+      {tab === 'Today' && !preferences.reducedMotion && <WalkingCat />}
       {tab === 'Today' && <>
         <View style={styles.hero}>
           <CatCardGreeting kind={catGreeting} onDone={() => setCatGreeting(null)} />
@@ -625,7 +695,12 @@ function OfficeTimeApp() {
         <View style={styles.card}><Text style={styles.sectionTitle}>Your workday settings</Text><Text style={styles.muted}>Editable defaults pending HR confirmation</Text>
           <Stepper label="Recorded work target" value={formatDuration(policy.recordedWorkTargetMinutes)} onMinus={() => void changePolicy('recordedWorkTargetMinutes', Math.max(60, policy.recordedWorkTargetMinutes - 30))} onPlus={() => void changePolicy('recordedWorkTargetMinutes', policy.recordedWorkTargetMinutes + 30)} />
           <Stepper label="Expected break" value={`${policy.defaultBreakMinutes} min`} onMinus={() => void changePolicy('defaultBreakMinutes', Math.max(0, policy.defaultBreakMinutes - 15))} onPlus={() => void changePolicy('defaultBreakMinutes', Math.min(240, policy.defaultBreakMinutes + 15))} />
-          <Pressable accessibilityRole="switch" accessibilityState={{ checked: breakReminderEnabled }} onPress={() => { const next = !breakReminderEnabled; setBreakReminderEnabled(next); void AsyncStorage.setItem('milo.break-reminders.v1', String(next)); if (!next) void cancelNotice('break-reminder'); }} style={styles.outlineButton}><Text style={styles.outlineText}>{breakReminderEnabled ? '✓ Break-end reminder on' : '＋ Turn on break-end reminder'}</Text></Pressable>
+          <View style={styles.settingGroup}><Text style={styles.rowLabel}>Workday reminders · device local time</Text><View style={styles.settingTimeRow}><Text style={styles.muted}>Punch-in</Text><TextInput accessibilityLabel="Punch-in reminder time" value={preferences.reminderTime} onChangeText={value => setPreferences(current => ({ ...current, reminderTime: value.replace(/[^0-9:]/g, '').slice(0, 5) }))} onEndEditing={() => { if (/^([01]\d|2[0-3]):[0-5]\d$/.test(preferences.reminderTime)) void changePreferences(preferences); else { Alert.alert('Invalid reminder time', 'Enter a time like 08:50.'); void refresh(); } }} placeholder="08:50" style={[styles.input, styles.settingTimeInput]} keyboardType="numbers-and-punctuation" {...(Platform.OS === 'web' ? ({ type: 'time' } as any) : {})}/></View><View style={styles.settingToggleRow}><Text style={styles.muted}>Daily punch-in reminder</Text><Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.reminderEnabled }} onPress={() => void changePreferences({ ...preferences, reminderEnabled: !preferences.reminderEnabled })} style={[styles.settingSwitch, preferences.reminderEnabled && styles.settingSwitchOn]}><Text style={styles.settingSwitchText}>{preferences.reminderEnabled ? 'ON' : 'OFF'}</Text></Pressable></View><View style={styles.settingToggleRow}><Text style={styles.muted}>Punch-out reminder when session is open</Text><Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.punchOutReminderEnabled }} onPress={() => void changePreferences({ ...preferences, punchOutReminderEnabled: !preferences.punchOutReminderEnabled })} style={[styles.settingSwitch, preferences.punchOutReminderEnabled && styles.settingSwitchOn]}><Text style={styles.settingSwitchText}>{preferences.punchOutReminderEnabled ? 'ON' : 'OFF'}</Text></Pressable></View><Text style={styles.muted}>Workdays</Text><View style={styles.weekdayRow}>{['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((label, dayIndex) => { const selected = preferences.workDays.includes(dayIndex); return <Pressable key={dayIndex} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayIndex]} onPress={() => { const next = selected ? preferences.workDays.filter(item => item !== dayIndex) : [...preferences.workDays, dayIndex].sort(); if (next.length) void changePreferences({ ...preferences, workDays: next }); }} style={[styles.weekdayChip, selected && styles.weekdayChipActive]}><Text style={[styles.weekdayChipText, selected && styles.weekdayChipTextActive]}>{label}</Text></Pressable>; })}</View></View>
+          <Pressable accessibilityRole="switch" accessibilityState={{ checked: breakReminderEnabled }} onPress={() => { const next = !breakReminderEnabled; setBreakReminderEnabled(next); void changePreferences({ ...preferences, breakEndReminderEnabled: next }); if (!next) void cancelNotice('break-reminder'); }} style={styles.outlineButton}><Text style={styles.outlineText}>{breakReminderEnabled ? '✓ Break-end reminder on' : '＋ Turn on break-end reminder'}</Text></Pressable>
+          <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.largerText }} onPress={() => void changePreferences({ ...preferences, largerText: !preferences.largerText })} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.largerText ? '✓ Larger text enabled' : '＋ Use larger text'}</Text></Pressable>
+          <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.reducedMotion }} onPress={() => void changePreferences({ ...preferences, reducedMotion: !preferences.reducedMotion })} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.reducedMotion ? '✓ Reduced motion enabled' : '＋ Reduce animations'}</Text></Pressable>
+          <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.highContrast }} onPress={() => void changePreferences({ ...preferences, highContrast: !preferences.highContrast })} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.highContrast ? '✓ High contrast enabled' : '＋ Increase contrast'}</Text></Pressable>
+          {Platform.OS === 'web' && <Pressable accessibilityRole="switch" accessibilityState={{ checked: pushEnabled }} onPress={() => void togglePushNotifications()} style={styles.outlineButton}><Text style={styles.outlineText}>{pushEnabled ? '✓ PWA push notifications enabled' : '＋ Enable background push notifications'}</Text></Pressable>}
           <Pressable style={styles.outlineButton} onPress={() => void scheduleWorkTarget()}><Text style={styles.outlineText}>Remind me when target is reached</Text></Pressable>
           {Platform.OS === 'web' && <Text style={styles.muted}>Browser reminders need notification permission and this tab open. Use the iOS or Android app for scheduled daily reminders.</Text>}
           <Text style={styles.policyNote}>Punch-in sessions count as recorded work. Each punch-out starts a break timer that stops at the next punch-in. The policy mentions both a 9-hour day including breaks and 8 recorded work hours; confirm the expected break duration with HR.</Text>
@@ -633,7 +708,7 @@ function OfficeTimeApp() {
       </>}
       {tab === 'Today' && <><Pressable style={styles.outlineButton} onPress={() => setCorrectionTarget({ date: today, add: !days.some(item => item.date === today) })}><Text style={styles.outlineText}>{sessions.length ? 'Adjust or add punch times' : 'Add a missed punch'}</Text></Pressable><WorkTimeCalculator targetMinutes={policy.recordedWorkTargetMinutes} />{sessions.length > 0 && <ClearDayControl date={today} onClear={clearAttendanceDay} />}</>}
       {tab === 'Today' && <TeamAvailability session={session} today={today} />}
-      {tab === 'History' && <History days={days} policy={policy} onClear={clearAttendanceDay} onCorrect={date => setCorrectionTarget({ date, add: false })} onAddMissed={date => setCorrectionTarget({ date, add: true })} />}
+      {tab === 'History' && <History days={days} policy={policy} onClear={clearAttendanceDay} onCorrect={date => setCorrectionTarget({ date, add: false })} onAddMissed={date => setCorrectionTarget({ date, add: true })} onBackup={() => exportAttendanceBackup()} onRestore={data => restoreAttendanceBackup(data)} onCalendar={() => exportAttendanceCalendar()} />}
       {tab === 'Chat' && <TeamChat session={session} onJoin={async name => {
         if (!supabase) return 'Configure Supabase to enable shared chat.';
         const { error } = await supabase.auth.signInAnonymously({ options: { data: { full_name: name } } });
@@ -658,7 +733,7 @@ function OfficeTimeApp() {
     </Modal>
     {correctionTarget && <PunchCorrectionModal key={`${correctionTarget.date}-${correctionTarget.add}`} date={correctionTarget.date} day={days.find(item => item.date === correctionTarget.date)} addToExisting={correctionTarget.add} onClose={() => setCorrectionTarget(null)} onSave={savePunchCorrection} />}
     {officeOutSummary && <OfficeOutSummaryModal day={officeOutSummary} policy={policy} onClose={() => { setOfficeOutSummary(null); setCatGreeting('bye'); }} onUndo={undoOfficeOut} />}
-    {fireworksId > 0 && <FireworksCelebration key={fireworksId} onDone={() => setFireworksId(0)} />}
+    {!preferences.reducedMotion && fireworksId > 0 && <FireworksCelebration key={fireworksId} onDone={() => setFireworksId(0)} />}
   </SafeAreaView>;
 }
 
@@ -1004,6 +1079,21 @@ function CallsHub({ session, active }: { session: any; active: boolean }) {
     };
   }, [setupInbox, refreshHistory]);
 
+  useEffect(() => {
+    if (!supabase || !session || Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const callId = new URL(window.location.href).searchParams.get('call');
+    if (!callId) return;
+    let active = true;
+    void supabase.rpc('list_my_call_history').then(({ data, error: historyError }) => {
+      if (!active || historyError) return;
+      const invitation = (Array.isArray(data) ? data : []).find((item: any) => item.id === callId && item.members?.some((member: any) => member.user_id === session.user.id && member.status === 'invited'));
+      if (!invitation) return;
+      const caller = invitation.members.find((member: any) => member.user_id === invitation.created_by);
+      setRing({ callId, callerId: invitation.created_by, callerName: caller?.display_name || 'Milo user', mode: invitation.mode });
+    });
+    return () => { active = false; };
+  }, [session?.user?.id]);
+
   const beginCall = async (usernames: string[], callMode: 'voice'|'video', seedCallId?: string) => {
     if (!supabase || !session) { setError('Sign in to make calls.'); return; }
     if (callRef.current && !seedCallId) { setError('Leave your current call before starting another one.'); return; }
@@ -1032,7 +1122,10 @@ function CallsHub({ session, active }: { session: any; active: boolean }) {
       } else {
         const { data: roster } = await supabase.rpc('list_call_session_members', { call_id_in: callId });
         for (const member of (Array.isArray(roster) ? roster : [])) {
-          if (member.status === 'invited') void sendCallInbox(member.user_id, { callId, callerId: selfId, callerName: selfName, mode: callMode });
+          if (member.status === 'invited') {
+            void sendCallInbox(member.user_id, { callId, callerId: selfId, callerName: selfName, mode: callMode });
+            void supabase.functions.invoke('send-chat-push', { body: { call_id: callId, title: callMode === 'video' ? 'Incoming video call' : 'Incoming voice call', body: `${selfName} is calling you.`, target_url: `/?call=${encodeURIComponent(callId)}` } }).catch(() => undefined);
+          }
         }
         await loadMembers(callId);
       }
@@ -1970,6 +2063,12 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       }
       const { error } = await supabase.from('chat_messages').insert({ room_id: selectedRoom.room_id, sender_id: session.user.id, sender_name: myName.slice(0, 40), body, media_path: mediaPath, media_type: mediaType, view_once: !!(viewOnce && mediaType === 'image'), reply_to: replyTo?.id ?? null });
       if (error) throw error;
+      void supabase.functions.invoke('send-chat-push', { body: {
+        room_id: selectedRoom.room_id,
+        title: selectedRoom.room_name,
+        body: body || (mediaType === 'image' ? 'Shared a photo' : mediaType === 'video' ? 'Shared a video' : 'Sent an attachment'),
+        target_url: '/',
+      } }).catch(() => undefined);
       setDraft(''); setFile(null); setViewOnce(false); setReplyTo(null);
     } catch (error: any) { Alert.alert('Message not sent', error?.message || 'Check your connection and try again.'); }
     finally { setSending(false); }
@@ -3010,10 +3109,11 @@ function TeamAvailability({ session, today }: { session: any; today: string }) {
   </View>;
 }
 
-function History({ days, policy, onClear, onCorrect, onAddMissed }: { days: AttendanceDay[]; policy: PolicyConfig; onClear: (date: string) => Promise<void>; onCorrect: (date: string) => void; onAddMissed: (date: string) => void }) {
+function History({ days, policy, onClear, onCorrect, onAddMissed, onBackup, onRestore, onCalendar }: { days: AttendanceDay[]; policy: PolicyConfig; onClear: (date: string) => Promise<void>; onCorrect: (date: string) => void; onAddMissed: (date: string) => void; onBackup: () => Promise<void>; onRestore: (backup: any) => Promise<void>; onCalendar: () => Promise<void> }) {
   const [month, setMonth] = useState(localDateKey().slice(0, 7));
   const [expandedDates, setExpandedDates] = useState<string[]>([]);
   const [exporting, setExporting] = useState(false);
+  const restoreInput = useRef<HTMLInputElement | null>(null);
   const rows = days.filter(d => d.date.startsWith(month));
   const weekStart = new Date(); weekStart.setHours(0, 0, 0, 0); weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
   const weekStartKey = localDateKey(weekStart);
@@ -3046,7 +3146,8 @@ function History({ days, policy, onClear, onCorrect, onAddMissed }: { days: Atte
     } catch { Alert.alert('Export failed', 'The attendance PDF could not be created. Please try again.'); }
     finally { setExporting(false); }
   }
-  return <><View style={{ gap: 10, borderRadius: 16, backgroundColor: '#EFF6FF', padding: 14 }}><Text style={styles.sectionTitle}>This week · from {weekStart.toLocaleDateString([], { day: 'numeric', month: 'short' })}</Text><View style={{ flexDirection: 'row', justifyContent: 'space-between' }}><View><Text style={styles.statLabel}>NET WORK</Text><Text style={styles.monthStat}>{formatDuration(weekWorkMinutes)}</Text></View><View><Text style={styles.statLabel}>BREAKS</Text><Text style={styles.monthStat}>{formatDuration(weekBreakMinutes)}</Text></View><View><Text style={styles.statLabel}>DAYS</Text><Text style={styles.monthStat}>{weekRows.filter(item => getDaySessions(item).length).length}</Text></View></View></View><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><Pressable accessibilityRole="button" onPress={() => onAddMissed(`${month}-01`)} style={styles.outlineButton}><Text style={styles.outlineText}>＋ Add missed attendance</Text></Pressable><Pressable accessibilityRole="button" disabled={exporting || !rows.length} onPress={() => void exportPdf()} style={[styles.exportButton, (!rows.length || exporting) && styles.exportDisabled]}><Text style={styles.exportButtonText}>{exporting ? 'Preparing PDF…' : 'Export month as PDF'}</Text></Pressable><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{lateDates.length}</Text></View></View>{rows.length ? [...rows].sort((a, b) => b.date.localeCompare(a.date)).map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; const expanded = expandedDates.includes(d.date); return <View key={d.date} style={styles.historyDayCard}><View style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? 'Hide' : 'Show'} punches for ${d.date}`} onPress={() => setExpandedDates(current => expanded ? current.filter(date => date !== d.date) : [...current, d.date])} style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{halfDayDates.has(d.date) ? 'Half-day applied · ' : ''}{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · Break {formatDuration(s.takenBreakMinutes)} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text><Text style={styles.sessionToggle}>{expanded ? 'Hide punch details' : 'View punch details'}</Text></Pressable><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text><ClearDayControl date={d.date} onClear={onClear} compact /></View>{expanded && <View style={styles.sessionList}>{daySessions.map((session, index) => { const end = session.punchOutAt ? new Date(session.punchOutAt) : new Date(); const elapsed = Math.max(0, Math.floor((end.getTime() - new Date(session.punchInAt).getTime()) / 60000)); const sessionBreak = Math.min(elapsed, session.breakMinutes ?? 0); return <View key={`${session.punchInAt}-${index}`} style={styles.sessionEntry}><Text style={styles.sessionLabel}>Session {index + 1}</Text><Text style={styles.sessionTime}>{clock(session.punchInAt)} → {session.punchOutAt ? clock(session.punchOutAt) : 'In progress'}</Text><Text style={styles.sessionDuration}>{formatDuration(elapsed - sessionBreak)} work{sessionBreak ? ` · ${formatDuration(sessionBreak)} break` : ''}</Text></View>; })}<Pressable style={styles.outlineButton} onPress={() => onCorrect(d.date)}><Text style={styles.outlineText}>Correct punch times</Text></Pressable></View>}</View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
+  const controls = <><View style={styles.exportTools}><Pressable style={styles.outlineButton} onPress={() => void onBackup()}><Text style={styles.outlineText}>Download backup</Text></Pressable><Pressable style={styles.outlineButton} onPress={() => Platform.OS === 'web' ? restoreInput.current?.click() : Alert.alert('Restore backup', 'Restore a Milo JSON backup from Milo on the web.') }><Text style={styles.outlineText}>Restore backup</Text></Pressable></View><Pressable style={styles.outlineButton} onPress={() => void onCalendar()}><Text style={styles.outlineText}>Export sessions to calendar (.ics)</Text></Pressable>{Platform.OS === 'web' && React.createElement('input', { ref: restoreInput, type: 'file', accept: '.json,application/json', style: { display: 'none' }, onChange: async (event: React.ChangeEvent<HTMLInputElement>) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (!file) return; try { await onRestore(JSON.parse(await file.text())); } catch (error: any) { Alert.alert('Restore failed', error?.message || 'Choose a valid Milo backup JSON file.'); } } })}</>;
+  return <>{controls}<View style={{ gap: 10, borderRadius: 16, backgroundColor: '#EFF6FF', padding: 14 }}><Text style={styles.sectionTitle}>This week · from {weekStart.toLocaleDateString([], { day: 'numeric', month: 'short' })}</Text><View style={{ flexDirection: 'row', justifyContent: 'space-between' }}><View><Text style={styles.statLabel}>NET WORK</Text><Text style={styles.monthStat}>{formatDuration(weekWorkMinutes)}</Text></View><View><Text style={styles.statLabel}>BREAKS</Text><Text style={styles.monthStat}>{formatDuration(weekBreakMinutes)}</Text></View><View><Text style={styles.statLabel}>DAYS</Text><Text style={styles.monthStat}>{weekRows.filter(item => getDaySessions(item).length).length}</Text></View></View></View><View style={styles.monthBar}><Pressable onPress={() => shiftMonth(-1)}><Text style={styles.monthArrow}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthName(month)}</Text><Pressable onPress={() => shiftMonth(1)}><Text style={styles.monthArrow}>›</Text></Pressable></View><Pressable accessibilityRole="button" onPress={() => onAddMissed(`${month}-01`)} style={styles.outlineButton}><Text style={styles.outlineText}>＋ Add missed attendance</Text></Pressable><Pressable accessibilityRole="button" disabled={exporting || !rows.length} onPress={() => void exportPdf()} style={[styles.exportButton, (!rows.length || exporting) && styles.exportDisabled]}><Text style={styles.exportButtonText}>{exporting ? 'Preparing PDF…' : 'Export month as PDF'}</Text></Pressable><View style={styles.summaryStrip}><View><Text style={styles.statLabel}>DAYS RECORDED</Text><Text style={styles.monthStat}>{rows.length}</Text></View><View><Text style={styles.statLabel}>WORK HOURS</Text><Text style={styles.monthStat}>{formatDuration(total)}</Text></View><View><Text style={styles.statLabel}>LATE LOGINS</Text><Text style={styles.monthStat}>{lateDates.length}</Text></View></View>{rows.length ? [...rows].sort((a, b) => b.date.localeCompare(a.date)).map(d => { const s = getAttendanceSummary(d, d.punchOutAt ? new Date(d.punchOutAt) : new Date(), policy); const daySessions = getDaySessions(d); const lastSession = daySessions[daySessions.length - 1]; const expanded = expandedDates.includes(d.date); return <View key={d.date} style={styles.historyDayCard}><View style={styles.historyRow}><View style={styles.historyDate}><Text style={styles.historyDay}>{new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</Text><Text style={styles.historyNum}>{new Date(`${d.date}T12:00:00`).getDate()}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? 'Hide' : 'Show'} punches for ${d.date}`} onPress={() => setExpandedDates(current => expanded ? current.filter(date => date !== d.date) : [...current, d.date])} style={styles.historyMain}><Text style={styles.historyTitle}>{clock(daySessions[0]?.punchInAt ?? null)} — {lastSession?.punchOutAt ? clock(lastSession.punchOutAt) : 'In progress'}</Text><Text style={styles.historySub}>{halfDayDates.has(d.date) ? 'Half-day applied · ' : ''}{s.loginStatus} · {daySessions.length} session{daySessions.length === 1 ? '' : 's'} · Break {formatDuration(s.takenBreakMinutes)} · {d.synced === false ? 'Waiting to sync' : 'Saved'}</Text><Text style={styles.sessionToggle}>{expanded ? 'Hide punch details' : 'View punch details'}</Text></Pressable><Text style={styles.historyHours}>{formatDuration(s.netWorkedMinutes)}</Text><ClearDayControl date={d.date} onClear={onClear} compact /></View>{expanded && <View style={styles.sessionList}>{daySessions.map((session, index) => { const end = session.punchOutAt ? new Date(session.punchOutAt) : new Date(); const elapsed = Math.max(0, Math.floor((end.getTime() - new Date(session.punchInAt).getTime()) / 60000)); const sessionBreak = Math.min(elapsed, session.breakMinutes ?? 0); return <View key={`${session.punchInAt}-${index}`} style={styles.sessionEntry}><Text style={styles.sessionLabel}>Session {index + 1}</Text><Text style={styles.sessionTime}>{clock(session.punchInAt)} → {session.punchOutAt ? clock(session.punchOutAt) : 'In progress'}</Text><Text style={styles.sessionDuration}>{formatDuration(elapsed - sessionBreak)} work{sessionBreak ? ` · ${formatDuration(sessionBreak)} break` : ''}</Text></View>; })}<Pressable style={styles.outlineButton} onPress={() => onCorrect(d.date)}><Text style={styles.outlineText}>Correct punch times</Text></Pressable></View>}</View>; }) : <View style={styles.empty}><Text style={styles.emptyTitle}>No attendance yet</Text><Text style={styles.muted}>Punch in to start a record for {monthName(month)}.</Text></View>}</>;
 }
 
 function ClearDayControl({ date, onClear, compact = false }: { date: string; onClear: (date: string) => Promise<void>; compact?: boolean }) {
@@ -3160,6 +3261,7 @@ const styles = StyleSheet.create({
   gameCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 18, gap: 15 }, gameHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, gameEyebrow: { color: colors.blue, fontWeight: '800', fontSize: 10, letterSpacing: 1.2 }, gameTitle: { color: colors.text, fontSize: 24, fontWeight: '800', marginTop: 3 }, gameIcon: { fontSize: 34 }, gameDescription: { color: colors.muted, fontSize: 12, lineHeight: 18 }, difficultyRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 7 }, difficultyLabel: { color: colors.muted, fontSize: 11, fontWeight: '700', marginRight: 3 }, difficultyButton: { borderRadius: 99, paddingVertical: 7, paddingHorizontal: 10, backgroundColor: '#F1F5F9' }, difficultySelected: { backgroundColor: '#DBEAFE' }, difficultyText: { color: colors.muted, fontSize: 10, fontWeight: '700' }, difficultyTextSelected: { color: colors.blue }, playerRow: { flexDirection: 'row', gap: 10 }, playerCard: { flex: 1, alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 15, padding: 10 }, playerTurn: { borderColor: colors.blue, backgroundColor: '#EFF6FF' }, playerName: { width: '100%', color: colors.text, textAlign: 'center', fontWeight: '700', fontSize: 12, paddingVertical: 4 }, playerScore: { color: colors.blue, fontWeight: '800', fontSize: 25, marginTop: 4 }, playerPairs: { color: colors.muted, fontSize: 10 }, turnLabel: { textAlign: 'center', color: colors.text, fontWeight: '800', fontSize: 14 }, memoryBoard: { width: '100%', maxWidth: 460, alignSelf: 'center', gap: 8 }, memoryRow: { flexDirection: 'row', gap: 8 }, memoryTile: { flex: 1, aspectRatio: 1, borderRadius: 13, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: colors.navy, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }, memoryFaceImage: { width: '100%', height: '100%' }, memoryTileOpen: { backgroundColor: '#EFF6FF', borderColor: '#93C5FD' }, memoryTileMatched: { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }, memoryTileText: { fontSize: 29, fontWeight: '800' }, memoryTileHidden: { color: '#BFDBFE', fontSize: 31 }, gameFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, gameHint: { flex: 1, color: colors.muted, fontSize: 11 }, newGameButton: { backgroundColor: colors.blue, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 11 }, newGameText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   onlineGamePanel: { padding: 13, borderRadius: 16, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, gap: 11 }, onlineInviteRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, onlineInviteInput: { flex: 1, minWidth: 0, marginBottom: 0 }, onlineInviteButton: { minHeight: 46, justifyContent: 'center' }, onlineInviteCard: { flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 12, padding: 10, backgroundColor: '#EFF6FF' }, onlineInviteTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, onlineUsername: { color: colors.muted, fontSize: 12 }, onlineUsernameValue: { color: colors.blue, fontWeight: '800' }, onlineMatchHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
   ludoPlayerList: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, ludoPlayerName: { color: colors.text, fontSize: 11, fontWeight: '700' }, ludoPlayerBadge: { minWidth: 74, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 11, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, alignItems: 'center' }, ludoNameGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 7 }, ludoNameInput: { width: '48%', flexGrow: 1, marginBottom: 0 }, ludoRuleToggle: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 5 }, ludoRuleCheck: { width: 20, height: 20, borderRadius: 5, overflow: 'hidden', textAlign: 'center', textAlignVertical: 'center', backgroundColor: '#DBEAFE', color: colors.blue, fontWeight: '900', borderWidth: 1, borderColor: colors.blue }, ludoMoveChoicePanel: { padding: 12, borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 14, backgroundColor: '#EFF6FF', gap: 10 }, ludoMoveChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, ludoMoveChoice: { flexGrow: 1, flexBasis: '45%', minWidth: 120, padding: 12, borderRadius: 12, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#BFDBFE', gap: 3 }, ludoMoveChoiceTitle: { color: colors.blue, fontSize: 13, fontWeight: '900' }, ludoMoveChoiceSubtitle: { color: colors.muted, fontSize: 11, fontWeight: '600' }, ludoBoard: { width: '100%', maxWidth: 420, aspectRatio: 1, alignSelf: 'center', position: 'relative', borderRadius: 4, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#64748B', overflow: 'hidden' }, ludoGrid: { position: 'absolute', width: '100%', height: '100%' }, ludoGridRow: { flexDirection: 'row', flex: 1 }, ludoGridCell: { flex: 1, aspectRatio: 1, borderWidth: 0.5, borderColor: '#94A3B8', alignItems: 'center', justifyContent: 'center' }, ludoGridBlank: { backgroundColor: '#FFFFFF' }, ludoPathCell: { backgroundColor: '#FFFFFF' }, ludoSafeCell: { backgroundColor: '#F8FAFC', borderColor: '#64748B' }, ludoHomeBox: { position: 'absolute', width: '40%', height: '40%', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#475569' }, ludoHomeInner: { width: '76%', height: '76%', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#334155', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-evenly' }, ludoHomeDot: { width: '35%', aspectRatio: 1, borderRadius: 100, borderWidth: 1.5, borderColor: '#475569', elevation: 2 }, ludoCenterMark: { position: 'absolute', left: '40%', top: '40%', width: '20%', height: '20%', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center' }, ludoTrackCell: { borderColor: '#334155', borderWidth: 1 }, ludoCellNumber: { fontSize: 8, color: colors.blue }, ludoPiece: { position: 'absolute', width: '6%', height: '6%', marginLeft: -9, marginTop: -9, borderRadius: 100, borderWidth: 1.5, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', elevation: 3 }, ludoPieceSelectable: { borderColor: '#111827', borderWidth: 2.5, transform: [{ scale: 1.2 }] }, ludoPieceText: { color: '#FFFFFF', fontSize: 9, fontWeight: '900' }, ludoCenter: { position: 'absolute', left: '50%', top: '50%', width: 30, height: 30, marginLeft: -15, marginTop: -15, borderRadius: 6, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' }, ludoDice: { fontSize: 18, fontWeight: '900', color: colors.text },
+  settingGroup: { gap: 8, padding: 12, backgroundColor: '#F8FAFC', borderRadius: 12 }, settingTimeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }, settingTimeInput: { minWidth: 112, paddingVertical: 8, textAlign: 'center' }, settingToggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }, settingSwitch: { minWidth: 52, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 99, backgroundColor: '#E2E8F0', alignItems: 'center' }, settingSwitchOn: { backgroundColor: '#DCFCE7' }, settingSwitchText: { color: colors.text, fontSize: 9, fontWeight: '900' }, weekdayRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 5 }, weekdayChip: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#E2E8F0', alignItems: 'center', justifyContent: 'center' }, weekdayChipActive: { backgroundColor: colors.blue }, weekdayChipText: { color: colors.muted, fontSize: 10, fontWeight: '800' }, weekdayChipTextActive: { color: '#FFFFFF' }, exportTools: { flexDirection: 'row', gap: 8 },
   exportButton: { backgroundColor: colors.blue, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, alignItems: 'center' }, exportDisabled: { opacity: 0.45 }, exportButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' }, historyDayCard: { backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' }, sessionToggle: { color: colors.blue, fontSize: 10, fontWeight: '700' }, sessionList: { borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: '#F8FAFC' }, sessionEntry: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border }, sessionLabel: { color: colors.muted, fontSize: 10, fontWeight: '700', width: 58 }, sessionTime: { color: colors.text, fontSize: 11, fontWeight: '700', flex: 1 }, sessionDuration: { color: colors.muted, fontSize: 10 },
   chatJoinDivider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }, chatDividerLine: { flex: 1, height: 1, backgroundColor: colors.border }, guestAction: { backgroundColor: '#0F766E' }, guestActionText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   heroCatLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }, heroCatImage: { position: 'absolute', width: '100%', height: '100%' }, heroCatShade: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.navy }, heroCatPaw: { position: 'absolute', left: '55%', bottom: '15%', width: 45, height: 88, transformOrigin: 'bottom center' }, heroCatPawArm: { position: 'absolute', left: 15, bottom: 0, width: 15, height: 62, borderRadius: 10, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatPawPalm: { position: 'absolute', left: 3, top: 8, width: 40, height: 34, borderRadius: 20, backgroundColor: '#E8953D', borderWidth: 2, borderColor: '#FFD17A' }, heroCatToe: { position: 'absolute', top: 2, width: 12, height: 17, borderRadius: 9, backgroundColor: '#E8953D', borderWidth: 1, borderColor: '#FFD17A' }, heroCatToeOne: { left: 5 }, heroCatToeTwo: { left: 17, top: -1 }, heroCatToeThree: { left: 29 }, heroCatBlink: { position: 'absolute', left: '31%', top: '24%', width: '9%', height: '4%', borderRadius: 99, backgroundColor: '#EAA34B', alignItems: 'center', justifyContent: 'center' }, heroCatBlinkLine: { width: '72%', height: 1.5, borderRadius: 2, backgroundColor: '#60351E', transform: [{ rotate: '-5deg' }] }, greetingPill: { backgroundColor: 'rgba(15, 118, 110, 0.92)', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12 }, greetingPillText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' }, catGreetingCard: { width: '100%', maxWidth: 420, backgroundColor: '#FFFFFF', borderRadius: 26, paddingHorizontal: 24, paddingVertical: 27, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#CFECE8' }, catSpeech: { backgroundColor: '#DCFCE7', paddingHorizontal: 18, paddingVertical: 9, borderRadius: 16, borderBottomLeftRadius: 4 }, catSpeechText: { color: '#166534', fontSize: 15, fontWeight: '900' }, catGreetingTitle: { color: colors.text, fontSize: 23, fontWeight: '900', textAlign: 'center' }, catGreetingBody: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', maxWidth: 280 }, actionPrimarySmall: { backgroundColor: colors.blue, borderRadius: 12, paddingVertical: 11, paddingHorizontal: 20, marginTop: 7 }, officeByeRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F0FDF4', borderRadius: 13, padding: 10 }, officeOutActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }, officeOutButton: { backgroundColor: '#B91C1C', borderRadius: 13, paddingVertical: 12, paddingHorizontal: 9, alignItems: 'center', marginTop: 12 }, officeOutText: { color: '#FFFFFF', fontWeight: '900', fontSize: 12, textAlign: 'center' }, undoOfficeOutButton: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#B91C1C', borderRadius: 13, paddingVertical: 11, paddingHorizontal: 12 }, undoOfficeOutText: { color: '#B91C1C', fontWeight: '800', fontSize: 11 }, officeSummaryModal: { width: '100%', maxWidth: 560, maxHeight: '90%', backgroundColor: colors.card, borderRadius: 18, padding: 16, gap: 13 }, officeSummaryTotals: { flexDirection: 'row', gap: 10, padding: 12, backgroundColor: '#F1F5F9', borderRadius: 12 }, officeSummaryWork: { color: colors.blue, fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryBreak: { color: '#B91C1C', fontSize: 18, fontWeight: '900', marginTop: 5 }, officeSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: '#F8FAFC', borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 10 }, officeSummaryText: { color: colors.text, fontSize: 12, fontWeight: '800' },

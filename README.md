@@ -150,3 +150,11 @@ Milo's web build can be installed as a Progressive Web App (PWA). Deploy the sit
 - **Android:** Open Milo in Chrome and tap **Install** in Milo's install card or use Chrome's **Install app** menu item.
 
 The PWA manifest uses Milo's app icon and standalone display mode. Its service worker caches the app shell and Expo JavaScript bundles for relaunching after a prior visit; authenticated API, attendance, and chat responses are never cached. Local browser notifications can appear through the service worker while Milo is open. Background web push delivery still needs a push subscription and server-side sender configured separately.
+
+## Cross-device settings, backups, calendar, and notifications
+
+- Run `supabase/milo-sync-push.sql` in the Supabase SQL Editor to enable account-synced settings and private push subscription storage. Work targets, reminder settings, and accessibility preferences are stored per signed-in account; unsynced edits remain local until a connection is available.
+- In History, **Download backup** creates a Milo JSON backup and **Restore backup** merges its attendance days (a same-date backup entry replaces that date). **Export sessions to calendar (.ics)** downloads finished sessions for import into a calendar app. On native builds, the system share sheet shares the backup/calendar data.
+- Generate a VAPID key pair with `npx web-push generate-vapid-keys`. Set `EXPO_PUBLIC_VAPID_PUBLIC_KEY` in the web build environment (public key only), and configure `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` as Supabase Function secrets. Never expose the private key in the web build.
+- Deploy `supabase/functions/send-chat-push` to Supabase. Once configured, a signed-in room member can enable push under Today → workday settings; new team-room messages notify that room's other subscribed members. iOS users must install Milo to the Home Screen and allow notifications. Browsers control permission and delivery behavior.
+- Larger text, reduced motion, and increased contrast are available under Today → workday settings. Browser-installed and regular web sessions store these options with the signed-in account when available.

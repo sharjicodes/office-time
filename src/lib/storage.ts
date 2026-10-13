@@ -7,6 +7,29 @@ const DAYS_KEY = 'officetime.attendance.v1';
 const LAST_ATTENDANCE_OWNER_KEY = 'officetime.attendance.last-owner.v1';
 const POLICY_KEY = 'officetime.policy.v1';
 const DELETED_DAYS_KEY = 'officetime.deleted-days.v1';
+const PREFERENCES_KEY = 'officetime.preferences.v1';
+
+export type MiloPreferences = {
+  reminderEnabled: boolean;
+  reminderTime: string;
+  breakEndReminderEnabled: boolean;
+  punchOutReminderEnabled: boolean;
+  workDays: number[];
+  largerText: boolean;
+  reducedMotion: boolean;
+  highContrast: boolean;
+};
+
+export const DEFAULT_PREFERENCES: MiloPreferences = {
+  reminderEnabled: true,
+  reminderTime: '08:50',
+  breakEndReminderEnabled: true,
+  punchOutReminderEnabled: true,
+  workDays: [1, 2, 3, 4, 5],
+  largerText: false,
+  reducedMotion: false,
+  highContrast: false,
+};
 async function daysKey() {
   try {
     const { data } = await supabase?.auth.getSession() ?? { data: { session: null } };
@@ -157,11 +180,75 @@ export async function syncPending(days?: AttendanceDay[]) {
 }
 
 export async function loadPolicy() {
-  try { return { ...DEFAULT_POLICY, ...JSON.parse(await AsyncStorage.getItem(POLICY_KEY) || '{}') }; }
-  catch { return DEFAULT_POLICY; }
+  const local = await readSettings();
+  if (local.pendingSync && await writeCloudSettings(local)) { local.pendingSync = false; await writeLocalSettings(local); }
+  const remote = await readCloudSettings();
+  if (remote?.policy) {
+    const merged = { ...DEFAULT_POLICY, ...local.policy, ...remote.policy };
+    await writeLocalSettings({ ...local, policy: merged });
+    return merged;
+  }
+  return { ...DEFAULT_POLICY, ...local.policy };
 }
 export async function savePolicy(config: typeof DEFAULT_POLICY) {
-  await AsyncStorage.setItem(POLICY_KEY, JSON.stringify(config));
+  const local = await readSettings();
+  const next = { ...local, policy: config, pendingSync: true };
+  await writeLocalSettings(next);
+  if (await writeCloudSettings(next)) { next.pendingSync = false; await writeLocalSettings(next); }
+}
+
+export async function loadPreferences(): Promise<MiloPreferences> {
+  const local = await readSettings();
+  if (local.pendingSync && await writeCloudSettings(local)) { local.pendingSync = false; await writeLocalSettings(local); }
+  const remote = await readCloudSettings();
+  const preferences = { ...DEFAULT_PREFERENCES, ...local.preferences, ...remote?.preferences };
+  if (remote?.preferences) await writeLocalSettings({ ...local, preferences });
+  return preferences;
+}
+
+export async function savePreferences(preferences: MiloPreferences) {
+  const local = await readSettings();
+  const next = { ...local, preferences, pendingSync: true };
+  await writeLocalSettings(next);
+  if (await writeCloudSettings(next)) { next.pendingSync = false; await writeLocalSettings(next); }
+}
+
+async function readSettings(): Promise<{ policy?: Partial<typeof DEFAULT_POLICY>; preferences?: Partial<MiloPreferences>; pendingSync?: boolean }> {
+  try {
+    const [policy, preferences] = await Promise.all([
+      AsyncStorage.getItem(POLICY_KEY), AsyncStorage.getItem(PREFERENCES_KEY),
+    ]);
+    const pending = await AsyncStorage.getItem(`${PREFERENCES_KEY}.pending-sync`);
+    return { policy: policy ? JSON.parse(policy) : undefined, preferences: preferences ? JSON.parse(preferences) : undefined, pendingSync: pending === 'true' };
+  } catch { return {}; }
+}
+
+async function writeLocalSettings(settings: { policy?: object; preferences?: object; pendingSync?: boolean }) {
+  if (settings.policy) await AsyncStorage.setItem(POLICY_KEY, JSON.stringify(settings.policy));
+  if (settings.preferences) await AsyncStorage.setItem(PREFERENCES_KEY, JSON.stringify(settings.preferences));
+  if (settings.pendingSync !== undefined) await AsyncStorage.setItem(`${PREFERENCES_KEY}.pending-sync`, String(settings.pendingSync));
+}
+
+async function accountId() {
+  try {
+    const { data } = await supabase?.auth.getUser() ?? { data: { user: null } };
+    return data.user && !data.user.is_anonymous ? data.user.id : null;
+  } catch { return null; }
+}
+
+async function readCloudSettings(): Promise<{ policy?: Partial<typeof DEFAULT_POLICY>; preferences?: Partial<MiloPreferences> } | null> {
+  const userId = await accountId();
+  if (!userId || !supabase || !(await NetInfo.fetch()).isConnected) return null;
+  const { data, error } = await supabase.from('milo_user_settings').select('settings').eq('user_id', userId).maybeSingle();
+  return error ? null : (data?.settings as { policy?: Partial<typeof DEFAULT_POLICY>; preferences?: Partial<MiloPreferences> } | null);
+}
+
+async function writeCloudSettings(settings: { policy?: object; preferences?: object; pendingSync?: boolean }) {
+  const userId = await accountId();
+  if (!userId || !supabase || !(await NetInfo.fetch()).isConnected) return false;
+  const current = await readCloudSettings();
+  const { error } = await supabase.from('milo_user_settings').upsert({ user_id: userId, settings: { ...current, ...(settings.policy ? { policy: settings.policy } : {}), ...(settings.preferences ? { preferences: settings.preferences } : {}) }, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+  return !error;
 }
 export async function getToday() {
   const days = await loadDays();

@@ -16,6 +16,22 @@
       html, body { height: 100%; }
       body { overflow: hidden; }
       #root { display: flex; height: 100%; flex: 1; }
+      body.milo-large-text #root { zoom: 1.12; }
+      body.milo-high-contrast #root { filter: contrast(1.18); }
+      body.milo-reduced-motion *, body.milo-reduced-motion *::before, body.milo-reduced-motion *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html:not(.milo-motion-enabled) *, html:not(.milo-motion-enabled) *::before, html:not(.milo-motion-enabled) *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+          scroll-behavior: auto !important;
+        }
+      }
     </style>
     <script>
       if ('serviceWorker' in navigator) {

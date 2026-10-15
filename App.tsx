@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ActivityIndicator, Alert, Animated, Easing, Image, ImageSourcePropType, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Easing, Image, ImageSourcePropType, Keyboard, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -16,7 +16,7 @@ import { colors } from './src/theme';
 import { BUILD_ID, BUILD_SUMMARY } from './src/release';
 
 if (Platform.OS !== 'web') Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
-type Tab = 'Today' | 'History' | 'Games' | 'Calls' | 'Chat' | 'HR';
+type Tab = 'Today' | 'History' | 'Games' | 'Calls' | 'Chat' | 'Desktop' | 'HR';
 const clock = (value: string | null) => value ? new Date(value).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '—';
 const monthName = (key: string) => new Date(`${key}-01T12:00:00`).toLocaleDateString([], { month: 'long', year: 'numeric' });
 const formatTimer = (seconds: number) => {
@@ -668,7 +668,7 @@ function OfficeTimeApp() {
       <View style={styles.header}><View><Text style={styles.eyebrow}>YOUR OFFICE COMPANION</Text><Text style={styles.title}>Milo</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}><PwaInstallButton /><MiloControlPanel now={now} onNavigate={nextTab => setTab(nextTab)} /></View></View>
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => { if (session) void signOut(); }}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
       {Platform.OS === 'web' && <PwaInstallPrompt />}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}><>{(['Today', 'History', 'Games', 'Calls', 'Chat', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</></ScrollView>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}><>{(['Today', 'History', 'Games', 'Calls', 'Chat', 'Desktop', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</></ScrollView>
       {tab === 'Today' && !preferences.reducedMotion && <WalkingCat />}
       {tab === 'Today' && <>
         <View style={styles.hero}>
@@ -716,6 +716,7 @@ function OfficeTimeApp() {
       }} />}
       {tab === 'Games' && <GamesHub session={session} />}
       <CallsHub session={session} active={tab === 'Calls'} />
+      {tab === 'Desktop' && <View style={styles.card}><Text style={styles.sectionTitle}>Milo Desktop Companion</Text><Text style={styles.muted}>Let Milo appear on your desktop and speak your custom reminders on Windows, macOS, or Linux.</Text><View style={{ height: 10 }} /><Row label="Attendance sync" value={session?.user && !session.user.is_anonymous ? 'Sign in with this same account in Milo Desktop' : 'Sign in to your Milo account to sync attendance'} /><Row label="Work-time animations" value="Set milestones such as 1 hour and 8 hours in the desktop app. Breaks do not count toward worked-time milestones." /><Row label="Punch history" value="Today's punch times and your work target are read from your Milo account." /><Pressable style={[styles.primary, { minHeight: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginTop: 12 }]} onPress={() => void Linking.openURL('https://github.com/sharjicodes/office-time/releases/latest')}><Text style={styles.actionText}>Get Milo Desktop</Text></Pressable><Text style={[styles.muted, { marginTop: 8 }]}>Install Milo Desktop, then connect it with the same email and password you use here. Attendance remains protected by your account permissions.</Text></View>}
       {tab === 'HR' && <HRDashboard rows={hrRows} loading={busy} role={role} policyUploadBusy={policyUploadBusy} policyUploadedName={policyUploadedName} onUploadPolicy={uploadMiloPolicy} onRefresh={async () => { setBusy(true); const { data } = await supabase!.rpc('hr_attendance_report'); setHrRows(data ?? []); setBusy(false); }} onResolve={resolveReview} />}
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. Milo is a companion tracker until HR authorizes it for official use.</Text></View>
       <Text style={styles.footer}>Milo · Your office companion</Text>

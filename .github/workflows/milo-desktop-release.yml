@@ -1,0 +1,64 @@
+name: Release Milo Desktop Companion
+
+on:
+  push:
+    tags:
+      - 'milo-desktop-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }} installers
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macOS universal
+            runner: macos-latest
+            script: package:mac:universal
+          - platform: Windows x64
+            runner: windows-latest
+            script: package:win
+          - platform: Linux x64
+            runner: ubuntu-latest
+            script: package:linux
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop-assistant/package-lock.json
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libopenjp2-tools
+      - run: npm ci
+        working-directory: desktop-assistant
+      - run: npm run ${{ matrix.script }}
+        working-directory: desktop-assistant
+      - uses: actions/upload-artifact@v4
+        with:
+          name: milo-${{ matrix.platform }}
+          path: desktop-assistant/dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish public release assets
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" release-assets/* --title "Milo Desktop Companion $RELEASE_TAG" --generate-notes

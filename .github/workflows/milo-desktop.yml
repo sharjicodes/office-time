@@ -1,0 +1,47 @@
+name: Build Milo Desktop Companion
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'desktop-assistant/**'
+      - '.github/workflows/milo-desktop.yml'
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macOS universal
+            runner: macos-latest
+            script: package:mac:universal
+          - platform: Windows x64
+            runner: windows-latest
+            script: package:win
+          - platform: Linux x64
+            runner: ubuntu-latest
+            script: package:linux
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop-assistant/package-lock.json
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libopenjp2-tools
+      - run: npm ci
+        working-directory: desktop-assistant
+      - run: npm run ${{ matrix.script }}
+        working-directory: desktop-assistant
+      - uses: actions/upload-artifact@v4
+        with:
+          name: milo-desktop-${{ matrix.platform }}
+          path: desktop-assistant/dist/*
+          if-no-files-found: error
+          retention-days: 14

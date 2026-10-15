@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="settings.css">
+  <title>Milo Desktop Companion</title>
+</head>
+<body>
+  <main>
+    <header><div class="mark">🐈</div><div><p class="eyebrow">DESKTOP COMPANION</p><h1>Milo is here</h1><p class="intro">A little animated visitor with your Malayalam lines.</p></div></header>
+    <section class="card account-card">
+      <div class="section-heading"><div><h2>Connect your attendance</h2><p>Use the same Milo account as the web app to sync today's punches.</p></div><span class="sync-badge" id="syncBadge">Not connected</span></div>
+      <form id="accountForm" autocomplete="on">
+        <label for="accountEmail">Account email</label><input id="accountEmail" type="email" autocomplete="username" placeholder="you@example.com" required>
+        <label for="accountPassword">Password</label><input id="accountPassword" type="password" autocomplete="current-password" placeholder="Your Milo password" required>
+        <button id="signIn" class="primary" type="submit">Connect Milo account</button>
+      </form>
+      <div id="accountConnected" hidden>
+        <p id="accountSummary" class="account-summary"></p>
+        <div class="account-actions"><button id="syncNow" class="secondary" type="button">Sync now</button><button id="signOut" class="secondary" type="button">Disconnect</button></div>
+      </div>
+      <p id="accountStatus" class="hint" role="status">Sign in to share attendance with this desktop.</p>
+    </section>
+    <section class="card work-reminders-card">
+      <div class="section-heading"><div><h2>Work-time animation reminders</h2><p>Trigger these when net worked time reaches each milestone.</p></div><button id="addWorkReminder" class="add-button" type="button">＋ Add</button></div>
+      <div id="workReminderRows"></div>
+      <p class="hint">Breaks do not count toward these reminders. Connect your account above; Milo checks attendance every 30 seconds.</p>
+    </section>
+    <section class="card">
+      <label for="lines">Your dialogues <span>one line per dialogue</span></label>
+      <textarea id="lines" rows="6" maxlength="5000" placeholder="നമസ്കാരം! ഞാൻ മിലോ.">നമസ്കാരം! ഞാൻ മിലോ.</textarea>
+      <p class="hint">Milo rotates through these lines. Malayalam speech uses an installed system voice, when available.</p>
+    </section>
+    <section class="card reminders-card">
+      <div class="section-heading"><div><h2>Timed reminders</h2><p>Give each reminder its own time and message.</p></div><button id="addReminder" class="add-button" type="button">＋ Add</button></div>
+      <div id="reminderRows"></div>
+      <div class="reminder-actions"><button id="startReminders" class="primary" type="button">Start reminders from now</button><button id="stopReminders" class="secondary" type="button">Stop</button></div>
+      <p id="reminderStatus" class="reminder-status" role="status">Reminder countdown is stopped.</p>
+      <p class="hint">Example: 1 hour for a check-in, 8 hours for an end-of-day message. The countdown resumes when Milo reopens.</p>
+    </section>
+    <section class="card options">
+      <label for="interval">Show Milo every</label>
+      <div class="interval"><input id="interval" type="number" min="0" max="180" value="10"><span>minutes <small>(0 turns off automatic appearances)</small></span></div>
+      <label class="switch-row"><input id="speak" type="checkbox" checked><span><strong>Speak dialogues</strong><small>Use the system Malayalam voice if available</small></span></label>
+      <label class="switch-row"><input id="enabled" type="checkbox" checked><span><strong>Show animated companion</strong><small>Displays on your desktop workspaces</small></span></label>
+      <label class="switch-row"><input id="login" type="checkbox"><span><strong>Launch when I sign in</strong><small>Start Milo automatically when you sign in</small></span></label>
+    </section>
+    <p id="status" class="status" role="status"></p>
+    <footer><button id="preview" class="secondary">Preview now</button><button id="save" class="primary">Save settings</button></footer>
+    <p class="footnote">The overlay is click-through. Use the Milo tray or menu-bar icon to open settings, hide Milo, or quit.</p>
+  </main>
+  <script src="settings.js"></script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="overlay.css">
+  <title>Milo Desktop Companion</title>
+</head>
+<body>
+  <main id="stage" aria-live="polite">
+    <div id="speech" class="speech" hidden></div>
+    <div id="milo" class="milo" aria-label="Animated Milo cat">
+      <svg class="cat" viewBox="0 0 180 190" role="img" aria-label="A smiling orange cat">
+        <defs>
+          <linearGradient id="fur" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffd17a"/><stop offset=".55" stop-color="#f69438"/><stop offset="1" stop-color="#d95c25"/></linearGradient>
+          <linearGradient id="belly" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff2d8"/><stop offset="1" stop-color="#f4c89c"/></linearGradient>
+          <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="5" stdDeviation="4" flood-color="#1e293b" flood-opacity=".22"/></filter>
+        </defs>
+        <g filter="url(#shadow)" stroke="#a9461e" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+          <path class="tail" d="M47 151 C16 158 15 128 34 120 C45 115 53 124 43 130" fill="none" stroke="#ef8834" stroke-width="13"/>
+          <ellipse cx="92" cy="137" rx="48" ry="39" fill="url(#fur)"/>
+          <ellipse cx="92" cy="146" rx="29" ry="24" fill="url(#belly)" stroke="none"/>
+          <path class="leg left" d="M63 157 Q58 175 68 178 L82 178 Q85 174 78 171 L78 154" fill="#ef9a4d"/>
+          <path class="leg right" d="M102 155 Q98 174 108 178 L124 178 Q127 173 119 171 L119 151" fill="#f3a353"/>
+          <path d="M54 54 L46 14 Q45 7 52 13 L77 35 M108 35 L132 12 Q139 8 138 18 L132 57" fill="url(#fur)"/>
+          <path d="M56 37 L53 20 L70 37 M116 37 L133 20 L128 42" fill="#f5a5a1" stroke="none"/>
+          <ellipse cx="91" cy="67" rx="52" ry="47" fill="url(#fur)"/>
+          <path d="M45 55 Q57 43 68 53 M91 44 Q100 39 109 48" fill="none" stroke="#c85d27" stroke-width="6"/>
+          <ellipse class="eye" cx="72" cy="65" rx="6" ry="10" fill="#382b26" stroke="none"/>
+          <ellipse class="eye" cx="111" cy="65" rx="6" ry="10" fill="#382b26" stroke="none"/>
+          <path class="blink" d="M64 66 Q72 71 80 66 M103 66 Q111 71 119 66" fill="none" stroke="#7c341c" stroke-width="4"/>
+          <ellipse cx="91" cy="84" rx="24" ry="17" fill="url(#belly)" stroke="none"/>
+          <path d="M87 80 Q91 75 95 80 Q91 86 87 80Z" fill="#d76e65" stroke="none"/>
+          <path d="M91 85 Q88 94 81 92 M91 85 Q94 94 101 92" fill="none" stroke="#80452f" stroke-width="2.5"/>
+          <path d="M65 83 L45 79 M65 89 L43 91 M117 83 L137 79 M117 89 L139 91" fill="none" stroke="#fff4dc" stroke-width="2"/>
+          <path d="M84 108 Q91 115 99 108" fill="none" stroke="#a9461e" stroke-width="4"/>
+          <circle cx="91" cy="119" r="8" fill="#f6c344"/>
+        </g>
+      </svg>
+      <span class="sparkle sparkle-one">✦</span><span class="sparkle sparkle-two">✧</span>
+    </div>
+  </main>
+  <script src="overlay.js"></script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+:root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f7f8fc; color: #172033; }
+* { box-sizing: border-box; }
+body { margin: 0; background: radial-gradient(circle at 100% 0, #f1eaff, transparent 42%), #f7f8fc; }
+main { padding: 25px; }
+header { display: flex; align-items: center; gap: 15px; margin-bottom: 22px; }
+.mark { width: 54px; height: 54px; display: grid; place-items: center; border-radius: 18px; background: #ede7ff; font-size: 30px; }
+.eyebrow { margin: 0 0 4px; color: #6751a5; letter-spacing: .13em; font-size: 10px; font-weight: 800; }
+h1 { margin: 0; font-size: 25px; letter-spacing: -.03em; }
+.intro { margin: 5px 0 0; color: #67728a; font-size: 13px; }
+.card { margin: 0 0 13px; padding: 17px; border: 1px solid #e5e9f2; border-radius: 17px; background: rgba(255,255,255,.9); box-shadow: 0 6px 20px rgba(37,45,79,.04); }
+label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 750; }
+label span, .hint, small, .footnote { color: #78839a; font-weight: 450; font-size: 11px; }
+textarea { display: block; width: 100%; margin-top: 11px; padding: 12px; min-height: 112px; resize: vertical; border: 1px solid #dce2ed; border-radius: 12px; background: #fbfcff; color: #172033; font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+textarea:focus, input:focus { outline: 3px solid rgba(118,91,207,.17); border-color: #8168d6; }
+.hint { line-height: 1.5; margin: 9px 0 0; }
+.section-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
+.section-heading h2 { margin: 0; font-size: 15px; }
+.section-heading p { margin: 4px 0 0; color: #78839a; font-size: 11px; }
+.add-button { flex: 0 0 auto; min-height: 34px; padding: 0 12px; color: #574497; background: #eeeaff; }
+.reminder-row { position: relative; margin: 10px 0; padding: 12px; border: 1px solid #e9eaf1; border-radius: 13px; background: #fcfcff; }
+.reminder-row-top { display: flex; align-items: center; justify-content: space-between; gap: 9px; margin-bottom: 9px; color: #64718a; font-size: 11px; font-weight: 700; }
+.remove-reminder { flex: 0 0 auto; min-height: 27px; padding: 0 8px; color: #a53d4c; background: #fff0f1; font-size: 11px; }
+.reminder-time { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; color: #6b7280; font-size: 12px; }
+.reminder-time input { width: 58px; padding: 8px 6px; border: 1px solid #dce2ed; border-radius: 9px; color: #172033; background: white; font: inherit; text-align: center; }
+.reminder-message { width: 100%; min-height: 54px; padding: 9px 10px; resize: vertical; border: 1px solid #dce2ed; border-radius: 9px; color: #172033; background: white; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.reminder-actions { display: flex; gap: 8px; margin-top: 13px; }
+.reminder-actions button { min-height: 40px; }
+.reminder-actions .secondary { flex: 0 0 76px; }
+.reminder-status { margin: 10px 0 0; color: #574497; font-size: 11px; font-weight: 700; }
+.interval { display: flex; align-items: center; gap: 10px; margin: 10px 0 14px; color: #5f6c84; font-size: 13px; }
+.interval input { width: 90px; padding: 10px; border: 1px solid #dce2ed; border-radius: 10px; font: inherit; color: #172033; background: #fbfcff; }
+.interval small { display: block; margin-top: 3px; }
+.switch-row { display: flex; justify-content: flex-start; align-items: center; gap: 11px; padding: 12px 0; border-top: 1px solid #eff1f6; }
+.switch-row input { width: 18px; height: 18px; accent-color: #6549ca; }
+.switch-row span { display: grid; gap: 3px; }
+.switch-row strong { font-size: 13px; }
+.status { min-height: 18px; margin: 0 0 8px; color: #13835d; font-size: 12px; }
+footer { display: flex; gap: 10px; }
+button { flex: 1; border: 0; border-radius: 12px; min-height: 45px; font-size: 13px; font-weight: 750; cursor: pointer; }
+.primary { color: white; background: #6347ca; box-shadow: 0 7px 15px rgba(99,71,202,.2); }
+.primary:hover { background: #5639bb; }
+.secondary { color: #574497; background: #eeeaff; }
+.footnote { line-height: 1.5; text-align: center; margin: 15px 2px 0; }
+input[type="email"], input[type="password"] { display: block; width: 100%; margin: 7px 0 11px; padding: 11px 12px; border: 1px solid #dce2ed; border-radius: 10px; color: #172033; background: #fbfcff; font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.account-card .section-heading { align-items: flex-start; }
+.sync-badge { flex: 0 0 auto; padding: 5px 8px; border-radius: 999px; background: #f0f1f5; color: #727b8e; font-size: 10px; font-weight: 750; }
+.sync-badge.connected { background: #e7f8ee; color: #168253; }
+.account-card form .primary { width: 100%; min-height: 39px; }
+.account-summary { margin: 10px 0; padding: 11px; border-radius: 10px; background: #f2efff; color: #44337e; font-size: 12px; line-height: 1.55; white-space: pre-line; }
+.account-actions { display: flex; gap: 8px; }
+.account-actions button { min-height: 36px; }
+main { max-width: 620px; margin: 0 auto; }

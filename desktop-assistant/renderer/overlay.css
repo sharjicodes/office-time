@@ -1,0 +1,23 @@
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+#stage { position: fixed; inset: 0; pointer-events: none; }
+.milo { position: fixed; right: 5vw; bottom: 2vh; width: 176px; height: 198px; opacity: 0; transform: translateY(42px) scale(.84); transform-origin: bottom center; transition: opacity .55s ease, transform .72s cubic-bezier(.2,.8,.2,1); }
+.milo.visible { opacity: 1; transform: translateY(0) scale(1); animation: float 2.4s ease-in-out infinite; }
+.cat { width: 100%; height: 100%; overflow: visible; }
+.tail { transform-box: fill-box; transform-origin: 20% 50%; animation: tail-swish 1.6s ease-in-out infinite alternate; }
+.leg.left { transform-box: fill-box; transform-origin: top center; animation: paw-wave .6s ease-in-out 2; }
+.eye { transform-box: fill-box; transform-origin: center; animation: blink 4.8s infinite; }
+.blink { opacity: 0; animation: eyelid 4.8s infinite; }
+.speech { position: fixed; right: calc(5vw + 140px); bottom: calc(2vh + 122px); width: min(360px, 42vw); padding: 15px 19px; border: 1px solid rgba(255,255,255,.9); border-radius: 20px 20px 5px 20px; color: #30224c; background: rgba(255,255,255,.94); box-shadow: 0 12px 40px rgba(26,25,54,.2); font-size: 18px; font-weight: 650; line-height: 1.45; overflow-wrap: anywhere; opacity: 0; transform: translateY(10px) scale(.96); transition: opacity .3s ease, transform .3s ease; }
+.speech.show { opacity: 1; transform: translateY(0) scale(1); }
+.sparkle { position: absolute; color: #f4a72f; text-shadow: 0 1px 10px #fff; opacity: 0; }
+.sparkle-one { left: 4px; top: 60px; animation: twinkle 1.2s ease-in-out infinite; }
+.sparkle-two { right: 6px; top: 35px; animation: twinkle 1.4s .4s ease-in-out infinite; }
+@keyframes float { 50% { transform: translateY(-7px) scale(1); } }
+@keyframes tail-swish { to { transform: rotate(20deg); } }
+@keyframes paw-wave { 0%,100% { transform: rotate(0); } 50% { transform: rotate(-24deg); } }
+@keyframes blink { 0%,46%,50%,94%,100% { transform: scaleY(1); } 48%,96% { transform: scaleY(.08); } }
+@keyframes eyelid { 0%,46%,50%,94%,100% { opacity: 0; } 48%,96% { opacity: 1; } }
+@keyframes twinkle { 0%,100% { opacity: 0; transform: scale(.7) rotate(-20deg); } 50% { opacity: 1; transform: scale(1.25) rotate(18deg); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }

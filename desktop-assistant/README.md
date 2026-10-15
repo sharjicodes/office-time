@@ -21,7 +21,7 @@ Build on the target operating system:
 ```sh
 npm run package:mac       # macOS DMG and ZIP
 npm run package:win       # Windows installer and ZIP
-npm run package:linux    # Linux AppImage and Debian package
+npm run package:linux    # Linux AppImage
 ```
 
 Installers are written to `dist/`. Use `npm run package:mac:universal` on macOS to create a universal Intel and Apple Silicon build. The Windows NSIS installer lets the user choose the install location and creates Start Menu and desktop shortcuts. Linux launch-at-sign-in uses the user's XDG autostart folder.

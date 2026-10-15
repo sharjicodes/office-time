@@ -9,7 +9,7 @@
     "package:mac": "electron-builder --mac dmg zip",
     "package:mac:universal": "electron-builder --mac dmg zip --universal",
     "package:win": "electron-builder --win nsis zip",
-    "package:linux": "electron-builder --linux AppImage deb"
+    "package:linux": "electron-builder --linux AppImage"
   },
   "devDependencies": {
     "electron": "^44.7.2",
@@ -30,7 +30,7 @@
     },
     "linux": {
       "category": "Utility",
-      "target": ["AppImage", "deb"]
+      "target": ["AppImage"]
     }
   }
 }

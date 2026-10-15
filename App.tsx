@@ -46,15 +46,15 @@ function getDesktopDownload() {
   const userAgent = navigator.userAgent.toLowerCase();
   if (userAgent.includes('windows')) return {
     label: 'Download for Windows',
-    url: 'https://github.com/sharjicodes/office-time/releases/latest/download/Milo%20Desktop%20Companion%20Setup%200.1.0.exe',
+    url: 'https://github.com/sharjicodes/office-time/releases/latest/download/Milo.Desktop.Companion.Setup.0.1.0.exe',
   };
   if (userAgent.includes('mac')) return {
     label: 'Download for macOS',
-    url: 'https://github.com/sharjicodes/office-time/releases/latest/download/Milo%20Desktop%20Companion-0.1.0.dmg',
+    url: 'https://github.com/sharjicodes/office-time/releases/latest/download/Milo.Desktop.Companion-0.1.0-universal.dmg',
   };
   if (userAgent.includes('linux')) return {
     label: 'Download for Linux',
-    url: 'https://github.com/sharjicodes/office-time/releases/latest/download/Milo%20Desktop%20Companion-0.1.0.AppImage',
+    url: 'https://github.com/sharjicodes/office-time/releases/latest/download/Milo.Desktop.Companion-0.1.0.AppImage',
   };
   return { label: 'Choose a desktop download', url: 'https://github.com/sharjicodes/office-time/releases/latest' };
 }

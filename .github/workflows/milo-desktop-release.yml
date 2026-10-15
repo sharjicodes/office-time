@@ -43,7 +43,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: milo-${{ matrix.platform }}
-          path: desktop-assistant/dist/*
+          # Upload only installers/portable archives. electron-builder also
+          # writes unpacked app directories into dist, which are not release assets.
+          path: |
+            desktop-assistant/dist/*.dmg
+            desktop-assistant/dist/*.zip
+            desktop-assistant/dist/*.exe
+            desktop-assistant/dist/*.AppImage
           if-no-files-found: error
           retention-days: 1
 
@@ -61,4 +67,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" release-assets/* --title "Milo Desktop Companion $RELEASE_TAG" --generate-notes
+        run: |
+          mapfile -t release_files < <(find release-assets -maxdepth 1 -type f -print | sort)
+          if [ "${#release_files[@]}" -eq 0 ]; then
+            echo "No installer files were downloaded" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" "${release_files[@]}" --title "Milo Desktop Companion $RELEASE_TAG" --generate-notes

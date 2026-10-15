@@ -41,6 +41,24 @@ export default function App() {
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> };
 const PWA_INSTALL_DISMISSED_KEY = 'milo.pwa-install-dismissed.v1';
 
+function getDesktopDownload() {
+  if (typeof navigator === 'undefined') return { label: 'Get Milo Desktop', url: 'https://github.com/sharjicodes/office-time/releases/latest' };
+  const userAgent = navigator.userAgent.toLowerCase();
+  if (userAgent.includes('windows')) return {
+    label: 'Download for Windows',
+    url: 'https://github.com/sharjicodes/office-time/releases/latest/download/Milo%20Desktop%20Companion%20Setup%200.1.0.exe',
+  };
+  if (userAgent.includes('mac')) return {
+    label: 'Download for macOS',
+    url: 'https://github.com/sharjicodes/office-time/releases/latest/download/Milo%20Desktop%20Companion-0.1.0.dmg',
+  };
+  if (userAgent.includes('linux')) return {
+    label: 'Download for Linux',
+    url: 'https://github.com/sharjicodes/office-time/releases/latest/download/Milo%20Desktop%20Companion-0.1.0.AppImage',
+  };
+  return { label: 'Choose a desktop download', url: 'https://github.com/sharjicodes/office-time/releases/latest' };
+}
+
 function PwaInstallPrompt() {
   const [platform, setPlatform] = useState<'ios' | 'android' | 'desktop'>('desktop');
   const [installEvent, setInstallEvent] = useState<InstallPromptEvent | null>(null);
@@ -333,6 +351,7 @@ function DeploymentUpdateNotice() {
 }
 
 function OfficeTimeApp() {
+  const desktopDownload = getDesktopDownload();
   const [session, setSession] = useState<any>(null);
   const [role, setRole] = useState('employee');
   const [booting, setBooting] = useState(true);
@@ -716,7 +735,7 @@ function OfficeTimeApp() {
       }} />}
       {tab === 'Games' && <GamesHub session={session} />}
       <CallsHub session={session} active={tab === 'Calls'} />
-      {tab === 'Desktop' && <View style={styles.card}><Text style={styles.sectionTitle}>Milo Desktop Companion</Text><Text style={styles.muted}>Let Milo appear on your desktop and speak your custom reminders on Windows, macOS, or Linux.</Text><View style={{ height: 10 }} /><Row label="Attendance sync" value={session?.user && !session.user.is_anonymous ? 'Sign in with this same account in Milo Desktop' : 'Sign in to your Milo account to sync attendance'} /><Row label="Work-time animations" value="Set milestones such as 1 hour and 8 hours in the desktop app. Breaks do not count toward worked-time milestones." /><Row label="Punch history" value="Today's punch times and your work target are read from your Milo account." /><Pressable style={[styles.primary, { minHeight: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginTop: 12 }]} onPress={() => void Linking.openURL('https://github.com/sharjicodes/office-time/releases/latest')}><Text style={styles.actionText}>Get Milo Desktop</Text></Pressable><Text style={[styles.muted, { marginTop: 8 }]}>Install Milo Desktop, then connect it with the same email and password you use here. Attendance remains protected by your account permissions.</Text></View>}
+      {tab === 'Desktop' && <View style={styles.card}><Text style={styles.sectionTitle}>Milo Desktop Companion</Text><Text style={styles.muted}>Let Milo appear on your desktop and speak your custom reminders on Windows, macOS, or Linux.</Text><View style={{ height: 10 }} /><Row label="Attendance sync" value={session?.user && !session.user.is_anonymous ? 'Sign in with this same account in Milo Desktop' : 'Sign in to your Milo account to sync attendance'} /><Row label="Work-time animations" value="Set milestones such as 1 hour and 8 hours in the desktop app. Breaks do not count toward worked-time milestones." /><Row label="Punch history" value="Today's punch times and your work target are read from your Milo account." /><Pressable style={[styles.primary, { minHeight: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginTop: 12 }]} onPress={() => void Linking.openURL(desktopDownload.url)}><Text style={styles.actionText}>{desktopDownload.label}</Text></Pressable><Text style={[styles.muted, { marginTop: 8 }]}>Install Milo Desktop, then connect it with the same email and password you use here. Attendance remains protected by your account permissions.</Text></View>}
       {tab === 'HR' && <HRDashboard rows={hrRows} loading={busy} role={role} policyUploadBusy={policyUploadBusy} policyUploadedName={policyUploadedName} onUploadPolicy={uploadMiloPolicy} onRefresh={async () => { setBusy(true); const { data } = await supabase!.rpc('hr_attendance_report'); setHrRows(data ?? []); setBusy(false); }} onResolve={resolveReview} />}
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. Milo is a companion tracker until HR authorizes it for official use.</Text></View>
       <Text style={styles.footer}>Milo · Your office companion</Text>

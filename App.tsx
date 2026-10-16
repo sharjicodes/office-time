@@ -374,6 +374,8 @@ function OfficeTimeApp() {
   const [breakReminderEnabled, setBreakReminderEnabled] = useState(true);
   const [preferences, setPreferences] = useState(DEFAULT_PREFERENCES);
   const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushStatus, setPushStatus] = useState('');
   const previousTargetState = useRef<{ date: string; reached: boolean } | null>(null);
   const today = localDateKey(now);
   const day = days.find(item => item.date === today) ?? { date: today, punchInAt: null, punchOutAt: null, breakMinutes: policy.defaultBreakMinutes, managerApproval: false, synced: true };
@@ -649,11 +651,21 @@ function OfficeTimeApp() {
     } catch { /* Permission and push configuration are optional; punching must still work. */ }
   }
   async function togglePushNotifications() {
+    if (pushBusy) return;
+    setPushBusy(true);
+    setPushStatus(pushEnabled ? 'Turning off background notifications…' : 'Setting up background notifications…');
     try {
       const message = pushEnabled ? await unsubscribeFromMiloPush() : await subscribeToMiloPush();
       setPushEnabled(!pushEnabled);
-      Alert.alert('Milo notifications', message);
-    } catch (error: any) { Alert.alert('Could not update notifications', error?.message || 'Try again from the deployed Milo site.'); }
+      setPushStatus(message);
+      if (Platform.OS !== 'web') Alert.alert('Milo notifications', message);
+    } catch (error: any) {
+      const message = error?.message || 'Could not update notifications. Check your browser settings and try again.';
+      setPushStatus(message);
+      if (Platform.OS !== 'web') Alert.alert('Could not update notifications', message);
+    } finally {
+      setPushBusy(false);
+    }
   }
   async function exportAttendanceBackup() {
     const payload = JSON.stringify({ app: 'Milo', version: 1, exportedAt: new Date().toISOString(), days, policy, preferences }, null, 2);
@@ -772,7 +784,7 @@ function OfficeTimeApp() {
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.largerText }} onPress={() => void changePreferences({ ...preferences, largerText: !preferences.largerText })} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.largerText ? '✓ Larger text enabled' : '＋ Use larger text'}</Text></Pressable>
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.animationsEnabled }} onPress={() => { const enabled = !preferences.animationsEnabled; void changePreferences({ ...preferences, animationsEnabled: enabled, reducedMotion: !enabled }); if (!enabled) { setFireworksId(0); setCatGreeting(null); } }} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.animationsEnabled ? '✓ Reduce animations' : '＋ Turn on app animations'}</Text></Pressable>
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.highContrast }} onPress={() => void changePreferences({ ...preferences, highContrast: !preferences.highContrast })} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.highContrast ? '✓ High contrast enabled' : '＋ Increase contrast'}</Text></Pressable>
-          {Platform.OS === 'web' && <><Pressable accessibilityRole="switch" accessibilityState={{ checked: pushEnabled }} onPress={() => void togglePushNotifications()} style={styles.outlineButton}><Text style={styles.outlineText}>{pushEnabled ? '✓ Background notifications on' : '＋ Enable background notifications'}</Text></Pressable><Text style={styles.muted}>Sign in and allow notifications. After the server scheduler is set up, subscribed devices can receive reminders while Milo is closed.</Text></>}
+          {Platform.OS === 'web' && <><Pressable accessibilityRole="switch" accessibilityState={{ checked: pushEnabled, disabled: pushBusy }} disabled={pushBusy} onPress={() => void togglePushNotifications()} style={[styles.outlineButton, pushBusy && { opacity: 0.65 }]}><Text style={styles.outlineText}>{pushBusy ? 'Setting up…' : pushEnabled ? '✓ Background notifications on' : '＋ Enable background notifications'}</Text></Pressable>{!!pushStatus && <Text accessibilityLiveRegion="polite" style={styles.muted}>{pushStatus}</Text>}<Text style={styles.muted}>Sign in and allow notifications. After the server scheduler is set up, subscribed devices can receive reminders while Milo is closed.</Text></>}
           <View style={styles.settingToggleRow}><Text style={styles.muted}>Work target reminder</Text><Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.workTargetReminderEnabled }} onPress={() => void changePreferences({ ...preferences, workTargetReminderEnabled: !preferences.workTargetReminderEnabled })} style={[styles.settingSwitch, preferences.workTargetReminderEnabled && styles.settingSwitchOn]}><Text style={styles.settingSwitchText}>{preferences.workTargetReminderEnabled ? 'ON' : 'OFF'}</Text></Pressable></View>
           <Text style={styles.muted}>Target alert is scheduled at punch-in for your recorded-work goal. The expected break alert is scheduled when you punch out; adjust its duration above.</Text>
           <WorkdayReminderEditor reminders={preferences.customReminders ?? []} onChange={customReminders => void changePreferences({ ...preferences, customReminders })} />

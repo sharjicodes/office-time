@@ -10,7 +10,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AttendanceDay, AttendanceSession, DEFAULT_POLICY, formatDuration, getAttendanceSummary, getDaySessions, isHalfDayDate, localDateKey, MONTHLY_LATE_LOGIN_LIMIT, monthLateCount, PolicyConfig } from './src/lib/attendance';
 import { clearDay, CustomWorkReminder, DEFAULT_PREFERENCES, loadDays, loadPolicy, loadPreferences, migrateDeviceAttendanceToAccount, MiloPreferences, saveDay, savePolicy, savePreferences, syncPending } from './src/lib/storage';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
-import { getMiloPushEnabled, subscribeToMiloPush, unsubscribeFromMiloPush } from './src/lib/webPush';
+import { getMiloPushEnabled, subscribeToMiloPush, unsubscribeFromMiloPush, updateMiloPushTimezone } from './src/lib/webPush';
 import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, scheduleWorkdayReminders, showChatNotification, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
 import { colors } from './src/theme';
 import { BUILD_ID, BUILD_SUMMARY } from './src/release';
@@ -434,7 +434,9 @@ function OfficeTimeApp() {
       if (mounted) {
         setPreferences(pref);
         setBreakReminderEnabled(pref.breakEndReminderEnabled);
-        setPushEnabled(await getMiloPushEnabled());
+        const pushReady = await getMiloPushEnabled();
+        setPushEnabled(pushReady);
+        if (pushReady) void updateMiloPushTimezone();
       }
       await scheduleDailyReminder({ enabled: pref.reminderEnabled, time: pref.reminderTime, workDays: pref.workDays });
     }).finally(() => { if (mounted) setBooting(false); });
@@ -491,7 +493,7 @@ function OfficeTimeApp() {
     let cancelled = false;
     void getMiloPushEnabled().then(async enabled => {
       if (cancelled) return;
-      if (enabled) { setPushEnabled(true); return; }
+      if (enabled) { setPushEnabled(true); void updateMiloPushTimezone(); return; }
       await subscribeToMiloPush();
       if (!cancelled) setPushEnabled(true);
     }).catch(() => { /* Keep the manual enable control available if push setup is incomplete. */ });
@@ -641,7 +643,7 @@ function OfficeTimeApp() {
   async function maybeEnableBackgroundPush() {
     if (Platform.OS !== 'web' || !session || pushEnabled || typeof window === 'undefined' || !('Notification' in window) || window.Notification.permission !== 'granted') return;
     try {
-      if (await getMiloPushEnabled()) { setPushEnabled(true); return; }
+      if (await getMiloPushEnabled()) { setPushEnabled(true); void updateMiloPushTimezone(); return; }
       await subscribeToMiloPush();
       setPushEnabled(true);
     } catch { /* Permission and push configuration are optional; punching must still work. */ }
@@ -770,11 +772,11 @@ function OfficeTimeApp() {
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.largerText }} onPress={() => void changePreferences({ ...preferences, largerText: !preferences.largerText })} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.largerText ? '✓ Larger text enabled' : '＋ Use larger text'}</Text></Pressable>
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.animationsEnabled }} onPress={() => { const enabled = !preferences.animationsEnabled; void changePreferences({ ...preferences, animationsEnabled: enabled, reducedMotion: !enabled }); if (!enabled) { setFireworksId(0); setCatGreeting(null); } }} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.animationsEnabled ? '✓ Reduce animations' : '＋ Turn on app animations'}</Text></Pressable>
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.highContrast }} onPress={() => void changePreferences({ ...preferences, highContrast: !preferences.highContrast })} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.highContrast ? '✓ High contrast enabled' : '＋ Increase contrast'}</Text></Pressable>
-          {Platform.OS === 'web' && <><Pressable accessibilityRole="switch" accessibilityState={{ checked: pushEnabled }} onPress={() => void togglePushNotifications()} style={styles.outlineButton}><Text style={styles.outlineText}>{pushEnabled ? '✓ Background notifications on' : '＋ Enable background notifications'}</Text></Pressable><Text style={styles.muted}>Your browser must allow notifications. Milo asks for permission when you punch in, then enables background push on this device.</Text></>}
+          {Platform.OS === 'web' && <><Pressable accessibilityRole="switch" accessibilityState={{ checked: pushEnabled }} onPress={() => void togglePushNotifications()} style={styles.outlineButton}><Text style={styles.outlineText}>{pushEnabled ? '✓ Background notifications on' : '＋ Enable background notifications'}</Text></Pressable><Text style={styles.muted}>Sign in and allow notifications. After the server scheduler is set up, subscribed devices can receive reminders while Milo is closed.</Text></>}
           <View style={styles.settingToggleRow}><Text style={styles.muted}>Work target reminder</Text><Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.workTargetReminderEnabled }} onPress={() => void changePreferences({ ...preferences, workTargetReminderEnabled: !preferences.workTargetReminderEnabled })} style={[styles.settingSwitch, preferences.workTargetReminderEnabled && styles.settingSwitchOn]}><Text style={styles.settingSwitchText}>{preferences.workTargetReminderEnabled ? 'ON' : 'OFF'}</Text></Pressable></View>
           <Text style={styles.muted}>Target alert is scheduled at punch-in for your recorded-work goal. The expected break alert is scheduled when you punch out; adjust its duration above.</Text>
           <WorkdayReminderEditor reminders={preferences.customReminders ?? []} onChange={customReminders => void changePreferences({ ...preferences, customReminders })} />
-          {Platform.OS === 'web' && <Text style={styles.muted}>Browser reminders need notification permission and this tab open. Use the iOS or Android app for scheduled daily reminders.</Text>}
+          {Platform.OS === 'web' && <Text style={styles.muted}>Without background push, browser timers need this tab open. With background push configured, Milo can send scheduled reminders to subscribed devices.</Text>}
           <Text style={styles.policyNote}>Punch-in sessions count as recorded work. Each punch-out starts a break timer that stops at the next punch-in. The policy mentions both a 9-hour day including breaks and 8 recorded work hours; confirm the expected break duration with HR.</Text>
         </View>
       </>}

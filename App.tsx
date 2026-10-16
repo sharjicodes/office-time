@@ -403,13 +403,13 @@ function OfficeTimeApp() {
     const previous = previousTargetState.current;
     previousTargetState.current = { date: today, reached: summary.targetReached };
     if (!previous || previous.date !== today || previous.reached || !summary.targetReached) return;
-    setFireworksId(id => id + 1);
+    if (preferences.animationsEnabled && !preferences.reducedMotion) setFireworksId(id => id + 1);
     void (async () => {
       await cancelNotice('work-target');
       const body = `${formatDuration(policy.recordedWorkTargetMinutes)} of recorded work reached. Congratulations — fantastic work today!`;
       if (!(await showWorkHourCongratulations('Daily work goal reached! 🎉', body))) Alert.alert('Daily work goal reached! 🎉', body);
     })();
-  }, [booting, today, summary.targetReached, policy.recordedWorkTargetMinutes]);
+  }, [booting, today, summary.targetReached, policy.recordedWorkTargetMinutes, preferences.animationsEnabled, preferences.reducedMotion]);
 
   const refresh = useCallback(async () => {
     const [loadedDays, loadedPolicy, loadedPreferences] = await Promise.all([loadDays(), loadPolicy(), loadPreferences()]);
@@ -422,8 +422,8 @@ function OfficeTimeApp() {
     document.body.classList.toggle('milo-large-text', preferences.largerText);
     document.body.classList.toggle('milo-reduced-motion', preferences.reducedMotion);
     document.body.classList.toggle('milo-high-contrast', preferences.highContrast);
-    document.documentElement.classList.toggle('milo-motion-enabled', !preferences.reducedMotion);
-  }, [preferences.largerText, preferences.reducedMotion, preferences.highContrast]);
+    document.documentElement.classList.toggle('milo-motion-enabled', preferences.animationsEnabled && !preferences.reducedMotion);
+  }, [preferences.largerText, preferences.animationsEnabled, preferences.reducedMotion, preferences.highContrast]);
 
   useEffect(() => {
     let mounted = true;
@@ -679,7 +679,8 @@ function OfficeTimeApp() {
 
   const lateDays = days.filter(d => d.date.startsWith(today.slice(0, 7)) && d.punchInAt && getAttendanceSummary(d, new Date(d.punchInAt), policy).afterFlexLimit);
   const halfDayToday = isHalfDayDate(days, today, policy);
-  const showPageAnimations = tab !== 'Chat' && tab !== 'Games' && tab !== 'Calls' && !preferences.reducedMotion;
+  const showAnimations = preferences.animationsEnabled && !preferences.reducedMotion;
+  const showPageAnimations = showAnimations && tab !== 'Chat' && tab !== 'Games' && tab !== 'Calls';
   return <SafeAreaView style={styles.safe}>
     {showPageAnimations && <PageAmbience />}
     <StatusBar style="dark" />
@@ -688,11 +689,11 @@ function OfficeTimeApp() {
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => { if (session) void signOut(); }}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
       {Platform.OS === 'web' && <PwaInstallPrompt />}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}><>{(['Today', 'History', 'Games', 'Calls', 'Chat', 'Desktop', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</></ScrollView>
-      {tab === 'Today' && !preferences.reducedMotion && <WalkingCat />}
+      {tab === 'Today' && showAnimations && <WalkingCat />}
       {tab === 'Today' && <>
         <View style={styles.hero}>
-          <CatCardGreeting kind={catGreeting} onDone={() => setCatGreeting(null)} />
-          <View style={styles.heroTop}><View style={{ flex: 1 }}><Text style={styles.heroLabel}>NET WORK TIMER · {active ? 'RUNNING' : 'STOPPED'}</Text><Text style={styles.timerHero}>{formatTimer(timerSeconds)}</Text><Text style={styles.heroSmall}>Net recorded work: {formatDuration(summary.netWorkedMinutes)}</Text>{active && <Text style={styles.shiftEstimate}>{remainingTargetSeconds > 0 ? `Estimated ${formatDuration(policy.recordedWorkTargetMinutes)} target at ${estimatedTargetTime} · if you stay punched in` : '8-hour work target reached 🎉'}</Text>}</View>{catGreeting ? <View style={styles.greetingPill}><Text style={styles.greetingPillText}>{catGreeting === 'hi' ? 'Hi! 👋' : 'Bye! 👋'}</Text></View> : <View style={styles.progressBadge}><Text style={styles.progressBadgeText}>{summary.progressPercent}%</Text></View>}</View>
+          {showAnimations && <CatCardGreeting kind={catGreeting} onDone={() => setCatGreeting(null)} />}
+          <View style={styles.heroTop}><View style={{ flex: 1 }}><Text style={styles.heroLabel}>NET WORK TIMER · {active ? 'RUNNING' : 'STOPPED'}</Text><Text style={styles.timerHero}>{formatTimer(timerSeconds)}</Text><Text style={styles.heroSmall}>Net recorded work: {formatDuration(summary.netWorkedMinutes)}</Text>{active && <Text style={styles.shiftEstimate}>{remainingTargetSeconds > 0 ? `Estimated ${formatDuration(policy.recordedWorkTargetMinutes)} target at ${estimatedTargetTime} · if you stay punched in` : '8-hour work target reached 🎉'}</Text>}</View>{catGreeting && showAnimations ? <View style={styles.greetingPill}><Text style={styles.greetingPillText}>{catGreeting === 'hi' ? 'Hi! 👋' : 'Bye! 👋'}</Text></View> : <View style={styles.progressBadge}><Text style={styles.progressBadgeText}>{summary.progressPercent}%</Text></View>}</View>
           {sessions.length > 0 && <View style={styles.breakTimerCard}><Text style={styles.breakTimerLabel}>BREAK TIMER · {breakTimerRunning ? 'RUNNING' : 'STOPPED'}</Text><Text style={styles.breakTimerValue}>{formatTimer(summary.takenBreakSeconds)}</Text><Text style={styles.breakTimerHint}>Taken break · {formatDuration(summary.takenBreakMinutes)}</Text></View>}
           <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${summary.progressPercent}%` }]} /></View>
           <View style={styles.progressMeta}><Text style={styles.heroSmall}>{summary.targetStatus}</Text><Text style={styles.heroSmall}>Target {formatDuration(policy.recordedWorkTargetMinutes)}</Text></View>
@@ -717,6 +718,7 @@ function OfficeTimeApp() {
           <View style={styles.settingGroup}><Text style={styles.rowLabel}>Workday reminders · device local time</Text><View style={styles.settingTimeRow}><Text style={styles.muted}>Punch-in</Text><TextInput accessibilityLabel="Punch-in reminder time" value={preferences.reminderTime} onChangeText={value => setPreferences(current => ({ ...current, reminderTime: value.replace(/[^0-9:]/g, '').slice(0, 5) }))} onEndEditing={() => { if (/^([01]\d|2[0-3]):[0-5]\d$/.test(preferences.reminderTime)) void changePreferences(preferences); else { Alert.alert('Invalid reminder time', 'Enter a time like 08:50.'); void refresh(); } }} placeholder="08:50" style={[styles.input, styles.settingTimeInput]} keyboardType="numbers-and-punctuation" {...(Platform.OS === 'web' ? ({ type: 'time' } as any) : {})}/></View><View style={styles.settingToggleRow}><Text style={styles.muted}>Daily punch-in reminder</Text><Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.reminderEnabled }} onPress={() => void changePreferences({ ...preferences, reminderEnabled: !preferences.reminderEnabled })} style={[styles.settingSwitch, preferences.reminderEnabled && styles.settingSwitchOn]}><Text style={styles.settingSwitchText}>{preferences.reminderEnabled ? 'ON' : 'OFF'}</Text></Pressable></View><View style={styles.settingToggleRow}><Text style={styles.muted}>Punch-out reminder when session is open</Text><Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.punchOutReminderEnabled }} onPress={() => void changePreferences({ ...preferences, punchOutReminderEnabled: !preferences.punchOutReminderEnabled })} style={[styles.settingSwitch, preferences.punchOutReminderEnabled && styles.settingSwitchOn]}><Text style={styles.settingSwitchText}>{preferences.punchOutReminderEnabled ? 'ON' : 'OFF'}</Text></Pressable></View><Text style={styles.muted}>Workdays</Text><View style={styles.weekdayRow}>{['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((label, dayIndex) => { const selected = preferences.workDays.includes(dayIndex); return <Pressable key={dayIndex} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayIndex]} onPress={() => { const next = selected ? preferences.workDays.filter(item => item !== dayIndex) : [...preferences.workDays, dayIndex].sort(); if (next.length) void changePreferences({ ...preferences, workDays: next }); }} style={[styles.weekdayChip, selected && styles.weekdayChipActive]}><Text style={[styles.weekdayChipText, selected && styles.weekdayChipTextActive]}>{label}</Text></Pressable>; })}</View></View>
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: breakReminderEnabled }} onPress={() => { const next = !breakReminderEnabled; setBreakReminderEnabled(next); void changePreferences({ ...preferences, breakEndReminderEnabled: next }); if (!next) void cancelNotice('break-reminder'); }} style={styles.outlineButton}><Text style={styles.outlineText}>{breakReminderEnabled ? '✓ Break-end reminder on' : '＋ Turn on break-end reminder'}</Text></Pressable>
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.largerText }} onPress={() => void changePreferences({ ...preferences, largerText: !preferences.largerText })} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.largerText ? '✓ Larger text enabled' : '＋ Use larger text'}</Text></Pressable>
+          <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.animationsEnabled }} onPress={() => { const enabled = !preferences.animationsEnabled; void changePreferences({ ...preferences, animationsEnabled: enabled }); if (!enabled) { setFireworksId(0); setCatGreeting(null); } }} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.animationsEnabled ? '✓ App animations on' : '＋ Turn on app animations'}</Text></Pressable>
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.reducedMotion }} onPress={() => void changePreferences({ ...preferences, reducedMotion: !preferences.reducedMotion })} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.reducedMotion ? '✓ Reduced motion enabled' : '＋ Reduce animations'}</Text></Pressable>
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.highContrast }} onPress={() => void changePreferences({ ...preferences, highContrast: !preferences.highContrast })} style={styles.outlineButton}><Text style={styles.outlineText}>{preferences.highContrast ? '✓ High contrast enabled' : '＋ Increase contrast'}</Text></Pressable>
           {Platform.OS === 'web' && <Pressable accessibilityRole="switch" accessibilityState={{ checked: pushEnabled }} onPress={() => void togglePushNotifications()} style={styles.outlineButton}><Text style={styles.outlineText}>{pushEnabled ? '✓ PWA push notifications enabled' : '＋ Enable background push notifications'}</Text></Pressable>}
@@ -753,7 +755,7 @@ function OfficeTimeApp() {
     </Modal>
     {correctionTarget && <PunchCorrectionModal key={`${correctionTarget.date}-${correctionTarget.add}`} date={correctionTarget.date} day={days.find(item => item.date === correctionTarget.date)} addToExisting={correctionTarget.add} onClose={() => setCorrectionTarget(null)} onSave={savePunchCorrection} />}
     {officeOutSummary && <OfficeOutSummaryModal day={officeOutSummary} policy={policy} onClose={() => { setOfficeOutSummary(null); setCatGreeting('bye'); }} onUndo={undoOfficeOut} />}
-    {!preferences.reducedMotion && fireworksId > 0 && <FireworksCelebration key={fireworksId} onDone={() => setFireworksId(0)} />}
+    {showAnimations && fireworksId > 0 && <FireworksCelebration key={fireworksId} onDone={() => setFireworksId(0)} />}
   </SafeAreaView>;
 }
 

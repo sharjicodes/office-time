@@ -16,6 +16,7 @@ export type MiloPreferences = {
   punchOutReminderEnabled: boolean;
   workDays: number[];
   largerText: boolean;
+  animationsEnabled: boolean;
   reducedMotion: boolean;
   highContrast: boolean;
 };
@@ -27,6 +28,7 @@ export const DEFAULT_PREFERENCES: MiloPreferences = {
   punchOutReminderEnabled: true,
   workDays: [1, 2, 3, 4, 5],
   largerText: false,
+  animationsEnabled: false,
   reducedMotion: false,
   highContrast: false,
 };

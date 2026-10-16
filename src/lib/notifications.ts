@@ -1,5 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import type { CustomWorkReminder } from './storage';
 
 export const LATE_ALERT_SOUND = 'late-warning.wav';
 export const WORK_CHEER_SOUND = 'work-celebration.wav';
@@ -168,6 +169,7 @@ export async function scheduleDailyReminder(config: { enabled?: boolean; time?: 
 }
 
 const browserTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const browserWorkdayReminderKinds = new Set<string>();
 
 export async function scheduleTimedReminder(kind: string, title: string, body: string, milliseconds: number) {
   if (Platform.OS === 'web') {
@@ -197,6 +199,75 @@ export async function scheduleTimedReminder(kind: string, title: string, body: s
     trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: Math.max(1, Math.ceil(milliseconds / 1000)),
       ...(Platform.OS === 'android' ? { channelId: isWorkAchievement ? CHEER_CHANNEL : 'attendance-reminders' } : {}) },
   });
+}
+
+function nextSelectedTime(time: string, days: number[]): Date | null {
+  const match = time.trim().match(/^(0?[1-9]|1[0-2]):([0-5]\d)\s*(AM|PM)$/i);
+  if (!match || !days.length) return null;
+  const hour = (Number(match[1]) % 12) + (match[3].toUpperCase() === 'PM' ? 12 : 0);
+  const minute = Number(match[2]);
+  const now = new Date();
+  for (let offset = 0; offset <= 7; offset += 1) {
+    const next = new Date(now);
+    next.setDate(now.getDate() + offset);
+    next.setHours(hour, minute, 0, 0);
+    if (days.includes(next.getDay()) && next.getTime() > now.getTime()) return next;
+  }
+  return null;
+}
+
+async function scheduleNextWebReminder(reminder: CustomWorkReminder) {
+  const kind = `custom-reminder:${reminder.id}`;
+  const next = nextSelectedTime(reminder.time, reminder.days);
+  if (!next || typeof window === 'undefined' || !('Notification' in window) || window.Notification.permission !== 'granted') return;
+  const timer = setTimeout(() => {
+    void showPwaNotification(reminder.title, `It’s time for ${reminder.title.toLowerCase()}.`);
+    void scheduleNextWebReminder(reminder);
+  }, Math.max(1000, next.getTime() - Date.now()));
+  browserTimers.set(kind, timer);
+}
+
+/** Schedule recurring reminders only while an attendance workday is open. */
+export async function scheduleWorkdayReminders(reminders: CustomWorkReminder[], enabled: boolean) {
+  if (Platform.OS === 'web') {
+    for (const kind of browserWorkdayReminderKinds) await cancelReminder(kind);
+    browserWorkdayReminderKinds.clear();
+    if (!enabled) return;
+    for (const reminder of reminders) {
+      const kind = `custom-reminder:${reminder.id}`;
+      browserWorkdayReminderKinds.add(kind);
+      void scheduleNextWebReminder(reminder);
+    }
+    return;
+  }
+  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  for (const item of scheduled) {
+    const kind = item.content.data?.kind;
+    if (typeof kind === 'string' && kind.startsWith('custom-reminder:'))
+      await Notifications.cancelScheduledNotificationAsync(item.identifier);
+  }
+  if (!enabled) return;
+  const permission = await Notifications.getPermissionsAsync();
+  if (!permission.granted) return;
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('attendance-reminders', {
+      name: 'Attendance reminders', importance: Notifications.AndroidImportance.DEFAULT,
+      vibrationPattern: [0, 250, 250, 250], lightColor: '#2563EB',
+    });
+  }
+  for (const reminder of reminders) {
+    const match = reminder.time.trim().match(/^(0?[1-9]|1[0-2]):([0-5]\d)\s*(AM|PM)$/i);
+    if (!match || !reminder.days.length || !reminder.title.trim()) continue;
+    const hour = (Number(match[1]) % 12) + (match[3].toUpperCase() === 'PM' ? 12 : 0);
+    const minute = Number(match[2]);
+    for (const day of reminder.days) {
+      await Notifications.scheduleNotificationAsync({
+        content: { title: reminder.title, body: `It’s time for ${reminder.title.toLowerCase()}.`, data: { kind: `custom-reminder:${reminder.id}` }, sound: 'default' },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday: day + 1, hour, minute,
+          ...(Platform.OS === 'android' ? { channelId: 'attendance-reminders' } : {}) },
+      });
+    }
+  }
 }
 
 export async function showLateLoginWarning(title: string, body: string): Promise<boolean> {

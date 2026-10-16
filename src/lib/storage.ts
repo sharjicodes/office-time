@@ -12,21 +12,27 @@ const PREFERENCES_KEY = 'officetime.preferences.v1';
 export type MiloPreferences = {
   reminderEnabled: boolean;
   reminderTime: string;
+  workTargetReminderEnabled: boolean;
   breakEndReminderEnabled: boolean;
   punchOutReminderEnabled: boolean;
   workDays: number[];
+  customReminders: CustomWorkReminder[];
   largerText: boolean;
   animationsEnabled: boolean;
   reducedMotion: boolean;
   highContrast: boolean;
 };
 
+export type CustomWorkReminder = { id: string; title: string; time: string; days: number[] };
+
 export const DEFAULT_PREFERENCES: MiloPreferences = {
   reminderEnabled: true,
   reminderTime: '08:50',
+  workTargetReminderEnabled: true,
   breakEndReminderEnabled: true,
   punchOutReminderEnabled: true,
   workDays: [1, 2, 3, 4, 5],
+  customReminders: [],
   largerText: false,
   animationsEnabled: false,
   reducedMotion: false,

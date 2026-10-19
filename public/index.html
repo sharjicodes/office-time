@@ -13,24 +13,13 @@
     <link rel="apple-touch-icon" href="/icons/milo-192.png" />
     <title>Milo · Your Office Companion</title>
     <script>
-      // The public website opens the Milo guide first. Installed Milo and
-      // invitation links keep opening the working app directly.
+      // The website root opens the Milo guide first. App launches, invitation
+      // links, and auth callbacks continue into the app directly.
       (function () {
         var params = new URLSearchParams(window.location.search);
-        var isAppLink = params.has('milo') || ['call', 'match', 'ludo'].some(function (key) { return params.has(key); });
-        var hasSignedInAccount = false;
-        try {
-          for (var index = 0; index < window.localStorage.length; index += 1) {
-            var key = window.localStorage.key(index);
-            if (!key || !key.startsWith('sb-') || !key.endsWith('-auth-token')) continue;
-            var session = JSON.parse(window.localStorage.getItem(key) || 'null');
-            if (session && session.user && session.user.is_anonymous !== true) {
-              hasSignedInAccount = true;
-              break;
-            }
-          }
-        } catch (_) { /* If browser storage is blocked, show the public landing page. */ }
-        if (window.location.pathname === '/' && !isAppLink && !hasSignedInAccount) window.location.replace('/landing.html');
+        var appParams = ['milo', 'call', 'match', 'ludo', 'code', 'error', 'error_description', 'token_hash', 'type'];
+        var isAppLink = appParams.some(function (key) { return params.has(key); }) || window.location.hash.indexOf('access_token=') >= 0;
+        if (window.location.pathname === '/' && !isAppLink) window.location.replace('/landing.html');
       })();
     </script>
     <style id="expo-reset">

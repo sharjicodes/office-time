@@ -2,7 +2,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 import webpush from 'npm:web-push@3.6.7';
 
 type Session = { punchInAt?: string; punchOutAt?: string | null; breakMinutes?: number };
-type CustomReminder = { id?: string; title?: string; time?: string; days?: number[] };
+type CustomReminder = { id?: string; title?: string; scheduleType?: 'interval' | 'time'; intervalMinutes?: number; time?: string };
 type DeviceLocalTime = { date: string; weekday: number; hour: number; minute: number };
 
 function localTime(date: Date, zone: string): DeviceLocalTime {
@@ -116,20 +116,24 @@ Deno.serve(async request => {
           await deliver(subscription, `work-target:${day}`, 'Daily work goal reached! 🎉', `You reached ${Math.floor(targetMinutes / 60)}h ${targetMinutes % 60 ? `${targetMinutes % 60}m` : ''} of recorded work. Congratulations!`);
       }
 
-      if (preferences.intervalReminderEnabled === true) {
-        const intervalHours = Math.max(1, Math.min(8, Math.floor(Number(preferences.intervalReminderHours) || 1)));
-        const firstPunch = Date.parse(sessions.find(session => session.punchInAt)?.punchInAt ?? '');
-        const elapsedMinutes = Number.isFinite(firstPunch) ? Math.floor((now.getTime() - firstPunch) / 60_000) : 0;
-        const intervalMinutes = intervalHours * 60;
-        if (elapsedMinutes >= intervalMinutes && elapsedMinutes % intervalMinutes === 0) {
-          const occurrence = Math.floor(elapsedMinutes / intervalMinutes);
-          await deliver(
-            subscription,
-            `work-interval:${day}:${occurrence}`,
-            'Milo workday reminder',
-            `You’ve been at work for ${occurrence * intervalHours} hour${occurrence * intervalHours === 1 ? '' : 's'}. Remember to take a short break.`,
-          );
+      const firstPunch = Date.parse(sessions.find(session => session.punchInAt)?.punchInAt ?? '');
+      const elapsedMinutes = Number.isFinite(firstPunch) ? Math.floor((now.getTime() - firstPunch) / 60_000) : 0;
+      for (const reminder of (preferences.customReminders ?? []) as CustomReminder[]) {
+        if (!reminder.id || !reminder.title?.trim()) continue;
+        if (reminder.scheduleType === 'time') {
+          if (!atTime(local, reminder.time, true)) continue;
+          await deliver(subscription, `custom:${reminder.id}:${day}:time`, reminder.title.slice(0, 100), `It’s time to ${reminder.title.toLowerCase().slice(0, 180)}.`);
+          continue;
         }
+        const intervalMinutes = Math.max(30, Math.min(480, Math.floor(Number(reminder.intervalMinutes) || 60)));
+        if (elapsedMinutes < intervalMinutes || elapsedMinutes % intervalMinutes !== 0) continue;
+        const occurrence = Math.floor(elapsedMinutes / intervalMinutes);
+        await deliver(
+          subscription,
+          `custom:${reminder.id}:${day}:${occurrence}`,
+          reminder.title.slice(0, 100),
+          `It’s time to ${reminder.title.toLowerCase().slice(0, 180)}.`,
+        );
       }
 
       const last = sessions[sessions.length - 1];
@@ -147,11 +151,6 @@ Deno.serve(async request => {
           await deliver(subscription, `punch-out:${current!.punchInAt}`, 'Don’t forget to punch out', 'Your attendance session has been open for 9 hours.');
       }
 
-      for (const reminder of (preferences.customReminders ?? []) as CustomReminder[]) {
-        if (!reminder.id || !reminder.title?.trim() || !Array.isArray(reminder.days)
-          || !reminder.days.includes(local.weekday) || !atTime(local, reminder.time, true)) continue;
-        await deliver(subscription, `custom:${reminder.id}:${day}`, reminder.title.slice(0, 100), `It’s time for ${reminder.title.toLowerCase().slice(0, 180)}.`);
-      }
     }
 
     if (now.getUTCHours() === 3 && now.getUTCMinutes() === 0)

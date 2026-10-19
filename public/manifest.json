@@ -3,7 +3,7 @@
   "name": "Milo · Your Office Companion",
   "short_name": "Milo",
   "description": "A friendly office companion for attendance, team chat, calls, and games.",
-  "start_url": "/",
+  "start_url": "/?milo=app",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",

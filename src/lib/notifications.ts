@@ -201,42 +201,55 @@ export async function scheduleTimedReminder(kind: string, title: string, body: s
   });
 }
 
-function nextSelectedTime(time: string, days: number[]): Date | null {
-  const match = time.trim().match(/^(0?[1-9]|1[0-2]):([0-5]\d)\s*(AM|PM)$/i);
-  if (!match || !days.length) return null;
-  const hour = (Number(match[1]) % 12) + (match[3].toUpperCase() === 'PM' ? 12 : 0);
-  const minute = Number(match[2]);
-  const now = new Date();
-  for (let offset = 0; offset <= 7; offset += 1) {
-    const next = new Date(now);
-    next.setDate(now.getDate() + offset);
-    next.setHours(hour, minute, 0, 0);
-    if (days.includes(next.getDay()) && next.getTime() > now.getTime()) return next;
-  }
-  return null;
+const reminderIntervalMinutes = (reminder: CustomWorkReminder) => Math.max(30, Math.min(480, Math.floor(Number(reminder.intervalMinutes) || 60)));
+
+function reminderClock(value?: string) {
+  const match = value?.trim().match(/^(0?[1-9]|1[0-2]):([0-5]\d)\s*(AM|PM)$/i);
+  if (!match) return null;
+  return { hour: (Number(match[1]) % 12) + (match[3].toUpperCase() === 'PM' ? 12 : 0), minute: Number(match[2]) };
 }
 
-async function scheduleNextWebReminder(reminder: CustomWorkReminder) {
+function nextReminderClock(value?: string) {
+  const clock = reminderClock(value);
+  if (!clock) return null;
+  const next = new Date();
+  next.setHours(clock.hour, clock.minute, 0, 0);
+  if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1);
+  return next;
+}
+
+async function scheduleNextWebReminder(reminder: CustomWorkReminder, firstPunchInAt: string) {
   const kind = `custom-reminder:${reminder.id}`;
-  const next = nextSelectedTime(reminder.time, reminder.days);
-  if (!next || typeof window === 'undefined' || !('Notification' in window) || window.Notification.permission !== 'granted') return;
+  const start = Date.parse(firstPunchInAt);
+  if (!Number.isFinite(start) || typeof window === 'undefined' || !('Notification' in window) || window.Notification.permission !== 'granted') return;
+  let dueAt: number;
+  if (reminder.scheduleType === 'time') {
+    const next = nextReminderClock(reminder.time);
+    if (!next) return;
+    dueAt = next.getTime();
+  } else {
+    const intervalMs = reminderIntervalMinutes(reminder) * 60_000;
+    const occurrence = Math.max(1, Math.floor((Date.now() - start) / intervalMs) + 1);
+    dueAt = start + occurrence * intervalMs;
+  }
   const timer = setTimeout(() => {
-    void showPwaNotification(reminder.title, `It’s time for ${reminder.title.toLowerCase()}.`);
-    void scheduleNextWebReminder(reminder);
-  }, Math.max(1000, next.getTime() - Date.now()));
+    void showPwaNotification(reminder.title, `It’s time to ${reminder.title.toLowerCase()}.`);
+    void scheduleNextWebReminder(reminder, firstPunchInAt);
+  }, Math.max(1000, dueAt - Date.now()));
   browserTimers.set(kind, timer);
 }
 
 /** Schedule recurring reminders only while an attendance workday is open. */
-export async function scheduleWorkdayReminders(reminders: CustomWorkReminder[], enabled: boolean) {
+export async function scheduleWorkdayReminders(reminders: CustomWorkReminder[], enabled: boolean, firstPunchInAt: string | null = null, useBackgroundPush = false) {
   if (Platform.OS === 'web') {
     for (const kind of browserWorkdayReminderKinds) await cancelReminder(kind);
     browserWorkdayReminderKinds.clear();
-    if (!enabled) return;
+    if (!enabled || !firstPunchInAt || useBackgroundPush) return;
     for (const reminder of reminders) {
       const kind = `custom-reminder:${reminder.id}`;
+      if (!reminder.id || !reminder.title?.trim()) continue;
       browserWorkdayReminderKinds.add(kind);
-      void scheduleNextWebReminder(reminder);
+      void scheduleNextWebReminder(reminder, firstPunchInAt);
     }
     return;
   }
@@ -246,7 +259,7 @@ export async function scheduleWorkdayReminders(reminders: CustomWorkReminder[], 
     if (typeof kind === 'string' && kind.startsWith('custom-reminder:'))
       await Notifications.cancelScheduledNotificationAsync(item.identifier);
   }
-  if (!enabled) return;
+  if (!enabled || !firstPunchInAt) return;
   const permission = await Notifications.getPermissionsAsync();
   if (!permission.granted) return;
   if (Platform.OS === 'android') {
@@ -256,86 +269,21 @@ export async function scheduleWorkdayReminders(reminders: CustomWorkReminder[], 
     });
   }
   for (const reminder of reminders) {
-    const match = reminder.time.trim().match(/^(0?[1-9]|1[0-2]):([0-5]\d)\s*(AM|PM)$/i);
-    if (!match || !reminder.days.length || !reminder.title.trim()) continue;
-    const hour = (Number(match[1]) % 12) + (match[3].toUpperCase() === 'PM' ? 12 : 0);
-    const minute = Number(match[2]);
-    for (const day of reminder.days) {
+    if (!reminder.id || !reminder.title.trim()) continue;
+    if (reminder.scheduleType === 'time') {
+      const clock = reminderClock(reminder.time);
+      if (!clock) continue;
       await Notifications.scheduleNotificationAsync({
-        content: { title: reminder.title, body: `It’s time for ${reminder.title.toLowerCase()}.`, data: { kind: `custom-reminder:${reminder.id}` }, sound: 'default' },
-        trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday: day + 1, hour, minute,
+        content: { title: reminder.title, body: `It’s time to ${reminder.title.toLowerCase()}.`, data: { kind: `custom-reminder:${reminder.id}` }, sound: 'default' },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour: clock.hour, minute: clock.minute,
           ...(Platform.OS === 'android' ? { channelId: 'attendance-reminders' } : {}) },
       });
+      continue;
     }
-  }
-}
-
-/** Repeat a default-sound reminder from the first punch until Office out. */
-export async function scheduleWorkIntervalReminder(
-  firstPunchInAt: string | null,
-  intervalHours: number,
-  enabled: boolean,
-  workdayOpen: boolean,
-  useBackgroundPush = false,
-) {
-  const kind = 'workday-interval-reminder';
-  const intervalMs = Math.max(1, Math.min(8, Math.floor(intervalHours || 1))) * 60 * 60_000;
-
-  if (Platform.OS === 'web') {
-    const old = browserTimers.get(kind);
-    if (old) clearTimeout(old);
-    browserTimers.delete(kind);
-    // The server scheduler handles subscribed PWAs even when the browser is closed.
-    if (!enabled || !workdayOpen || !firstPunchInAt || useBackgroundPush) return;
-    if (typeof window === 'undefined' || !('Notification' in window) || window.Notification.permission !== 'granted') return;
-    const start = Date.parse(firstPunchInAt);
-    if (!Number.isFinite(start)) return;
-    const scheduleNext = () => {
-      const nextIndex = Math.max(1, Math.floor((Date.now() - start) / intervalMs) + 1);
-      const dueAt = start + nextIndex * intervalMs;
-      const timer = setTimeout(() => {
-        void showPwaNotification('Milo workday reminder', `You’ve been at work for ${nextIndex * Math.floor(intervalMs / 3_600_000)} hour${nextIndex === 1 && intervalMs === 3_600_000 ? '' : 's'}. Remember to take a short break.`);
-        scheduleNext();
-      }, Math.max(1000, dueAt - Date.now()));
-      browserTimers.set(kind, timer);
-    };
-    scheduleNext();
-    return;
-  }
-
-  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-  for (const item of scheduled) {
-    if (item.content.data?.kind === kind) await Notifications.cancelScheduledNotificationAsync(item.identifier);
-  }
-  if (!enabled || !workdayOpen || !firstPunchInAt) return;
-  const permission = await Notifications.getPermissionsAsync();
-  if (!permission.granted) return;
-  if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('attendance-reminders', {
-      name: 'Attendance reminders', importance: Notifications.AndroidImportance.DEFAULT,
-      vibrationPattern: [0, 250, 250, 250], lightColor: '#2563EB',
-    });
-  }
-  const start = Date.parse(firstPunchInAt);
-  if (!Number.isFinite(start)) return;
-  const firstIndex = Math.max(1, Math.floor((Date.now() - start) / intervalMs) + 1);
-  // Pre-schedule the next 12 occurrences so reminders can arrive while the app is closed.
-  const lastIndex = firstIndex + 11;
-  for (let index = firstIndex; index <= lastIndex; index += 1) {
-    const dueAt = start + index * intervalMs;
-    if (dueAt <= Date.now()) continue;
-    const elapsedHours = index * Math.floor(intervalMs / 3_600_000);
     await Notifications.scheduleNotificationAsync({
-      content: {
-        title: 'Milo workday reminder',
-        body: `You’ve been at work for ${elapsedHours} hour${elapsedHours === 1 ? '' : 's'}. Remember to take a short break.`,
-        data: { kind }, sound: 'default',
-      },
-      trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.DATE,
-        date: new Date(dueAt),
-        ...(Platform.OS === 'android' ? { channelId: 'attendance-reminders' } : {}),
-      } as any,
+      content: { title: reminder.title, body: `It’s time to ${reminder.title.toLowerCase()}.`, data: { kind: `custom-reminder:${reminder.id}` }, sound: 'default' },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: reminderIntervalMinutes(reminder) * 60, repeats: true,
+        ...(Platform.OS === 'android' ? { channelId: 'attendance-reminders' } : {}) },
     });
   }
 }

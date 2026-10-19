@@ -1,5 +1,5 @@
-const CACHE_NAME = 'milo-shell-v1';
-const APP_SHELL = ['/', '/manifest.json', '/icons/milo-192.png', '/icons/milo-512.png'];
+const CACHE_NAME = 'milo-shell-v2';
+const APP_SHELL = ['/', '/landing.html', '/manifest.json', '/icons/milo-192.png', '/icons/milo-512.png'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));

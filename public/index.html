@@ -12,10 +12,31 @@
     <link rel="manifest" href="/manifest.json" />
     <link rel="apple-touch-icon" href="/icons/milo-192.png" />
     <title>Milo · Your Office Companion</title>
+    <script>
+      // The public website opens the Milo guide first. Installed Milo and
+      // invitation links keep opening the working app directly.
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var isAppLink = params.has('milo') || ['call', 'match', 'ludo'].some(function (key) { return params.has(key); });
+        var hasSignedInAccount = false;
+        try {
+          for (var index = 0; index < window.localStorage.length; index += 1) {
+            var key = window.localStorage.key(index);
+            if (!key || !key.startsWith('sb-') || !key.endsWith('-auth-token')) continue;
+            var session = JSON.parse(window.localStorage.getItem(key) || 'null');
+            if (session && session.user && session.user.is_anonymous !== true) {
+              hasSignedInAccount = true;
+              break;
+            }
+          }
+        } catch (_) { /* If browser storage is blocked, show the public landing page. */ }
+        if (window.location.pathname === '/' && !isAppLink && !hasSignedInAccount) window.location.replace('/landing.html');
+      })();
+    </script>
     <style id="expo-reset">
       html, body { height: 100%; }
       body { overflow: hidden; }
-      #root { display: flex; height: 100%; flex: 1; }
+      #root { display: flex; height: 100%; flex: 1; font-family: var(--milo-font-family, system-ui, sans-serif); }
       body.milo-large-text #root { zoom: 1.12; }
       body.milo-high-contrast #root { filter: contrast(1.18); }
       body.milo-reduced-motion *, body.milo-reduced-motion *::before, body.milo-reduced-motion *::after {

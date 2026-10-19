@@ -15,17 +15,17 @@ export type MiloPreferences = {
   workTargetReminderEnabled: boolean;
   breakEndReminderEnabled: boolean;
   punchOutReminderEnabled: boolean;
-  intervalReminderEnabled: boolean;
-  intervalReminderHours: number;
   workDays: number[];
   customReminders: CustomWorkReminder[];
   largerText: boolean;
+  fontSizeScale: number;
+  fontFamily: 'system' | 'serif' | 'rounded' | 'mono';
   animationsEnabled: boolean;
   reducedMotion: boolean;
   highContrast: boolean;
 };
 
-export type CustomWorkReminder = { id: string; title: string; time: string; days: number[] };
+export type CustomWorkReminder = { id: string; title: string; scheduleType?: 'interval' | 'time'; intervalMinutes?: number; time?: string; days?: number[] };
 
 export const DEFAULT_PREFERENCES: MiloPreferences = {
   reminderEnabled: true,
@@ -33,11 +33,11 @@ export const DEFAULT_PREFERENCES: MiloPreferences = {
   workTargetReminderEnabled: true,
   breakEndReminderEnabled: true,
   punchOutReminderEnabled: true,
-  intervalReminderEnabled: false,
-  intervalReminderHours: 1,
   workDays: [1, 2, 3, 4, 5],
   customReminders: [],
   largerText: false,
+  fontSizeScale: 1,
+  fontFamily: 'system',
   animationsEnabled: false,
   reducedMotion: false,
   highContrast: false,
@@ -214,6 +214,13 @@ export async function loadPreferences(): Promise<MiloPreferences> {
   if (local.pendingSync && await writeCloudSettings(local)) { local.pendingSync = false; await writeLocalSettings(local); }
   const remote = await readCloudSettings();
   const preferences = { ...DEFAULT_PREFERENCES, ...local.preferences, ...remote?.preferences };
+  const savedTextScale = remote?.preferences?.fontSizeScale ?? local.preferences?.fontSizeScale;
+  preferences.fontSizeScale = typeof savedTextScale === 'number' ? savedTextScale : preferences.largerText ? 1.12 : 1;
+  preferences.customReminders = (preferences.customReminders ?? []).map(reminder => ({
+    ...reminder,
+    scheduleType: reminder.scheduleType ?? 'interval',
+    intervalMinutes: reminder.intervalMinutes || 60,
+  }));
   if (remote?.preferences) await writeLocalSettings({ ...local, preferences });
   return preferences;
 }

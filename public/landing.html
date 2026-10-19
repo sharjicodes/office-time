@@ -2,6 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <script>
+    // The root document routes visitors here; keep the public URL at the site root.
+    if (window.location.pathname === '/landing.html' && !window.location.search) {
+      window.history.replaceState(null, '', '/' + window.location.hash);
+    }
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f7f8ff">
   <meta name="description" content="Meet Milo: a friendly place to track your workday, build good routines, stay close to your team, and take a little break.">

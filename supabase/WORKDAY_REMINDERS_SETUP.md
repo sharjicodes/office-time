@@ -28,6 +28,9 @@ Milo sends server-scheduled web push for signed-in users who enabled **Backgroun
 - Break-end alert after a punch-out, using the configured expected break.
 - Missing punch-out alert after a session has remained open for nine hours.
 - Custom reminders at their selected times and weekdays.
+- Optional repeat reminder every 1, 2, 3, 4, 5, 6, or 8 hours from the first punch-in until Office out.
+
+Repeat reminders use the phone's default notification sound. For signed-in web users, the server checks them each minute and can deliver while the browser is closed. Native app reminders are scheduled locally by the operating system.
 
 Office out closes that day's record, so the worker stops sending its workday reminders. Cloud schedules require a signed-in account, internet access when punch/settings changes are made, and a push subscription for that device. Offline guest attendance remains local and cannot be read by the server.
 

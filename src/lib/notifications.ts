@@ -270,6 +270,76 @@ export async function scheduleWorkdayReminders(reminders: CustomWorkReminder[], 
   }
 }
 
+/** Repeat a default-sound reminder from the first punch until Office out. */
+export async function scheduleWorkIntervalReminder(
+  firstPunchInAt: string | null,
+  intervalHours: number,
+  enabled: boolean,
+  workdayOpen: boolean,
+  useBackgroundPush = false,
+) {
+  const kind = 'workday-interval-reminder';
+  const intervalMs = Math.max(1, Math.min(8, Math.floor(intervalHours || 1))) * 60 * 60_000;
+
+  if (Platform.OS === 'web') {
+    const old = browserTimers.get(kind);
+    if (old) clearTimeout(old);
+    browserTimers.delete(kind);
+    // The server scheduler handles subscribed PWAs even when the browser is closed.
+    if (!enabled || !workdayOpen || !firstPunchInAt || useBackgroundPush) return;
+    if (typeof window === 'undefined' || !('Notification' in window) || window.Notification.permission !== 'granted') return;
+    const start = Date.parse(firstPunchInAt);
+    if (!Number.isFinite(start)) return;
+    const scheduleNext = () => {
+      const nextIndex = Math.max(1, Math.floor((Date.now() - start) / intervalMs) + 1);
+      const dueAt = start + nextIndex * intervalMs;
+      const timer = setTimeout(() => {
+        void showPwaNotification('Milo workday reminder', `You’ve been at work for ${nextIndex * Math.floor(intervalMs / 3_600_000)} hour${nextIndex === 1 && intervalMs === 3_600_000 ? '' : 's'}. Remember to take a short break.`);
+        scheduleNext();
+      }, Math.max(1000, dueAt - Date.now()));
+      browserTimers.set(kind, timer);
+    };
+    scheduleNext();
+    return;
+  }
+
+  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  for (const item of scheduled) {
+    if (item.content.data?.kind === kind) await Notifications.cancelScheduledNotificationAsync(item.identifier);
+  }
+  if (!enabled || !workdayOpen || !firstPunchInAt) return;
+  const permission = await Notifications.getPermissionsAsync();
+  if (!permission.granted) return;
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('attendance-reminders', {
+      name: 'Attendance reminders', importance: Notifications.AndroidImportance.DEFAULT,
+      vibrationPattern: [0, 250, 250, 250], lightColor: '#2563EB',
+    });
+  }
+  const start = Date.parse(firstPunchInAt);
+  if (!Number.isFinite(start)) return;
+  const firstIndex = Math.max(1, Math.floor((Date.now() - start) / intervalMs) + 1);
+  // Pre-schedule the next 12 occurrences so reminders can arrive while the app is closed.
+  const lastIndex = firstIndex + 11;
+  for (let index = firstIndex; index <= lastIndex; index += 1) {
+    const dueAt = start + index * intervalMs;
+    if (dueAt <= Date.now()) continue;
+    const elapsedHours = index * Math.floor(intervalMs / 3_600_000);
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Milo workday reminder',
+        body: `You’ve been at work for ${elapsedHours} hour${elapsedHours === 1 ? '' : 's'}. Remember to take a short break.`,
+        data: { kind }, sound: 'default',
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: new Date(dueAt),
+        ...(Platform.OS === 'android' ? { channelId: 'attendance-reminders' } : {}),
+      } as any,
+    });
+  }
+}
+
 export async function showLateLoginWarning(title: string, body: string): Promise<boolean> {
   playWebNoticeTone(true);
   return showAttendanceNotice('late-login', title, body);

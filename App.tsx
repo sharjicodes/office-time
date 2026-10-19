@@ -11,7 +11,7 @@ import { AttendanceDay, AttendanceSession, DEFAULT_POLICY, formatDuration, getAt
 import { clearDay, CustomWorkReminder, DEFAULT_PREFERENCES, loadDays, loadPolicy, loadPreferences, migrateDeviceAttendanceToAccount, MiloPreferences, saveDay, savePolicy, savePreferences, syncPending } from './src/lib/storage';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
 import { getMiloPushEnabled, subscribeToMiloPush, unsubscribeFromMiloPush, updateMiloPushTimezone } from './src/lib/webPush';
-import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, scheduleWorkdayReminders, showChatNotification, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
+import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, scheduleWorkdayReminders, scheduleWorkIntervalReminder, showChatNotification, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
 import { colors } from './src/theme';
 import { BUILD_ID, BUILD_SUMMARY } from './src/release';
 
@@ -491,6 +491,17 @@ function OfficeTimeApp() {
   }, [booting, workdayOpen, preferences.customReminders]);
 
   useEffect(() => {
+    if (booting) return;
+    void scheduleWorkIntervalReminder(
+      sessions[0]?.punchInAt ?? null,
+      preferences.intervalReminderHours,
+      preferences.intervalReminderEnabled,
+      workdayOpen,
+      pushEnabled,
+    );
+  }, [booting, workdayOpen, sessions[0]?.punchInAt, preferences.intervalReminderEnabled, preferences.intervalReminderHours, pushEnabled]);
+
+  useEffect(() => {
     if (Platform.OS !== 'web' || !session || pushEnabled || typeof window === 'undefined' || !('Notification' in window) || window.Notification.permission !== 'granted') return;
     let cancelled = false;
     void getMiloPushEnabled().then(async enabled => {
@@ -787,6 +798,11 @@ function OfficeTimeApp() {
           {Platform.OS === 'web' && <><Pressable accessibilityRole="switch" accessibilityState={{ checked: pushEnabled, disabled: pushBusy }} disabled={pushBusy} onPress={() => void togglePushNotifications()} style={[styles.outlineButton, pushBusy && { opacity: 0.65 }]}><Text style={styles.outlineText}>{pushBusy ? 'Setting up…' : pushEnabled ? '✓ Background notifications on' : '＋ Enable background notifications'}</Text></Pressable>{!!pushStatus && <Text accessibilityLiveRegion="polite" style={styles.muted}>{pushStatus}</Text>}<Text style={styles.muted}>Sign in and allow notifications. After the server scheduler is set up, subscribed devices can receive reminders while Milo is closed.</Text></>}
           <View style={styles.settingToggleRow}><Text style={styles.muted}>Work target reminder</Text><Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.workTargetReminderEnabled }} onPress={() => void changePreferences({ ...preferences, workTargetReminderEnabled: !preferences.workTargetReminderEnabled })} style={[styles.settingSwitch, preferences.workTargetReminderEnabled && styles.settingSwitchOn]}><Text style={styles.settingSwitchText}>{preferences.workTargetReminderEnabled ? 'ON' : 'OFF'}</Text></Pressable></View>
           <Text style={styles.muted}>Target alert is scheduled at punch-in for your recorded-work goal. The expected break alert is scheduled when you punch out; adjust its duration above.</Text>
+          <WorkIntervalReminderSettings
+            enabled={preferences.intervalReminderEnabled}
+            hours={preferences.intervalReminderHours}
+            onChange={(intervalReminderEnabled, intervalReminderHours) => void changePreferences({ ...preferences, intervalReminderEnabled, intervalReminderHours })}
+          />
           <WorkdayReminderEditor reminders={preferences.customReminders ?? []} onChange={customReminders => changePreferences({ ...preferences, customReminders })} />
           {Platform.OS === 'web' && <Text style={styles.muted}>Without background push, browser timers need this tab open. With background push configured, Milo can send scheduled reminders to subscribed devices.</Text>}
           <Text style={styles.policyNote}>Punch-in sessions count as recorded work. Each punch-out starts a break timer that stops at the next punch-in. The policy mentions both a 9-hour day including breaks and 8 recorded work hours; confirm the expected break duration with HR.</Text>
@@ -3010,6 +3026,24 @@ function ClockTimeField({ value, onChange, label, style }: { value: string; onCh
       </View></View>
     </Modal>
   </>;
+}
+
+function WorkIntervalReminderSettings({ enabled, hours, onChange }: { enabled: boolean; hours: number; onChange: (enabled: boolean, hours: number) => void }) {
+  return <View style={styles.settingGroup}>
+    <View style={styles.settingToggleRow}>
+      <View style={{ flex: 1, paddingRight: 8 }}>
+        <Text style={styles.rowLabel}>Repeat workday reminder</Text>
+        <Text style={styles.muted}>Repeat from your first punch-in until Office out. Uses your phone’s default notification sound.</Text>
+      </View>
+      <Pressable accessibilityRole="switch" accessibilityState={{ checked: enabled }} onPress={() => onChange(!enabled, hours)} style={[styles.settingSwitch, enabled && styles.settingSwitchOn]}>
+        <Text style={styles.settingSwitchText}>{enabled ? 'ON' : 'OFF'}</Text>
+      </Pressable>
+    </View>
+    {enabled && <>
+      <Text style={styles.muted}>Remind me every</Text>
+      <View style={styles.weekdayRow}>{[1, 2, 3, 4, 5, 6, 8].map(value => <Pressable key={value} accessibilityRole="radio" accessibilityState={{ checked: hours === value }} onPress={() => onChange(true, value)} style={[styles.weekdayChip, hours === value && styles.weekdayChipActive, { width: 'auto', minWidth: 38, paddingHorizontal: 9 }]}><Text style={[styles.weekdayChipText, hours === value && styles.weekdayChipTextActive]}>{value}h</Text></Pressable>)}</View>
+    </>}
+  </View>;
 }
 
 function WorkdayReminderEditor({ reminders, onChange }: { reminders: CustomWorkReminder[]; onChange: (reminders: CustomWorkReminder[]) => Promise<void> }) {

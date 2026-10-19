@@ -15,6 +15,8 @@ export type MiloPreferences = {
   workTargetReminderEnabled: boolean;
   breakEndReminderEnabled: boolean;
   punchOutReminderEnabled: boolean;
+  intervalReminderEnabled: boolean;
+  intervalReminderHours: number;
   workDays: number[];
   customReminders: CustomWorkReminder[];
   largerText: boolean;
@@ -31,6 +33,8 @@ export const DEFAULT_PREFERENCES: MiloPreferences = {
   workTargetReminderEnabled: true,
   breakEndReminderEnabled: true,
   punchOutReminderEnabled: true,
+  intervalReminderEnabled: false,
+  intervalReminderHours: 1,
   workDays: [1, 2, 3, 4, 5],
   customReminders: [],
   largerText: false,

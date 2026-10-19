@@ -116,6 +116,22 @@ Deno.serve(async request => {
           await deliver(subscription, `work-target:${day}`, 'Daily work goal reached! 🎉', `You reached ${Math.floor(targetMinutes / 60)}h ${targetMinutes % 60 ? `${targetMinutes % 60}m` : ''} of recorded work. Congratulations!`);
       }
 
+      if (preferences.intervalReminderEnabled === true) {
+        const intervalHours = Math.max(1, Math.min(8, Math.floor(Number(preferences.intervalReminderHours) || 1)));
+        const firstPunch = Date.parse(sessions.find(session => session.punchInAt)?.punchInAt ?? '');
+        const elapsedMinutes = Number.isFinite(firstPunch) ? Math.floor((now.getTime() - firstPunch) / 60_000) : 0;
+        const intervalMinutes = intervalHours * 60;
+        if (elapsedMinutes >= intervalMinutes && elapsedMinutes % intervalMinutes === 0) {
+          const occurrence = Math.floor(elapsedMinutes / intervalMinutes);
+          await deliver(
+            subscription,
+            `work-interval:${day}:${occurrence}`,
+            'Milo workday reminder',
+            `You’ve been at work for ${occurrence * intervalHours} hour${occurrence * intervalHours === 1 ? '' : 's'}. Remember to take a short break.`,
+          );
+        }
+      }
+
       const last = sessions[sessions.length - 1];
       if (preferences.breakEndReminderEnabled !== false && last?.punchOutAt && !sessions.some(item => !item.punchOutAt)) {
         const breakStart = Date.parse(last.punchOutAt);

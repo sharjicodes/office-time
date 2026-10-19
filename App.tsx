@@ -787,7 +787,7 @@ function OfficeTimeApp() {
           {Platform.OS === 'web' && <><Pressable accessibilityRole="switch" accessibilityState={{ checked: pushEnabled, disabled: pushBusy }} disabled={pushBusy} onPress={() => void togglePushNotifications()} style={[styles.outlineButton, pushBusy && { opacity: 0.65 }]}><Text style={styles.outlineText}>{pushBusy ? 'Setting up…' : pushEnabled ? '✓ Background notifications on' : '＋ Enable background notifications'}</Text></Pressable>{!!pushStatus && <Text accessibilityLiveRegion="polite" style={styles.muted}>{pushStatus}</Text>}<Text style={styles.muted}>Sign in and allow notifications. After the server scheduler is set up, subscribed devices can receive reminders while Milo is closed.</Text></>}
           <View style={styles.settingToggleRow}><Text style={styles.muted}>Work target reminder</Text><Pressable accessibilityRole="switch" accessibilityState={{ checked: preferences.workTargetReminderEnabled }} onPress={() => void changePreferences({ ...preferences, workTargetReminderEnabled: !preferences.workTargetReminderEnabled })} style={[styles.settingSwitch, preferences.workTargetReminderEnabled && styles.settingSwitchOn]}><Text style={styles.settingSwitchText}>{preferences.workTargetReminderEnabled ? 'ON' : 'OFF'}</Text></Pressable></View>
           <Text style={styles.muted}>Target alert is scheduled at punch-in for your recorded-work goal. The expected break alert is scheduled when you punch out; adjust its duration above.</Text>
-          <WorkdayReminderEditor reminders={preferences.customReminders ?? []} onChange={customReminders => void changePreferences({ ...preferences, customReminders })} />
+          <WorkdayReminderEditor reminders={preferences.customReminders ?? []} onChange={customReminders => changePreferences({ ...preferences, customReminders })} />
           {Platform.OS === 'web' && <Text style={styles.muted}>Without background push, browser timers need this tab open. With background push configured, Milo can send scheduled reminders to subscribed devices.</Text>}
           <Text style={styles.policyNote}>Punch-in sessions count as recorded work. Each punch-out starts a break timer that stops at the next punch-in. The policy mentions both a 9-hour day including breaks and 8 recorded work hours; confirm the expected break duration with HR.</Text>
         </View>
@@ -3012,19 +3012,32 @@ function ClockTimeField({ value, onChange, label, style }: { value: string; onCh
   </>;
 }
 
-function WorkdayReminderEditor({ reminders, onChange }: { reminders: CustomWorkReminder[]; onChange: (reminders: CustomWorkReminder[]) => void }) {
+function WorkdayReminderEditor({ reminders, onChange }: { reminders: CustomWorkReminder[]; onChange: (reminders: CustomWorkReminder[]) => Promise<void> }) {
   const [title, setTitle] = useState('Drink water');
   const [time, setTime] = useState('11:00 AM');
   const [days, setDays] = useState([1, 2, 3, 4, 5]);
+  const [draftReminders, setDraftReminders] = useState(reminders);
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState('');
+  useEffect(() => setDraftReminders(reminders), [reminders]);
   const labels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
   const fullDays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const toggleDay = (selectedDays: number[], day: number) => selectedDays.includes(day) ? selectedDays.filter(item => item !== day) : [...selectedDays, day].sort();
-  const update = (id: string, patch: Partial<CustomWorkReminder>) => onChange(reminders.map(reminder => reminder.id === id ? { ...reminder, ...patch } : reminder));
+  const update = (id: string, patch: Partial<CustomWorkReminder>) => { setDraftReminders(current => current.map(reminder => reminder.id === id ? { ...reminder, ...patch } : reminder)); setSaveMessage(''); };
+  const hasChanges = JSON.stringify(draftReminders) !== JSON.stringify(reminders);
   function addReminder() {
     const cleanTitle = title.trim();
-    if (!cleanTitle || !days.length || reminders.length >= 10) return;
-    onChange([...reminders, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, title: cleanTitle, time, days }]);
+    if (!cleanTitle || !days.length || draftReminders.length >= 10) return;
+    setDraftReminders(current => [...current, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, title: cleanTitle, time, days }]);
+    setSaveMessage('');
     setTitle('');
+  }
+  async function saveReminders() {
+    if (!hasChanges || saving) return;
+    setSaving(true); setSaveMessage('');
+    try { await onChange(draftReminders); setSaveMessage('Reminder settings saved.'); }
+    catch (error: any) { setSaveMessage(error?.message || 'Could not save reminders. Please try again.'); }
+    finally { setSaving(false); }
   }
   return <View style={styles.settingGroup}>
     <Text style={styles.rowLabel}>Custom reminders · active from first punch-in to Office out</Text>
@@ -3033,14 +3046,16 @@ function WorkdayReminderEditor({ reminders, onChange }: { reminders: CustomWorkR
     <TextInput accessibilityLabel="Custom reminder name" value={title} onChangeText={setTitle} placeholder="Reminder, e.g. Take medicine" style={styles.input} maxLength={48} />
     <ClockTimeField label="Custom reminder time" value={time} onChange={setTime} />
     <View style={styles.weekdayRow}>{labels.map((label, index) => { const selected = days.includes(index); return <Pressable key={index} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={fullDays[index]} onPress={() => setDays(current => toggleDay(current, index))} style={[styles.weekdayChip, selected && styles.weekdayChipActive]}><Text style={[styles.weekdayChipText, selected && styles.weekdayChipTextActive]}>{label}</Text></Pressable>; })}</View>
-    <Pressable accessibilityRole="button" disabled={!title.trim() || !days.length || reminders.length >= 10} onPress={addReminder} style={[styles.outlineButton, (!title.trim() || !days.length || reminders.length >= 10) && styles.disabled]}><Text style={styles.outlineText}>＋ Add reminder</Text></Pressable>
-    {reminders.map(reminder => <View key={reminder.id} style={styles.customReminderRow}>
-      <View style={styles.cardHeading}><Text style={styles.rowLabel}>Reminder</Text><Pressable accessibilityRole="button" accessibilityLabel={`Remove ${reminder.title} reminder`} onPress={() => onChange(reminders.filter(item => item.id !== reminder.id))}><Text style={styles.removeText}>Remove</Text></Pressable></View>
+    <Pressable accessibilityRole="button" disabled={!title.trim() || !days.length || draftReminders.length >= 10} onPress={addReminder} style={[styles.outlineButton, (!title.trim() || !days.length || draftReminders.length >= 10) && styles.disabled]}><Text style={styles.outlineText}>＋ Add reminder</Text></Pressable>
+    {draftReminders.map(reminder => <View key={reminder.id} style={styles.customReminderRow}>
+      <View style={styles.cardHeading}><Text style={styles.rowLabel}>Reminder</Text><Pressable accessibilityRole="button" accessibilityLabel={`Remove ${reminder.title} reminder`} onPress={() => { setDraftReminders(current => current.filter(item => item.id !== reminder.id)); setSaveMessage(''); }}><Text style={styles.removeText}>Remove</Text></Pressable></View>
       <TextInput accessibilityLabel="Reminder name" value={reminder.title} onChangeText={value => update(reminder.id, { title: value })} style={styles.input} maxLength={48} />
       <ClockTimeField label={`${reminder.title} time`} value={reminder.time} onChange={value => update(reminder.id, { time: value })} />
       <View style={styles.weekdayRow}>{labels.map((label, index) => { const selected = reminder.days.includes(index); return <Pressable key={index} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={`${reminder.title}: ${fullDays[index]}`} onPress={() => update(reminder.id, { days: toggleDay(reminder.days, index) })} style={[styles.weekdayChip, selected && styles.weekdayChipActive]}><Text style={[styles.weekdayChipText, selected && styles.weekdayChipTextActive]}>{label}</Text></Pressable>; })}</View>
     </View>)}
-    {reminders.length >= 10 && <Text style={styles.muted}>You can set up to 10 custom reminders.</Text>}
+    {draftReminders.length >= 10 && <Text style={styles.muted}>You can set up to 10 custom reminders.</Text>}
+    <Pressable accessibilityRole="button" disabled={!hasChanges || saving} onPress={() => void saveReminders()} style={[styles.action, styles.primary, (!hasChanges || saving) && styles.disabled]}><Text style={styles.actionText}>{saving ? 'Saving reminders…' : 'Save reminders'}</Text></Pressable>
+    {!!saveMessage && <Text accessibilityLiveRegion="polite" style={styles.muted}>{saveMessage}</Text>}
   </View>;
 }
 

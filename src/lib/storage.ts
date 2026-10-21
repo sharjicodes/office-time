@@ -8,6 +8,10 @@ const LAST_ATTENDANCE_OWNER_KEY = 'officetime.attendance.last-owner.v1';
 const POLICY_KEY = 'officetime.policy.v1';
 const DELETED_DAYS_KEY = 'officetime.deleted-days.v1';
 const PREFERENCES_KEY = 'officetime.preferences.v1';
+const PROFILE_KEY = 'officetime.profile.v1';
+
+export type MiloProfile = { displayName: string; username: string; jobRole: string; photoUrl: string };
+export const DEFAULT_MILO_PROFILE: MiloProfile = { displayName: '', username: '', jobRole: 'Other', photoUrl: '' };
 
 export type MiloPreferences = {
   reminderEnabled: boolean;
@@ -232,6 +236,63 @@ export async function savePreferences(preferences: MiloPreferences) {
   if (await writeCloudSettings(next)) { next.pendingSync = false; await writeLocalSettings(next); }
 }
 
+export async function loadMiloProfile(): Promise<MiloProfile> {
+  const userId = await accountId();
+  let local: Partial<MiloProfile> = {};
+  const key = `${PROFILE_KEY}.${userId ?? 'device'}`;
+  try { local = JSON.parse(await AsyncStorage.getItem(key) || '{}'); } catch { /* use account defaults */ }
+  if (userId && local.displayName && local.username && await AsyncStorage.getItem(`${key}.pending`) === 'true' && (await NetInfo.fetch()).isConnected) {
+    try { await saveMiloProfile({ ...DEFAULT_MILO_PROFILE, ...local }); } catch { /* keep the local draft until the next sync attempt */ }
+  }
+  const cloud = await readCloudSettings();
+  let account: { display_name?: string | null; username?: string | null } | null = null;
+  let metadata: Record<string, unknown> = {};
+  if (userId && supabase) {
+    const [{ data }, { data: { user } }] = await Promise.all([
+      supabase.from('profiles').select('display_name, username').eq('id', userId).maybeSingle(),
+      supabase.auth.getUser(),
+    ]);
+    account = data;
+    metadata = user?.user_metadata ?? {};
+  }
+  const saved = { ...DEFAULT_MILO_PROFILE, ...local, ...(cloud?.profile ?? {}) };
+  return {
+    ...saved,
+    displayName: account?.display_name || saved.displayName || String(metadata.full_name ?? ''),
+    username: account?.username || saved.username || String(metadata.username ?? ''),
+  };
+}
+
+export async function saveMiloProfile(profile: MiloProfile): Promise<{ error: string | null; reflect: boolean }> {
+  const userId = await accountId();
+  const key = `${PROFILE_KEY}.${userId ?? 'device'}`;
+  await AsyncStorage.setItem(key, JSON.stringify(profile));
+  if (!userId || !supabase) return { error: null, reflect: true };
+  await AsyncStorage.setItem(`${key}.pending`, 'true');
+  if (!(await NetInfo.fetch()).isConnected) return { error: null, reflect: true };
+  const { data, error } = await supabase.from('profiles').update({ display_name: profile.displayName, username: profile.username }).eq('id', userId).select('id').maybeSingle();
+  if (error) return { error: error.message, reflect: false };
+  if (!data) return { error: 'Your profile row was not found. Run the latest Supabase profile setup and try again.', reflect: false };
+  const { error: metadataError } = await supabase.auth.updateUser({ data: { full_name: profile.displayName, username: profile.username } });
+  if (metadataError) return { error: metadataError.message, reflect: true };
+  if (!(await writeCloudSettings({ profile }))) return { error: null, reflect: true };
+  await AsyncStorage.setItem(`${key}.pending`, 'false');
+  return { error: null, reflect: true };
+}
+
+export async function uploadMiloProfilePhoto(file: Blob): Promise<string> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError || !user || user.is_anonymous) throw new Error('Sign in to upload a profile photo.');
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 3 * 1024 * 1024) throw new Error('Choose a JPG, PNG, or WebP image under 3 MB.');
+  const extension = file.type === 'image/jpeg' ? 'jpg' : file.type.split('/')[1];
+  const path = `${user.id}/avatar.${extension}`;
+  const { error } = await supabase.storage.from('milo-profile-photos').upload(path, file, { contentType: file.type, cacheControl: '3600', upsert: true });
+  if (error) throw error;
+  const { data } = supabase.storage.from('milo-profile-photos').getPublicUrl(path);
+  return `${data.publicUrl}?v=${Date.now()}`;
+}
+
 async function readSettings(): Promise<{ policy?: Partial<typeof DEFAULT_POLICY>; preferences?: Partial<MiloPreferences>; pendingSync?: boolean }> {
   try {
     const [policy, preferences] = await Promise.all([
@@ -255,18 +316,18 @@ async function accountId() {
   } catch { return null; }
 }
 
-async function readCloudSettings(): Promise<{ policy?: Partial<typeof DEFAULT_POLICY>; preferences?: Partial<MiloPreferences> } | null> {
+async function readCloudSettings(): Promise<{ policy?: Partial<typeof DEFAULT_POLICY>; preferences?: Partial<MiloPreferences>; profile?: MiloProfile } | null> {
   const userId = await accountId();
   if (!userId || !supabase || !(await NetInfo.fetch()).isConnected) return null;
   const { data, error } = await supabase.from('milo_user_settings').select('settings').eq('user_id', userId).maybeSingle();
-  return error ? null : (data?.settings as { policy?: Partial<typeof DEFAULT_POLICY>; preferences?: Partial<MiloPreferences> } | null);
+  return error ? null : (data?.settings as { policy?: Partial<typeof DEFAULT_POLICY>; preferences?: Partial<MiloPreferences>; profile?: MiloProfile } | null);
 }
 
-async function writeCloudSettings(settings: { policy?: object; preferences?: object; pendingSync?: boolean }) {
+async function writeCloudSettings(settings: { policy?: object; preferences?: object; profile?: MiloProfile; pendingSync?: boolean }) {
   const userId = await accountId();
   if (!userId || !supabase || !(await NetInfo.fetch()).isConnected) return false;
   const current = await readCloudSettings();
-  const { error } = await supabase.from('milo_user_settings').upsert({ user_id: userId, settings: { ...current, ...(settings.policy ? { policy: settings.policy } : {}), ...(settings.preferences ? { preferences: settings.preferences } : {}) }, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+  const { error } = await supabase.from('milo_user_settings').upsert({ user_id: userId, settings: { ...current, ...(settings.policy ? { policy: settings.policy } : {}), ...(settings.preferences ? { preferences: settings.preferences } : {}), ...(settings.profile ? { profile: settings.profile } : {}) }, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
   return !error;
 }
 export async function getToday() {

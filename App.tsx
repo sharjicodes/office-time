@@ -8,7 +8,7 @@ import * as Notifications from 'expo-notifications';
 import NetInfo from '@react-native-community/netinfo';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AttendanceDay, AttendanceSession, DEFAULT_POLICY, formatDuration, getAttendanceSummary, getDaySessions, isHalfDayDate, localDateKey, MONTHLY_LATE_LOGIN_LIMIT, monthLateCount, PolicyConfig } from './src/lib/attendance';
-import { clearDay, CustomWorkReminder, DEFAULT_PREFERENCES, loadDays, loadPolicy, loadPreferences, migrateDeviceAttendanceToAccount, MiloPreferences, saveDay, savePolicy, savePreferences, syncPending } from './src/lib/storage';
+import { clearDay, CustomWorkReminder, DEFAULT_MILO_PROFILE, DEFAULT_PREFERENCES, loadDays, loadMiloProfile, loadPolicy, loadPreferences, migrateDeviceAttendanceToAccount, MiloPreferences, MiloProfile, saveDay, saveMiloProfile, savePolicy, savePreferences, syncPending, uploadMiloProfilePhoto } from './src/lib/storage';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
 import { getMiloPushEnabled, subscribeToMiloPush, unsubscribeFromMiloPush, updateMiloPushTimezone } from './src/lib/webPush';
 import { cancelReminder, prepareAttendanceNotifications, scheduleDailyReminder, scheduleTimedReminder, scheduleWorkdayReminders, showChatNotification, showLateLoginWarning, showWorkHourCongratulations } from './src/lib/notifications';
@@ -35,7 +35,27 @@ function Text(props: React.ComponentProps<typeof NativeText>) {
 
 if (Platform.OS !== 'web') Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
 type Tab = 'Today' | 'History' | 'Games' | 'Calls' | 'Chat' | 'Desktop' | 'HR';
+type ProfileMoment = 'welcome' | 'punch-in' | 'punch-out' | 'office-out';
+const profileRoleOptions = ['Developer', 'Tester', 'HR', 'Manager', 'Designer', 'Other'];
+function profileDialogue(profile: MiloProfile, moment: ProfileMoment) {
+  const name = profile.displayName.trim() || 'there';
+  const role = profile.jobRole.toLowerCase();
+  if (moment === 'punch-in') {
+    const activity = role === 'developer' ? 'happy coding' : role === 'tester' ? 'happy testing' : role === 'hr' ? 'happy supporting your team' : role === 'manager' ? 'happy leading your team' : role === 'designer' ? 'happy designing' : 'ready to make progress';
+    return `Hi ${name}, ${activity}!`;
+  }
+  if (moment === 'punch-out') {
+    const rest = role === 'developer' ? 'Step away from the code and give your mind a reset.' : role === 'tester' ? 'The test cases can wait. Take a breather and recharge.' : role === 'hr' ? 'You’ve supported others today. Save some care for yourself now.' : role === 'manager' ? 'You’ve guided the team today. Take a little time for yourself.' : role === 'designer' ? 'Let your creative mind rest. You can pick it up refreshed.' : 'Take a breather and come back refreshed.';
+    return `${name}, enjoy your break. ${rest}`;
+  }
+  if (moment === 'office-out') {
+    const win = role === 'developer' ? 'You turned ideas into progress today.' : role === 'tester' ? 'Your careful testing helped make things better today.' : role === 'hr' ? 'Your care made a difference to your people today.' : role === 'manager' ? 'Your guidance helped move the team forward today.' : role === 'designer' ? 'You brought thoughtful ideas to life today.' : 'You made good progress today.';
+    return `Good work today, ${name}. ${win} Rest well—you’ve earned it.`;
+  }
+  return role === 'developer' ? `Welcome back, ${name}. Ready to build something good today?` : role === 'tester' ? `Welcome back, ${name}. Ready to make today a little more reliable?` : `Welcome back, ${name}. Let’s make today a good one.`;
+}
 const clock = (value: string | null) => value ? new Date(value).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '—';
+const authRedirectOrigin = (process.env.EXPO_PUBLIC_APP_URL || 'https://office-time-flame.vercel.app').replace(/\/$/, '');
 const monthName = (key: string) => new Date(`${key}-01T12:00:00`).toLocaleDateString([], { month: 'long', year: 'numeric' });
 const formatTimer = (seconds: number) => {
   const safe = Math.max(0, Math.floor(seconds));
@@ -58,6 +78,11 @@ export default function App() {
 
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> };
 const PWA_INSTALL_DISMISSED_KEY = 'milo.pwa-install-dismissed.v1';
+
+function isPwaInstalled() {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  return window.matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+}
 
 function getDesktopDownload() {
   if (typeof navigator === 'undefined') return { label: 'Get Milo Desktop', url: 'https://github.com/sharjicodes/office-time/releases/latest' };
@@ -86,7 +111,7 @@ function PwaInstallPrompt() {
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    const standalone = window.matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+    const standalone = isPwaInstalled();
     const iosDevice = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     const androidDevice = /android/i.test(navigator.userAgent);
     setPlatform(iosDevice ? 'ios' : androidDevice ? 'android' : 'desktop');
@@ -96,7 +121,7 @@ function PwaInstallPrompt() {
       event.preventDefault();
       setInstallEvent(event as InstallPromptEvent);
     };
-    const onInstalled = () => { setInstalled(true); setInstallEvent(null); };
+    const onInstalled = () => { setInstalled(true); setInstallEvent(null); window.dispatchEvent(new Event('milo:pwa-installed')); };
     const onInstallButton = () => {
       if (standalone || installed) {
         Alert.alert('Milo is installed', 'Open Milo from your Home Screen or app list.');
@@ -114,7 +139,7 @@ function PwaInstallPrompt() {
       const pending = installEvent;
       void pending.prompt().then(() => pending.userChoice).then(choice => {
         setInstallEvent(null);
-        if (choice.outcome === 'accepted') setInstalled(true);
+        if (choice.outcome === 'accepted') { setInstalled(true); window.dispatchEvent(new Event('milo:pwa-installed')); }
       });
     };
     const onPromptDismissed = () => setDismissed(window.localStorage.getItem(PWA_INSTALL_DISMISSED_KEY) === 'true');
@@ -130,11 +155,10 @@ function PwaInstallPrompt() {
     };
   }, [installEvent, installed]);
 
-  if (dismissed) return null;
+  if (dismissed || installed) return null;
   return <View style={styles.installCard}>
-    <View style={styles.installCopy}><Text style={styles.installTitle}>{installed ? 'Milo is installed' : 'Install Milo'}</Text><Text style={styles.installDescription}>{installed ? 'Launch Milo from your Home Screen or app list.' : 'Add Milo to your device for quick, app-like access.'}</Text>{showInstallSteps && <Text style={styles.installDescription}>{platform === 'ios' ? 'In Safari, tap Share, then choose “Add to Home Screen”.' : platform === 'android' ? 'In Chrome, open ⋮ and choose “Install app” or “Add to Home screen”.' : 'Use your browser menu and choose “Install Milo” or “Install app”.'}</Text>}</View>
+    <View style={styles.installCopy}><Text style={styles.installTitle}>Install Milo</Text><Text style={styles.installDescription}>Add Milo to your device for quick, app-like access.</Text>{showInstallSteps && <Text style={styles.installDescription}>{platform === 'ios' ? 'In Safari, tap Share, then choose “Add to Home Screen”.' : platform === 'android' ? 'In Chrome, open ⋮ and choose “Install app” or “Add to Home screen”.' : 'Use your browser menu and choose “Install Milo” or “Install app”.'}</Text>}</View>
     <Pressable accessibilityRole="button" onPress={() => {
-      if (installed) { setShowInstallSteps(value => !value); return; }
       if (installEvent) {
         const pending = installEvent;
         void pending.prompt().then(() => pending.userChoice).then(choice => {
@@ -158,10 +182,19 @@ function PwaInstallButton() {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    const syncVisibility = () => setVisible(window.localStorage.getItem(PWA_INSTALL_DISMISSED_KEY) === 'true');
+    const syncVisibility = () => setVisible(window.localStorage.getItem(PWA_INSTALL_DISMISSED_KEY) === 'true' && !isPwaInstalled());
     syncVisibility();
     window.addEventListener('milo:install-prompt-dismissed', syncVisibility);
-    return () => window.removeEventListener('milo:install-prompt-dismissed', syncVisibility);
+    window.addEventListener('milo:pwa-installed', syncVisibility);
+    window.addEventListener('appinstalled', syncVisibility);
+    const displayMode = window.matchMedia('(display-mode: standalone)');
+    displayMode.addEventListener?.('change', syncVisibility);
+    return () => {
+      window.removeEventListener('milo:install-prompt-dismissed', syncVisibility);
+      window.removeEventListener('milo:pwa-installed', syncVisibility);
+      window.removeEventListener('appinstalled', syncVisibility);
+      displayMode.removeEventListener?.('change', syncVisibility);
+    };
   }, []);
   if (!visible) return null;
   return <Pressable accessibilityRole="button" accessibilityLabel="Install Milo" onPress={() => window.dispatchEvent(new Event('milo:install-button'))} style={styles.installMiniButton}><Text style={styles.installMiniText}>↓</Text></Pressable>;
@@ -398,6 +431,9 @@ function OfficeTimeApp() {
     };
   }, []);
   const [session, setSession] = useState<any>(null);
+  const [miloProfile, setMiloProfile] = useState<MiloProfile>(DEFAULT_MILO_PROFILE);
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
+  const [profileMoment, setProfileMoment] = useState<ProfileMoment>('welcome');
   const [passwordRecovery, setPasswordRecovery] = useState(() => typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('reset-password'));
   const [role, setRole] = useState('employee');
   const [booting, setBooting] = useState(true);
@@ -462,8 +498,8 @@ function OfficeTimeApp() {
   }, [booting, today, summary.targetReached, policy.recordedWorkTargetMinutes, preferences.animationsEnabled, preferences.reducedMotion]);
 
   const refresh = useCallback(async () => {
-    const [loadedDays, loadedPolicy, loadedPreferences] = await Promise.all([loadDays(), loadPolicy(), loadPreferences()]);
-    setDays(loadedDays); setPolicy(loadedPolicy); setPreferences(loadedPreferences);
+    const [loadedDays, loadedPolicy, loadedPreferences, loadedProfile] = await Promise.all([loadDays(), loadPolicy(), loadPreferences(), loadMiloProfile()]);
+    setDays(loadedDays); setPolicy(loadedPolicy); setPreferences(loadedPreferences); setMiloProfile(loadedProfile);
     setBreakReminderEnabled(loadedPreferences.breakEndReminderEnabled);
   }, []);
 
@@ -588,11 +624,13 @@ function OfficeTimeApp() {
         if (!(await showLateLoginWarning('Late login after 10:00 AM', body))) Alert.alert('Late login after 10:00 AM', body);
       }
       setCatGreeting('hi');
+      setProfileMoment('punch-in');
     } else {
       await cancelNotice('missing-punch-out');
       await cancelNotice('work-target');
       if (breakReminderEnabled) await scheduleTimedNotice('break-reminder', 'Break time', `Your expected ${formatDuration(policy.defaultBreakMinutes)} break is up. Ready to punch back in?`, Math.max(15, policy.defaultBreakMinutes) * 60_000);
       setCatGreeting('bye');
+      setProfileMoment('punch-out');
     }
   }
   async function clearAttendanceDay(date: string) {
@@ -606,7 +644,7 @@ function OfficeTimeApp() {
   }
   async function officeOut() {
     if (active || !sessions.length) return;
-    if (day.officeOutAt) { setOfficeOutSummary(day); return; }
+    if (day.officeOutAt) { setOfficeOutSummary(day); setProfileMoment('office-out'); return; }
     const stamp = new Date();
     const updated = await saveDay({ ...day, officeOutAt: stamp.toISOString() });
     setDays(list => [updated, ...list.filter(item => item.date !== updated.date)]);
@@ -615,6 +653,7 @@ function OfficeTimeApp() {
     await cancelNotice('break-reminder');
     await scheduleWorkdayReminders(preferences.customReminders, false);
     setOfficeOutSummary(updated);
+    setProfileMoment('office-out');
   }
   async function undoOfficeOut() {
     const target = officeOutSummary ?? day;
@@ -623,6 +662,7 @@ function OfficeTimeApp() {
     setDays(list => [reopened, ...list.filter(item => item.date !== reopened.date)]);
     await scheduleWorkdayReminders(preferences.customReminders, true, getDaySessions(reopened)[0]?.punchInAt ?? null, pushEnabled);
     setOfficeOutSummary(null);
+    setProfileMoment('punch-out');
   }
   async function savePunchCorrection(date: string, correctedSessions: AttendanceSession[], addToExisting: boolean) {
     const existing = days.find(item => item.date === date);
@@ -800,8 +840,9 @@ function OfficeTimeApp() {
     {showPageAnimations && <PageAmbience />}
     <StatusBar style="dark" />
     <ScrollView contentContainerStyle={styles.page}>
-      <View style={styles.header}><View><Text style={styles.eyebrow}>YOUR OFFICE COMPANION</Text><Text style={styles.title}>Milo</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}><PwaInstallButton /><Pressable accessibilityRole="button" accessibilityLabel="Open reminder settings" onPress={() => setReminderSettingsOpen(true)} style={styles.headerSettingIcon}><Text style={styles.headerSettingIconText}>🔔</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Open app settings" onPress={() => setAppSettingsOpen(true)} style={styles.headerSettingIcon}><Text style={styles.headerSettingIconText}>⚙️</Text></Pressable><MiloControlPanel now={now} onNavigate={nextTab => setTab(nextTab)} /></View></View>
+      <View style={styles.header}><View><Text style={styles.eyebrow}>YOUR OFFICE COMPANION</Text><Text style={styles.title}>Milo</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}><PwaInstallButton /><Pressable accessibilityRole="button" accessibilityLabel="Edit profile" onPress={() => setProfileEditorOpen(true)} style={styles.headerSettingIcon}><Text style={styles.headerSettingIconText}>👤</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Open reminder settings" onPress={() => setReminderSettingsOpen(true)} style={styles.headerSettingIcon}><Text style={styles.headerSettingIconText}>🔔</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Open app settings" onPress={() => setAppSettingsOpen(true)} style={styles.headerSettingIcon}><Text style={styles.headerSettingIconText}>⚙️</Text></Pressable><MiloControlPanel now={now} onNavigate={nextTab => setTab(nextTab)} /></View></View>
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => { if (session) void signOut(); }}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
+      <View style={styles.profileCard}><View style={styles.profileIdentity}>{miloProfile.photoUrl ? <Image accessibilityLabel={`${miloProfile.displayName || 'Milo user'} profile photo`} source={{ uri: miloProfile.photoUrl }} style={styles.profilePhoto} /> : <View style={styles.profilePhotoFallback}><Text style={styles.profilePhotoInitial}>{(miloProfile.displayName || session?.user?.email?.split('@')[0] || 'M').trim().charAt(0).toUpperCase()}</Text></View>}<View style={styles.profileIdentityText}><Text style={styles.profileName}>{miloProfile.displayName || session?.user?.email?.split('@')[0] || 'Milo user'}</Text><Text style={styles.profileMeta}>{miloProfile.username ? `@${miloProfile.username}` : 'Milo member'} · {miloProfile.jobRole || 'Other'}</Text></View></View><Text style={styles.profileDialogue}>{profileDialogue(miloProfile, profileMoment)}</Text></View>
       {Platform.OS === 'web' && <PwaInstallPrompt />}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}><>{(['Today', 'History', 'Games', 'Calls', 'Chat', 'Desktop', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</></ScrollView>
       {tab === 'Today' && showAnimations && <WalkingCat />}
@@ -874,52 +915,93 @@ function OfficeTimeApp() {
     <Modal visible={miloModalOpen} transparent animationType="fade" onRequestClose={() => setMiloModalOpen(false)}>
       <View style={styles.miloOverlay}>
         <View style={styles.miloModalCard}>
-          <View style={styles.cardHeading}><View><Text style={styles.sectionTitle}>Ask Milo</Text><Text style={styles.chatPresence}>Company policy assistant</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close Milo assistant" hitSlop={10} onPress={() => setMiloModalOpen(false)}><Text style={styles.link}>Close</Text></Pressable></View>
+          <View style={styles.cardHeading}><View><Text style={styles.sectionTitle}>Ask Milo</Text><Text style={styles.chatPresence}>Company policy assistant</Text></View><IconCloseButton label="Close Milo assistant" onPress={() => setMiloModalOpen(false)} /></View>
           <MiloPolicyAssistant session={session} compact />
         </View>
       </View>
     </Modal>
+    <MiloProfileEditor visible={profileEditorOpen} profile={miloProfile} onClose={() => setProfileEditorOpen(false)} onSaveProfile={async next => { const result = await saveMiloProfile(next); if (result.reflect) setMiloProfile(next); return result.error; }} onUploadProfilePhoto={file => uploadMiloProfilePhoto(file)} />
     {correctionTarget && <PunchCorrectionModal key={`${correctionTarget.date}-${correctionTarget.add}`} date={correctionTarget.date} day={days.find(item => item.date === correctionTarget.date)} addToExisting={correctionTarget.add} onClose={() => setCorrectionTarget(null)} onSave={savePunchCorrection} />}
     {officeOutSummary && <OfficeOutSummaryModal day={officeOutSummary} policy={policy} onClose={() => { setOfficeOutSummary(null); setCatGreeting('bye'); }} onUndo={undoOfficeOut} />}
     {showAnimations && fireworksId > 0 && <FireworksCelebration key={fireworksId} onDone={() => setFireworksId(0)} />}
   </SafeAreaView></TextAppearanceContext.Provider>;
 }
 
+function MiloProfileEditor({ visible, profile, onClose, onSaveProfile, onUploadProfilePhoto }: { visible: boolean; profile: MiloProfile; onClose: () => void; onSaveProfile: (profile: MiloProfile) => Promise<string | null>; onUploadProfilePhoto: (file: Blob) => Promise<string> }) {
+  const [draftProfile, setDraftProfile] = useState(profile);
+  const [roleMenuOpen, setRoleMenuOpen] = useState(false);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileMessage, setProfileMessage] = useState('');
+  useEffect(() => { if (visible) { setDraftProfile(profile); setProfileMessage(''); setRoleMenuOpen(false); } }, [visible]);
+  async function saveProfile() {
+    const next = { ...draftProfile, displayName: draftProfile.displayName.trim(), username: draftProfile.username.trim().toLowerCase() };
+    if (next.displayName.length < 2 || next.displayName.length > 40) { setProfileMessage('Name must be 2–40 characters.'); return; }
+    if (!/^[a-z0-9_]{3,24}$/.test(next.username)) { setProfileMessage('Username must be 3–24 characters using letters, numbers, or underscores.'); return; }
+    if (next.photoUrl) { try { const photo = new URL(next.photoUrl); if (!['http:', 'https:'].includes(photo.protocol)) throw new Error(); } catch { setProfileMessage('Enter a valid image URL starting with https://.'); return; } }
+    setProfileBusy(true); setProfileMessage('');
+    try { const error = await onSaveProfile(next); if (error) setProfileMessage(error); else setProfileMessage('Profile saved.'); }
+    catch (error) { setProfileMessage(error instanceof Error ? error.message : 'Could not save profile.'); }
+    finally { setProfileBusy(false); }
+  }
+  async function chooseProfilePhoto() {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') { setProfileMessage('Paste an image URL in the photo field on this device.'); return; }
+    const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/jpeg,image/png,image/webp';
+    input.onchange = async () => {
+      const file = input.files?.[0]; if (!file) return;
+      setProfileBusy(true); setProfileMessage('Uploading photo…');
+      try { const photoUrl = await onUploadProfilePhoto(file); setDraftProfile(current => ({ ...current, photoUrl })); setProfileMessage('Photo uploaded. Save your profile to apply it.'); }
+      catch (error) { setProfileMessage(error instanceof Error ? error.message : 'Could not upload photo.'); }
+      finally { setProfileBusy(false); }
+    };
+    input.click();
+  }
+  return <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <View style={styles.mediaOverlay}><View style={styles.settingsModal}>
+      <View style={styles.cardHeading}><View style={styles.settingsHeaderTitle}><Text style={styles.sectionTitle}>👤 Edit profile</Text><Text style={styles.muted}>Update what appears on your profile card.</Text></View><IconCloseButton label="Close profile editor" onPress={onClose} /></View>
+      <ScrollView keyboardShouldPersistTaps="handled" style={styles.settingsScroll} contentContainerStyle={{ gap: 12 }}>
+        <View style={styles.profileEditor}>
+          <TextInput style={styles.input} placeholder="Name shown on your card" autoCapitalize="words" value={draftProfile.displayName} onChangeText={displayName => setDraftProfile(current => ({ ...current, displayName }))} maxLength={40} />
+          <TextInput style={styles.input} placeholder="Username (letters, numbers, underscores)" autoCapitalize="none" autoCorrect={false} value={draftProfile.username} onChangeText={username => setDraftProfile(current => ({ ...current, username }))} maxLength={24} />
+          <Text style={styles.rowLabel}>Role</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Profile role: ${draftProfile.jobRole}`} onPress={() => setRoleMenuOpen(value => !value)} style={styles.profileRoleButton}><Text style={styles.profileRoleText}>{draftProfile.jobRole || 'Choose role'}</Text><Text style={styles.profileRoleChevron}>{roleMenuOpen ? '⌃' : '⌄'}</Text></Pressable>
+          {roleMenuOpen && <View style={styles.profileRoleMenu}>{profileRoleOptions.map(option => <Pressable key={option} accessibilityRole="button" onPress={() => { setDraftProfile(current => ({ ...current, jobRole: option })); setRoleMenuOpen(false); }} style={styles.profileRoleOption}><Text style={styles.outlineText}>{option}</Text></Pressable>)}</View>}
+          <TextInput style={styles.input} placeholder="Profile photo URL (or upload below)" autoCapitalize="none" keyboardType="url" value={draftProfile.photoUrl} onChangeText={photoUrl => setDraftProfile(current => ({ ...current, photoUrl }))} />
+          {Platform.OS === 'web' && <Pressable accessibilityRole="button" disabled={profileBusy} onPress={() => void chooseProfilePhoto()} style={styles.outlineButton}><Text style={styles.outlineText}>{profileBusy ? 'Uploading…' : 'Choose profile photo'}</Text></Pressable>}
+          <Pressable accessibilityRole="button" disabled={profileBusy} onPress={() => void saveProfile()} style={[styles.action, styles.primary, profileBusy && styles.dim]}><Text style={styles.actionText}>{profileBusy ? 'Saving…' : 'Save profile'}</Text></Pressable>
+          {!!profileMessage && <Text accessibilityLiveRegion="polite" style={styles.muted}>{profileMessage}</Text>}
+          <Text style={styles.muted}>Your role here personalizes greetings. It does not change HR access.</Text>
+        </View>
+      </ScrollView>
+    </View></View>
+  </Modal>;
+}
+
 function MiloControlPanel({ now, onNavigate }: { now: Date; onNavigate: (tab: Tab) => void }) {
   const [open, setOpen] = useState(false);
   const shortcuts: { label: string; icon: string; tab: Tab }[] = [
-    { label: 'Games', icon: '🎮', tab: 'Games' },
-    { label: 'History', icon: '🕘', tab: 'History' },
-    { label: 'Today', icon: '⏱️', tab: 'Today' },
-    { label: 'Chat', icon: '💬', tab: 'Chat' },
+    { label: 'Games', icon: '🎮', tab: 'Games' }, { label: 'History', icon: '🕘', tab: 'History' },
+    { label: 'Today', icon: '⏱️', tab: 'Today' }, { label: 'Chat', icon: '💬', tab: 'Chat' },
   ];
   return <>
-    <Pressable accessibilityRole="button" accessibilityLabel="Open Milo control panel" onPress={() => setOpen(true)} style={{ width: 48, height: 48, borderRadius: 16, backgroundColor: '#F8C9D0', borderWidth: 2, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', shadowColor: '#47218C', shadowOpacity: 0.18, shadowRadius: 8, elevation: 6 }}>
-      <Text style={{ fontSize: 22 }}>🎛️</Text>
-    </Pressable>
+    <Pressable accessibilityRole="button" accessibilityLabel="Open Milo control panel" onPress={() => setOpen(true)} style={{ width: 48, height: 48, borderRadius: 16, backgroundColor: '#F8C9D0', borderWidth: 2, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', shadowColor: '#47218C', shadowOpacity: 0.18, shadowRadius: 8, elevation: 6 }}><Text style={{ fontSize: 22 }}>🎛️</Text></Pressable>
     <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
       <View style={{ flex: 1, backgroundColor: 'rgba(32, 20, 70, 0.28)' }}>
         <Pressable accessibilityRole="button" accessibilityLabel="Close control panel" onPress={() => setOpen(false)} style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }} />
-        <View style={{ position: 'absolute', top: Platform.OS === 'web' ? 16 : 48, right: 12, width: '92%', maxWidth: 450, padding: 18, borderRadius: 34, backgroundColor: '#EAF5FF', borderWidth: 1, borderColor: '#FFFFFF', shadowColor: '#241052', shadowOpacity: 0.28, shadowRadius: 18, elevation: 12, gap: 14 }}>
+        <ScrollView keyboardShouldPersistTaps="handled" style={{ position: 'absolute', top: Platform.OS === 'web' ? 16 : 12, right: 12, width: '92%', maxWidth: 450, maxHeight: '94%', borderRadius: 34, backgroundColor: '#EAF5FF', borderWidth: 1, borderColor: '#FFFFFF', shadowColor: '#241052', shadowOpacity: 0.28, shadowRadius: 18, elevation: 12 }} contentContainerStyle={{ padding: 18, gap: 14 }}>
           <View style={{ height: 158, borderRadius: 28, backgroundColor: '#F8CDD1', paddingHorizontal: 22, paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', overflow: 'hidden' }}>
             <View><Text style={{ color: '#FFFFFF', fontSize: 42, lineHeight: 50, fontWeight: '900' }}>{now.toLocaleDateString([], { day: 'numeric' })} ♡</Text><Text style={{ color: '#FFFFFF', fontSize: 24, fontWeight: '800', letterSpacing: 1 }}>{now.toLocaleDateString([], { month: 'long' })}</Text></View>
             <View style={{ alignItems: 'center' }}><Text style={{ fontSize: 52 }}>☁️</Text><Text style={{ color: '#FFFFFF', fontSize: 20, letterSpacing: 3 }}>˙ ˙ ˙ ˙</Text></View>
           </View>
           <View style={{ flexDirection: 'row', gap: 12, height: 178 }}>
-            <View style={{ flex: 1, gap: 10 }}>
-              {[shortcuts.slice(0, 2), shortcuts.slice(2, 4)].map((row, rowIndex) => <View key={rowIndex} style={{ flex: 1, flexDirection: 'row', gap: 10 }}>
-                {row.map(item => <Pressable key={item.tab} accessibilityRole="button" accessibilityLabel={item.label} onPress={() => { setOpen(false); onNavigate(item.tab); }} style={{ flex: 1, minWidth: 0, borderRadius: 22, backgroundColor: '#F7C2C8', borderWidth: 1, borderColor: '#FFE8EA', alignItems: 'center', justifyContent: 'center', shadowColor: '#783C61', shadowOpacity: 0.16, shadowRadius: 6, elevation: 4 }}><Text style={{ fontSize: 34 }}>{item.icon}</Text></Pressable>)}
-              </View>)}
-            </View>
+            <View style={{ flex: 1, gap: 10 }}>{[shortcuts.slice(0, 2), shortcuts.slice(2, 4)].map((row, rowIndex) => <View key={rowIndex} style={{ flex: 1, flexDirection: 'row', gap: 10 }}>{row.map(item => <Pressable key={item.tab} accessibilityRole="button" accessibilityLabel={item.label} onPress={() => { setOpen(false); onNavigate(item.tab); }} style={{ flex: 1, minWidth: 0, borderRadius: 22, backgroundColor: '#F7C2C8', borderWidth: 1, borderColor: '#FFE8EA', alignItems: 'center', justifyContent: 'center', shadowColor: '#783C61', shadowOpacity: 0.16, shadowRadius: 6, elevation: 4 }}><Text style={{ fontSize: 34 }}>{item.icon}</Text></Pressable>)}</View>)}</View>
             <Pressable accessibilityRole="button" accessibilityLabel="Open calls" onPress={() => { setOpen(false); onNavigate('Calls'); }} style={{ flex: 0.9, borderRadius: 28, backgroundColor: '#F7C2C8', borderWidth: 1, borderColor: '#FFE8EA', alignItems: 'center', justifyContent: 'center', shadowColor: '#783C61', shadowOpacity: 0.16, shadowRadius: 6, elevation: 4 }}><Text style={{ fontSize: 76 }}>📞</Text></Pressable>
           </View>
           <Text style={{ textAlign: 'center', color: '#65517F', fontSize: 11, fontWeight: '700', letterSpacing: 1 }}>MILO · YOUR OFFICE COMPANION</Text>
-        </View>
+        </ScrollView>
       </View>
     </Modal>
   </>;
 }
-
 function WalkingCat() {
   const [sceneWidth, setSceneWidth] = useState(0);
   const walk = useRef(new Animated.Value(0)).current;
@@ -2350,7 +2432,7 @@ function TeamChat({ session, onJoin }: { session: any; onJoin: (name: string) =>
       {!!callError && <Text style={styles.callError}>{callError}</Text>}
       <View style={styles.callModalActions}><Pressable accessibilityRole="button" onPress={toggleCallMute} style={[styles.callControl, callMuted && styles.callControlMuted]}><Text style={styles.callControlText}>{callMuted ? 'Unmute mic' : 'Mute mic'}</Text></Pressable><Pressable accessibilityRole="button" onPress={toggleCallSpeaker} style={styles.callControl}><Text style={styles.callControlText}>{speakerMode ? 'Speaker' : 'Normal audio'}</Text></Pressable>{activeCall?.mode === 'video' && <><Pressable accessibilityRole="button" onPress={toggleCallCamera} style={[styles.callControl, cameraDisabled && styles.callControlMuted]}><Text style={styles.callControlText}>{cameraDisabled ? 'Camera on' : 'Camera off'}</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void switchCallCamera()} style={styles.callControl}><Text style={styles.callControlText}>{cameraFacing === 'user' ? 'Back camera' : 'Front camera'}</Text></Pressable></>}<Pressable accessibilityRole="button" onPress={() => endCall()} style={[styles.callControl, styles.callDecline]}><Text style={styles.callControlText}>{activeCall?.group && activeCall.hostId !== session?.user?.id ? 'Leave call' : 'End call'}</Text></Pressable></View>
     </View></View></Modal>
-    <Modal visible={!!mediaView} transparent animationType="fade" onRequestClose={() => setMediaView(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{mediaView?.once ? 'View-once photo' : 'Shared media'}</Text><Pressable onPress={() => setMediaView(null)}><Text style={styles.link}>Close</Text></Pressable></View>{mediaView?.type === 'image' ? <Image source={{ uri: mediaView.url }} resizeMode="contain" style={styles.mediaImage}/> : Platform.OS === 'web' && mediaView ? React.createElement(mediaView.type === 'video' ? 'video' : 'audio', { src: mediaView.url, controls: true, playsInline: true, style: { width: '100%', maxHeight: 420 } }) : <Text style={styles.muted}>Open this media in the web app to play it.</Text>}{mediaView?.once && <Text style={styles.onceFootnote}>This view is now used. Close this window to hide the photo.</Text>}</View></View></Modal>
+    <Modal visible={!!mediaView} transparent animationType="fade" onRequestClose={() => setMediaView(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><View style={styles.cardHeading}><Text style={styles.sectionTitle}>{mediaView?.once ? 'View-once photo' : 'Shared media'}</Text><IconCloseButton label="Close shared media" onPress={() => setMediaView(null)} /></View>{mediaView?.type === 'image' ? <Image source={{ uri: mediaView.url }} resizeMode="contain" style={styles.mediaImage}/> : Platform.OS === 'web' && mediaView ? React.createElement(mediaView.type === 'video' ? 'video' : 'audio', { src: mediaView.url, controls: true, playsInline: true, style: { width: '100%', maxHeight: 420 } }) : <Text style={styles.muted}>Open this media in the web app to play it.</Text>}{mediaView?.once && <Text style={styles.onceFootnote}>This view is now used. Close this window to hide the photo.</Text>}</View></View></Modal>
     <Modal visible={!!deleteAllTarget} transparent animationType="fade" onRequestClose={() => setDeleteAllTarget(null)}><View style={styles.mediaOverlay}><View style={styles.mediaModal}><Text style={styles.sectionTitle}>{deleteAllTarget?.sender_id === session?.user?.id ? 'Delete for everyone?' : 'Remove this message?'}</Text><Text style={styles.muted}>{deleteAllTarget?.sender_id === session?.user?.id ? 'This removes your message from the shared chat for all participants.' : 'As the room creator, you can remove this message for everyone in the room.'}</Text><View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}><Pressable style={styles.outlineButton} onPress={() => setDeleteAllTarget(null)}><Text style={styles.outlineText}>Cancel</Text></Pressable><Pressable disabled={!!deletingId} onPress={() => deleteAllTarget && void deleteForEveryone(deleteAllTarget)} style={[styles.action, { backgroundColor: '#B91C1C', paddingHorizontal: 14 }]}><Text style={styles.actionText}>{deletingId === deleteAllTarget?.id ? 'Deleting…' : 'Remove for everyone'}</Text></Pressable></View></View></View></Modal>
   </View>;
 }
@@ -2368,7 +2450,7 @@ function AuthScreen({ onContinue, onJoinChat, onExplore, recovery = false, onRec
   async function sendPasswordReset() {
     if (!supabase || !email.trim()) return;
     setBusy(true); setAuthMessage('');
-    const redirectTo = Platform.OS === 'web' && typeof window !== 'undefined' ? `${window.location.origin}/?reset-password=true` : undefined;
+    const redirectTo = Platform.OS === 'web' ? `${authRedirectOrigin}/?reset-password=true` : undefined;
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), redirectTo ? { redirectTo } : undefined);
     setBusy(false);
     setAuthMessage(error ? error.message : 'If an account exists for that email, a password reset link is on its way.');
@@ -2387,7 +2469,7 @@ function AuthScreen({ onContinue, onJoinChat, onExplore, recovery = false, onRec
     if (authMode === 'signup' && !/^[a-z0-9_]{3,24}$/.test(normalizedUsername)) { setAuthMessage('Username must be 3–24 characters using letters, numbers, or underscores.'); return; }
     setBusy(true); setAuthMessage('');
     const result = authMode === 'signup'
-      ? await supabase.auth.signUp({ email: email.trim(), password, options: { data: { username: normalizedUsername, full_name: normalizedUsername } } })
+      ? await supabase.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: Platform.OS === 'web' ? `${authRedirectOrigin}/` : undefined, data: { username: normalizedUsername, full_name: normalizedUsername } } })
       : await supabase.auth.signInWithPassword({ email: email.trim(), password });
     setBusy(false);
     if (result.error) setAuthMessage(result.error.message);
@@ -3283,7 +3365,7 @@ function PunchCorrectionModal({ date: initialDate, day, addToExisting, onClose, 
       <View style={styles.correctionModal}>
         <View style={styles.cardHeading}>
           <Text style={styles.sectionTitle}>{addToExisting ? 'Add missed punches' : 'Correct punch times'}</Text>
-          <Pressable accessibilityRole="button" onPress={onClose}><Text style={styles.link}>Close</Text></Pressable>
+          <IconCloseButton label="Close punch correction" onPress={onClose} />
         </View>
         <ScrollView style={styles.correctionScroll} contentContainerStyle={styles.correctionContent} keyboardShouldPersistTaps="handled">
           <Text style={styles.muted}>Enter local times like 9:00 AM or 2:30 PM. Add optional break hours and minutes to a session; that time is deducted from its net work.</Text>
@@ -3401,7 +3483,7 @@ function OfficeOutSummaryModal({ day, policy, onClose, onUndo }: { day: Attendan
   const intervalMinutes = (from: string, to: string) => Math.max(0, Math.floor((new Date(to).getTime() - new Date(from).getTime()) / 60_000));
   return <Modal visible transparent animationType="fade" onRequestClose={onClose}>
     <View style={styles.mediaOverlay}><View style={styles.officeSummaryModal}>
-      <View style={styles.cardHeading}><View><Text style={styles.sectionTitle}>Office out summary</Text><Text style={styles.muted}>Finished at {clock(day.officeOutAt ?? null)}</Text></View><Pressable onPress={onClose}><Text style={styles.link}>Close</Text></Pressable></View>
+      <View style={styles.cardHeading}><View><Text style={styles.sectionTitle}>Office out summary</Text><Text style={styles.muted}>Finished at {clock(day.officeOutAt ?? null)}</Text></View><IconCloseButton label="Close office out summary" onPress={onClose} /></View>
       <View style={styles.officeSummaryTotals}><View style={{ flex: 1 }}><Text style={styles.statLabel}>NET WORKED</Text><Text style={styles.officeSummaryWork}>{formatDuration(summary.netWorkedMinutes)}</Text></View><View style={{ flex: 1 }}><Text style={styles.statLabel}>BREAK TAKEN</Text><Text style={styles.officeSummaryBreak}>{formatDuration(summary.takenBreakMinutes)}</Text></View></View>
       <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ gap: 8 }}>
         {sessions.map((item, index) => {
@@ -3512,4 +3594,5 @@ const styles = StyleSheet.create({
   updateOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.58)', alignItems: 'center', justifyContent: 'center', padding: 22 }, updateCard: { width: '100%', maxWidth: 420, backgroundColor: colors.card, borderRadius: 24, padding: 25, gap: 13, borderWidth: 1, borderColor: colors.border, shadowColor: '#0F172A', shadowOpacity: 0.2, shadowRadius: 24, elevation: 8 }, updateBadge: { alignSelf: 'flex-start', backgroundColor: '#DBEAFE', borderRadius: 99, paddingHorizontal: 10, paddingVertical: 6 }, updateBadgeText: { color: colors.blue, fontSize: 10, fontWeight: '900', letterSpacing: 1 }, updateTitle: { color: colors.text, fontSize: 24, lineHeight: 30, fontWeight: '900' }, updateSummary: { color: colors.muted, fontSize: 14, lineHeight: 21 }, updateMeta: { color: colors.muted, fontSize: 11 }, updatePrimary: { backgroundColor: colors.blue, paddingVertical: 14, borderRadius: 13, alignItems: 'center', marginTop: 4 }, updatePrimaryText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 }, updateLater: { paddingVertical: 9, alignItems: 'center' }, updateLaterText: { color: colors.muted, fontWeight: '700', fontSize: 12 },
   monthBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 }, monthArrow: { fontSize: 28, color: colors.blue, paddingHorizontal: 10 }, monthTitle: { color: colors.text, fontSize: 18, fontWeight: '800' }, summaryStrip: { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: '#EFF6FF', borderRadius: 15, padding: 16 }, monthStat: { color: colors.text, fontSize: 18, fontWeight: '800', marginTop: 5 }, historyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.border, padding: 12 }, historyDate: { width: 43, height: 48, borderRadius: 11, backgroundColor: '#EFF6FF', alignItems: 'center', justifyContent: 'center' }, historyDay: { color: colors.blue, fontSize: 9, fontWeight: '700' }, historyNum: { color: colors.text, fontSize: 16, fontWeight: '800' }, historyMain: { flex: 1, gap: 5 }, historyTitle: { color: colors.text, fontSize: 12, fontWeight: '800' }, historySub: { color: colors.muted, fontSize: 10 }, historyHours: { color: colors.text, fontSize: 12, fontWeight: '800' }, clearCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 14, flexDirection: 'row', justifyContent: 'flex-end' }, clearCompact: { alignItems: 'flex-end', gap: 5 }, clearText: { color: colors.text, fontSize: 12, flex: 1 }, clearActions: { flexDirection: 'row', gap: 14, alignItems: 'center' }, clearDanger: { color: '#B91C1C', fontWeight: '800', fontSize: 12 }, empty: { padding: 26, alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: 15, gap: 6 }, emptyTitle: { color: colors.text, fontWeight: '800', fontSize: 14 }, hrRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderTopWidth: 1, borderTopColor: colors.border, gap: 10 }, hrActions: { gap: 9 }, approve: { color: '#15803D', fontWeight: '800', fontSize: 11 }, reject: { color: '#B91C1C', fontWeight: '800', fontSize: 11 },
   footerCard: { backgroundColor: '#EFF6FF', padding: 15, borderRadius: 14, gap: 5 }, footerTitle: { color: '#1D4ED8', fontSize: 12, fontWeight: '800' }, footerText: { color: '#1E40AF', fontSize: 11, lineHeight: 17 }, footer: { color: colors.muted, fontSize: 10, textAlign: 'center' }, authWrap: { flex: 1, justifyContent: 'center', padding: 20 }, authCard: { width: '100%', maxWidth: 430, alignSelf: 'center', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: 22, padding: 24, gap: 14 }, input: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, borderRadius: 11, padding: 13, color: colors.text, fontSize: 14 }, textButton: { alignItems: 'center', padding: 8 }, punchEditButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, borderRadius: 14, borderWidth: 1, borderColor: '#93C5FD', backgroundColor: '#EFF6FF' }, punchEditButtonText: { color: '#1D4ED8', fontSize: 13, fontWeight: '800' },
+  profileCard: { padding: 15, gap: 12, backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: '#E2E8F0' }, profileIdentity: { flexDirection: 'row', alignItems: 'center', gap: 12 }, profileIdentityText: { flex: 1, minWidth: 0 }, profilePhoto: { width: 56, height: 56, borderRadius: 19, backgroundColor: '#DBEAFE' }, profilePhotoFallback: { width: 56, height: 56, borderRadius: 19, backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center' }, profilePhotoInitial: { color: colors.blue, fontSize: 23, fontWeight: '900' }, profileName: { color: colors.text, fontSize: 17, fontWeight: '900' }, profileMeta: { color: colors.muted, fontSize: 11, marginTop: 3 }, profileDialogue: { color: '#4338A8', fontSize: 13, fontWeight: '700', lineHeight: 19, backgroundColor: '#F0EFFF', borderRadius: 13, paddingHorizontal: 12, paddingVertical: 10 }, profileEditor: { padding: 14, gap: 9, backgroundColor: '#FFFFFF', borderRadius: 22 }, profileRoleButton: { minHeight: 44, borderRadius: 11, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border }, profileRoleText: { color: colors.text, fontSize: 13, fontWeight: '700' }, profileRoleChevron: { color: colors.blue, fontSize: 20, fontWeight: '800' }, profileRoleMenu: { borderRadius: 12, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: colors.border, overflow: 'hidden' }, profileRoleOption: { paddingVertical: 10, paddingHorizontal: 13, borderBottomWidth: 1, borderBottomColor: colors.border },
 });

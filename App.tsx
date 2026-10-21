@@ -973,6 +973,7 @@ function MiloProfileEditor({ visible, profile, onClose, onSaveProfile, onUploadP
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
   const [photoPreviewError, setPhotoPreviewError] = useState(false);
+  const webPhotoInput = useRef<HTMLInputElement | null>(null);
   useEffect(() => { if (visible) { setDraftProfile(profile); setProfileMessage(''); setRoleMenuOpen(false); } }, [visible]);
   useEffect(() => { setPhotoPreviewError(false); }, [draftProfile.photoUrl]);
   async function saveProfile() {
@@ -1007,21 +1008,28 @@ function MiloProfileEditor({ visible, profile, onClose, onSaveProfile, onUploadP
       finally { setProfileBusy(false); }
       return;
     }
-    if (typeof document === 'undefined') { setProfileMessage('Photo selection is unavailable on this device.'); return; }
-    const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
-    input.onchange = async () => {
-      const file = input.files?.[0]; if (!file) return;
-      setProfileBusy(true); setProfileMessage('Uploading photo…');
-      try { const normalized = await convertWebProfilePhotoToJpeg(file); const photoUrl = await onUploadProfilePhoto(normalized); setDraftProfile(current => ({ ...current, photoUrl })); setProfileMessage('Photo uploaded. Preview it here, then save your profile.'); }
-      catch (error) { setProfileMessage(error instanceof Error ? error.message : 'Could not upload photo.'); }
-      finally { setProfileBusy(false); }
-    };
+    const input = webPhotoInput.current;
+    if (!input) { setProfileMessage('Photo selection is unavailable on this device.'); return; }
+    // Keep the input mounted and open it directly from the tap. iOS Home Screen
+    // web apps can drop a picker opened from a newly-created, detached input.
+    input.value = '';
     input.click();
+  }
+  async function handleWebProfilePhotoSelection(event: React.ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    setProfileBusy(true); setProfileMessage('Uploading photo…');
+    try { const normalized = await convertWebProfilePhotoToJpeg(file); const photoUrl = await onUploadProfilePhoto(normalized); setDraftProfile(current => ({ ...current, photoUrl })); setProfileMessage('Photo uploaded. Preview it here, then save your profile.'); }
+    catch (error) { setProfileMessage(error instanceof Error ? error.message : 'Could not upload photo.'); }
+    finally { setProfileBusy(false); }
   }
   return <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
     <View style={styles.mediaOverlay}><View style={styles.settingsModal}>
       <View style={styles.cardHeading}><View style={styles.settingsHeaderTitle}><Text style={styles.sectionTitle}>👤 Edit profile</Text><Text style={styles.muted}>Update what appears on your profile card.</Text></View><IconCloseButton label="Close profile editor" onPress={onClose} /></View>
       <ScrollView keyboardShouldPersistTaps="handled" style={styles.settingsScroll} contentContainerStyle={{ gap: 12 }}>
+        {Platform.OS === 'web' && <input ref={webPhotoInput} type="file" accept="image/*" onChange={event => void handleWebProfilePhotoSelection(event)} aria-label="Choose profile photo" style={{ position: 'fixed', width: 1, height: 1, opacity: 0, overflow: 'hidden', left: 0, top: 0 }} />}
         <View style={styles.profileEditor}>
           <TextInput style={styles.input} placeholder="Name shown on your card" autoCapitalize="words" value={draftProfile.displayName} onChangeText={displayName => setDraftProfile(current => ({ ...current, displayName }))} maxLength={40} />
           <TextInput style={styles.input} placeholder="Username (letters, numbers, underscores)" autoCapitalize="none" autoCorrect={false} value={draftProfile.username} onChangeText={username => setDraftProfile(current => ({ ...current, username }))} maxLength={24} />
@@ -1029,7 +1037,7 @@ function MiloProfileEditor({ visible, profile, onClose, onSaveProfile, onUploadP
           <Pressable accessibilityRole="button" accessibilityLabel={`Profile role: ${draftProfile.jobRole}`} onPress={() => setRoleMenuOpen(value => !value)} style={styles.profileRoleButton}><Text style={styles.profileRoleText}>{draftProfile.jobRole || 'Choose role'}</Text><Text style={styles.profileRoleChevron}>{roleMenuOpen ? '⌃' : '⌄'}</Text></Pressable>
           {roleMenuOpen && <View style={styles.profileRoleMenu}>{profileRoleOptions.map(option => <Pressable key={option} accessibilityRole="button" onPress={() => { setDraftProfile(current => ({ ...current, jobRole: option })); setRoleMenuOpen(false); }} style={styles.profileRoleOption}><Text style={styles.outlineText}>{option}</Text></Pressable>)}</View>}
           <TextInput style={styles.input} placeholder="Profile photo URL (or upload below)" autoCapitalize="none" keyboardType="url" value={draftProfile.photoUrl} onChangeText={photoUrl => setDraftProfile(current => ({ ...current, photoUrl }))} />
-          {!!draftProfile.photoUrl && <View style={styles.profilePhotoPreview}><Image accessibilityLabel="Profile photo preview" source={{ uri: draftProfile.photoUrl }} style={styles.profilePhoto} onLoad={() => setPhotoPreviewError(false)} onError={() => setPhotoPreviewError(true)} /><View style={{ flex: 1 }}><Text style={styles.profileName}>{photoPreviewError ? 'Preview unavailable' : 'Photo ready'}</Text><Text style={styles.muted}>{photoPreviewError ? 'The image URL could not be loaded. Check the link and try again.' : 'This is the photo that will appear on your profile card.'}</Text></View></View>}
+          {!!draftProfile.photoUrl && <View style={styles.profilePhotoPreview}><Image key={draftProfile.photoUrl} accessibilityLabel="Profile photo preview" source={{ uri: draftProfile.photoUrl }} style={styles.profilePhoto} onLoad={() => setPhotoPreviewError(false)} onError={() => setPhotoPreviewError(true)} /><View style={{ flex: 1 }}><Text style={styles.profileName}>{photoPreviewError ? 'Preview unavailable' : 'Photo ready'}</Text><Text style={styles.muted}>{photoPreviewError ? 'The image URL could not be loaded. Check the link and try again.' : 'This is the photo that will appear on your profile card.'}</Text></View></View>}
           <Pressable accessibilityRole="button" disabled={profileBusy} onPress={() => void chooseProfilePhoto()} style={styles.outlineButton}><Text style={styles.outlineText}>{profileBusy ? 'Choosing or uploading…' : draftProfile.photoUrl ? 'Change profile photo' : 'Choose profile photo'}</Text></Pressable>
           <Pressable accessibilityRole="button" disabled={profileBusy} onPress={() => void saveProfile()} style={[styles.action, styles.primary, profileBusy && styles.dim]}><Text style={styles.actionText}>{profileBusy ? 'Saving…' : 'Save profile'}</Text></Pressable>
           {!!profileMessage && <Text accessibilityLiveRegion="polite" style={styles.muted}>{profileMessage}</Text>}

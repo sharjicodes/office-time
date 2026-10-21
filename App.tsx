@@ -371,6 +371,7 @@ function DeploymentUpdateNotice() {
 function OfficeTimeApp() {
   const desktopDownload = getDesktopDownload();
   const [session, setSession] = useState<any>(null);
+  const [passwordRecovery, setPasswordRecovery] = useState(() => typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('reset-password'));
   const [role, setRole] = useState('employee');
   const [booting, setBooting] = useState(true);
   const [days, setDays] = useState<AttendanceDay[]>([]);
@@ -469,7 +470,8 @@ function OfficeTimeApp() {
         if (data.session?.user && !data.session.user.is_anonymous) await migrateDeviceAttendanceToAccount(data.session.user.id);
         if (mounted) { setSession(data.session); await refresh(); }
       });
-      const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange((_event, next) => {
+      const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange((event, next) => {
+        if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
         setSession(next);
         if (next?.user && !next.user.is_anonymous) {
           setTimeout(() => { void migrateDeviceAttendanceToAccount(next.user.id).then(refresh); }, 0);
@@ -755,7 +757,7 @@ function OfficeTimeApp() {
   }
 
   if (booting) return <SafeAreaView style={styles.safe}><View style={styles.center}><ActivityIndicator color={colors.blue} /><Text style={styles.muted}>Loading Milo…</Text></View></SafeAreaView>;
-  if (!session && isSupabaseConfigured && !offlineContinue) return <AuthScreen onExplore={openMiloLanding} onContinue={() => setOfflineContinue(true)} onJoinChat={async name => {
+  if (isSupabaseConfigured && (passwordRecovery || (!session && !offlineContinue))) return <AuthScreen recovery={passwordRecovery} onRecoveryComplete={() => { setPasswordRecovery(false); if (typeof window !== 'undefined') window.history.replaceState({}, '', window.location.pathname); }} onExplore={openMiloLanding} onContinue={() => setOfflineContinue(true)} onJoinChat={async name => {
     const guestUsername = `guest_${Math.random().toString(36).slice(2, 12)}`;
     const { error } = await supabase!.auth.signInAnonymously({ options: { data: { full_name: name, username: guestUsername } } });
     if (error) return error.message;
@@ -2332,8 +2334,25 @@ function openMiloLanding() {
   void Linking.openURL(url);
 }
 
-function AuthScreen({ onContinue, onJoinChat, onExplore }: { onContinue: () => void; onJoinChat: (name: string) => Promise<string | null>; onExplore: () => void }) {
+function AuthScreen({ onContinue, onJoinChat, onExplore, recovery = false, onRecoveryComplete }: { onContinue: () => void; onJoinChat: (name: string) => Promise<string | null>; onExplore: () => void; recovery?: boolean; onRecoveryComplete: () => void }) {
   const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [username, setUsername] = useState(''); const [authMode, setAuthMode] = useState<'login' | 'signup'>('login'); const [authMessage, setAuthMessage] = useState(''); const [guestName, setGuestName] = useState(''); const [busy, setBusy] = useState(false); const [guestError, setGuestError] = useState('');
+  const [forgotMode, setForgotMode] = useState(false);
+  async function sendPasswordReset() {
+    if (!supabase || !email.trim()) return;
+    setBusy(true); setAuthMessage('');
+    const redirectTo = Platform.OS === 'web' && typeof window !== 'undefined' ? `${window.location.origin}/?reset-password=true` : undefined;
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), redirectTo ? { redirectTo } : undefined);
+    setBusy(false);
+    setAuthMessage(error ? error.message : 'If an account exists for that email, a password reset link is on its way.');
+  }
+  async function updatePassword() {
+    if (!supabase || password.length < 6) { setAuthMessage('Choose a password with at least 6 characters.'); return; }
+    setBusy(true); setAuthMessage('');
+    const { error } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (error) setAuthMessage(error.message);
+    else { setAuthMessage('Password updated. You can now sign in with your new password.'); await supabase.auth.signOut(); onRecoveryComplete(); }
+  }
   async function submitAccount() {
     if (!supabase) return;
     const normalizedUsername = username.trim().toLowerCase();
@@ -2352,7 +2371,7 @@ function AuthScreen({ onContinue, onJoinChat, onExplore }: { onContinue: () => v
     catch (error) { setGuestError(error instanceof Error ? error.message : 'Could not connect to Supabase. Check your internet connection and try again.'); }
     finally { setBusy(false); }
   }
-  return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><Image accessibilityLabel="Milo app icon" source={require('./assets/milo-icon.png')} style={{ width: 64, height: 64, borderRadius: 18, alignSelf: 'center' }}/><Text style={styles.title}>{authMode === 'signup' ? 'Create your account' : 'Welcome to Milo'}</Text><Text style={styles.subtitle}>{authMode === 'signup' ? 'Sign up with your email, password, and a username others can use to find you.' : 'Log in with your email and password.'}</Text><Pressable accessibilityRole="link" style={styles.textButton} onPress={onExplore}><Text style={styles.link}>Discover what Milo can do →</Text></Pressable>{authMode === 'signup' && <TextInput style={styles.input} placeholder="Username (3–24 characters)" autoCapitalize="none" autoCorrect={false} value={username} onChangeText={value => { setUsername(value); setAuthMessage(''); }} maxLength={24}/>}<TextInput style={styles.input} placeholder="Email address (Gmail is supported)" autoCapitalize="none" keyboardType="email-address" autoComplete="email" value={email} onChangeText={value => { setEmail(value); setAuthMessage(''); }}/><TextInput style={styles.input} placeholder="Password" secureTextEntry autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'} value={password} onChangeText={value => { setPassword(value); setAuthMessage(''); }}/><Pressable style={[styles.action, styles.primary]} onPress={() => void submitAccount()} disabled={busy || !email.trim() || !password || (authMode === 'signup' && !username.trim())}><Text style={styles.actionText}>{busy ? 'Please wait…' : authMode === 'signup' ? 'Sign up' : 'Log in'}</Text></Pressable><Pressable style={styles.textButton} onPress={() => { setAuthMode(current => current === 'login' ? 'signup' : 'login'); setAuthMessage(''); }}><Text style={styles.outlineText}>{authMode === 'signup' ? 'Already have an account? Log in' : 'New here? Create an account'}</Text></Pressable>{!!authMessage && <Text accessibilityRole="alert" style={{ color: authMessage.startsWith('Account created') ? '#15803D' : '#B91C1C', fontSize: 12, lineHeight: 18 }}>{authMessage}</Text>}<View style={styles.chatJoinDivider}><View style={styles.chatDividerLine}/><Text style={styles.muted}>OR CHAT AS A GUEST</Text><View style={styles.chatDividerLine}/></View><TextInput style={styles.input} placeholder="Chat display name" autoCapitalize="words" value={guestName} onChangeText={value => { setGuestName(value); setGuestError(''); }} maxLength={40}/><Pressable style={[styles.action, styles.guestAction]} disabled={busy || !guestName.trim()} onPress={() => void joinGuestChat()}><Text style={styles.guestActionText}>{busy ? 'Please wait…' : 'Join Milo chat'}</Text></Pressable>{!!guestError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{guestError}</Text>}<Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
+  return <SafeAreaView style={styles.safe}><StatusBar style="dark"/><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.authWrap}><View style={styles.authCard}><Image accessibilityLabel="Milo app icon" source={require('./assets/milo-icon.png')} style={{ width: 64, height: 64, borderRadius: 18, alignSelf: 'center' }}/><Text style={styles.title}>{recovery ? 'Choose a new password' : forgotMode ? 'Reset your password' : authMode === 'signup' ? 'Create your account' : 'Welcome to Milo'}</Text><Text style={styles.subtitle}>{recovery ? 'Enter a new password for your Milo account.' : forgotMode ? 'Enter your account email and we’ll send you a secure reset link.' : authMode === 'signup' ? 'Sign up with your email, password, and a username others can use to find you.' : 'Log in with your email and password.'}</Text>{!recovery && !forgotMode && <Pressable accessibilityRole="link" style={styles.textButton} onPress={onExplore}><Text style={styles.link}>Discover what Milo can do →</Text></Pressable>}{!recovery && !forgotMode && authMode === 'signup' && <TextInput style={styles.input} placeholder="Username (3–24 characters)" autoCapitalize="none" autoCorrect={false} value={username} onChangeText={value => { setUsername(value); setAuthMessage(''); }} maxLength={24}/>}<TextInput style={styles.input} placeholder="Email address" autoCapitalize="none" keyboardType="email-address" autoComplete="email" value={email} onChangeText={value => { setEmail(value); setAuthMessage(''); }} />{(!forgotMode) && <TextInput style={styles.input} placeholder={recovery ? 'New password (at least 6 characters)' : 'Password'} secureTextEntry autoComplete={recovery || authMode === 'signup' ? 'new-password' : 'current-password'} value={password} onChangeText={value => { setPassword(value); setAuthMessage(''); }}/>}<Pressable style={[styles.action, styles.primary]} onPress={() => void (recovery ? updatePassword() : forgotMode ? sendPasswordReset() : submitAccount())} disabled={busy || (!forgotMode && !password) || (!recovery && !email.trim())}><Text style={styles.actionText}>{busy ? 'Please wait…' : recovery ? 'Update password' : forgotMode ? 'Send reset link' : authMode === 'signup' ? 'Sign up' : 'Log in'}</Text></Pressable>{!recovery && <Pressable style={styles.textButton} onPress={() => { setForgotMode(!forgotMode); setAuthMessage(''); }}><Text style={styles.outlineText}>{forgotMode ? 'Back to log in' : 'Forgot password?'}</Text></Pressable>}{!recovery && !forgotMode && <Pressable style={styles.textButton} onPress={() => { setAuthMode(current => current === 'login' ? 'signup' : 'login'); setAuthMessage(''); }}><Text style={styles.outlineText}>{authMode === 'signup' ? 'Already have an account? Log in' : 'New here? Create an account'}</Text></Pressable>}{!!authMessage && <Text accessibilityRole="alert" style={{ color: authMessage.includes('updated') || authMessage.startsWith('Account created') || authMessage.includes('on its way') ? '#15803D' : '#B91C1C', fontSize: 12, lineHeight: 18 }}>{authMessage}</Text>}{!recovery && !forgotMode && <><View style={styles.chatJoinDivider}><View style={styles.chatDividerLine}/><Text style={styles.muted}>OR CHAT AS A GUEST</Text><View style={styles.chatDividerLine}/></View><TextInput style={styles.input} placeholder="Chat display name" autoCapitalize="words" value={guestName} onChangeText={value => { setGuestName(value); setGuestError(''); }} maxLength={40}/><Pressable style={[styles.action, styles.guestAction]} disabled={busy || !guestName.trim()} onPress={() => void joinGuestChat()}><Text style={styles.guestActionText}>{busy ? 'Please wait…' : 'Join Milo chat'}</Text></Pressable>{!!guestError && <Text accessibilityRole="alert" style={{ color: '#B91C1C', fontSize: 12, lineHeight: 18 }}>{guestError}</Text>}<Pressable style={styles.textButton} onPress={onContinue}><Text style={styles.muted}>Continue in offline mode</Text></Pressable></>}</View></KeyboardAvoidingView></SafeAreaView>;
 }
 
 type MemoryTile = { id: number; pairKey: string; symbol?: string; faceSource?: ImageSourcePropType; matched: boolean };

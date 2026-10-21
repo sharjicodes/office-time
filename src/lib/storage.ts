@@ -255,12 +255,16 @@ export async function loadMiloProfile(): Promise<MiloProfile> {
     account = data;
     metadata = user?.user_metadata ?? {};
   }
-  const saved = { ...DEFAULT_MILO_PROFILE, ...local, ...(cloud?.profile ?? {}) };
+  const cloudProfile = cloud?.profile ?? {};
+  // The per-account local profile is the newest saved copy on this device;
+  // a stale settings snapshot must not erase a newly uploaded avatar URL.
+  const saved = { ...DEFAULT_MILO_PROFILE, ...cloudProfile, ...local };
   return {
     ...saved,
-    displayName: account?.display_name || saved.displayName || String(metadata.full_name ?? ''),
-    username: account?.username || saved.username || String(metadata.username ?? ''),
-    photoUrl: account?.photo_url || saved.photoUrl || String(metadata.avatar_url ?? ''),
+    displayName: account?.display_name || local.displayName || cloudProfile.displayName || String(metadata.full_name ?? ''),
+    username: account?.username || local.username || cloudProfile.username || String(metadata.username ?? ''),
+    photoUrl: account?.photo_url || local.photoUrl || cloudProfile.photoUrl || String(metadata.avatar_url ?? ''),
+    jobRole: local.jobRole || cloudProfile.jobRole || DEFAULT_MILO_PROFILE.jobRole,
   };
 }
 

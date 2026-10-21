@@ -2,6 +2,8 @@
 -- Users may change their public name and username, but the authorization role
 -- (profiles.role) remains server managed.
 
+alter table public.profiles add column if not exists photo_url text;
+
 drop policy if exists profiles_update_own on public.profiles;
 create policy profiles_update_own on public.profiles
   for update to authenticated
@@ -9,7 +11,7 @@ create policy profiles_update_own on public.profiles
   with check (auth.uid() = id);
 
 revoke update on public.profiles from public, anon, authenticated;
-grant update (display_name, username) on public.profiles to authenticated;
+grant update (display_name, username, photo_url) on public.profiles to authenticated;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('milo-profile-photos', 'milo-profile-photos', true, 3145728, array['image/jpeg','image/png','image/webp'])

@@ -245,11 +245,11 @@ export async function loadMiloProfile(): Promise<MiloProfile> {
     try { await saveMiloProfile({ ...DEFAULT_MILO_PROFILE, ...local }); } catch { /* keep the local draft until the next sync attempt */ }
   }
   const cloud = await readCloudSettings();
-  let account: { display_name?: string | null; username?: string | null } | null = null;
+  let account: { display_name?: string | null; username?: string | null; photo_url?: string | null } | null = null;
   let metadata: Record<string, unknown> = {};
   if (userId && supabase) {
     const [{ data }, { data: { user } }] = await Promise.all([
-      supabase.from('profiles').select('display_name, username').eq('id', userId).maybeSingle(),
+      supabase.from('profiles').select('display_name, username, photo_url').eq('id', userId).maybeSingle(),
       supabase.auth.getUser(),
     ]);
     account = data;
@@ -260,6 +260,7 @@ export async function loadMiloProfile(): Promise<MiloProfile> {
     ...saved,
     displayName: account?.display_name || saved.displayName || String(metadata.full_name ?? ''),
     username: account?.username || saved.username || String(metadata.username ?? ''),
+    photoUrl: account?.photo_url || saved.photoUrl || String(metadata.avatar_url ?? ''),
   };
 }
 
@@ -270,10 +271,10 @@ export async function saveMiloProfile(profile: MiloProfile): Promise<{ error: st
   if (!userId || !supabase) return { error: null, reflect: true };
   await AsyncStorage.setItem(`${key}.pending`, 'true');
   if (!(await NetInfo.fetch()).isConnected) return { error: null, reflect: true };
-  const { data, error } = await supabase.from('profiles').update({ display_name: profile.displayName, username: profile.username }).eq('id', userId).select('id').maybeSingle();
+  const { data, error } = await supabase.from('profiles').update({ display_name: profile.displayName, username: profile.username, photo_url: profile.photoUrl }).eq('id', userId).select('id').maybeSingle();
   if (error) return { error: error.message, reflect: false };
   if (!data) return { error: 'Your profile row was not found. Run the latest Supabase profile setup and try again.', reflect: false };
-  const { error: metadataError } = await supabase.auth.updateUser({ data: { full_name: profile.displayName, username: profile.username } });
+  const { error: metadataError } = await supabase.auth.updateUser({ data: { full_name: profile.displayName, username: profile.username, avatar_url: profile.photoUrl } });
   if (metadataError) return { error: metadataError.message, reflect: true };
   if (!(await writeCloudSettings({ profile }))) return { error: null, reflect: true };
   await AsyncStorage.setItem(`${key}.pending`, 'false');

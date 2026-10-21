@@ -35,11 +35,22 @@ function Text(props: React.ComponentProps<typeof NativeText>) {
 
 if (Platform.OS !== 'web') Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }) });
 type Tab = 'Today' | 'History' | 'Games' | 'Calls' | 'Chat' | 'Desktop' | 'HR';
-type ProfileMoment = 'welcome' | 'punch-in' | 'punch-out' | 'office-out';
+type ProfileMoment = 'motivation' | 'punch-in' | 'punch-out' | 'office-out' | null;
 const profileRoleOptions = ['Developer', 'Tester', 'HR', 'Manager', 'Designer', 'Other'];
-function profileDialogue(profile: MiloProfile, moment: ProfileMoment) {
+function profileMotivation(profile: MiloProfile) {
+  const role = profile.jobRole.toLowerCase();
+  const quotes = role === 'developer' ? ['Small commits build remarkable things.', 'Keep turning good ideas into working software.', 'Every bug solved is progress worth celebrating.']
+    : role === 'tester' ? ['Every careful check makes the next release stronger.', 'Curiosity catches what assumptions miss.', 'Quality grows from the details you notice.']
+      : role === 'hr' ? ['Small acts of support make a stronger team.', 'A little understanding can change someone’s whole day.', 'Helping people thrive is meaningful work.']
+        : role === 'manager' ? ['Good leadership makes room for everyone to do their best work.', 'Steady progress is still progress.', 'Clear direction turns effort into momentum.']
+          : role === 'designer' ? ['Good design makes the thoughtful choice feel natural.', 'Stay curious; the best ideas often start with a question.', 'Every detail is a chance to make things clearer.']
+            : ['Take one step at a time; it all adds up.', 'Your steady effort is making a difference.', 'A fresh day is another chance to make progress.'];
+  return quotes[Math.floor(Math.random() * quotes.length)];
+}
+function profileDialogue(profile: MiloProfile, moment: Exclude<ProfileMoment, null>, motivation: string) {
   const name = profile.displayName.trim() || 'there';
   const role = profile.jobRole.toLowerCase();
+  if (moment === 'motivation') return `Welcome back, ${name}. ${motivation}`;
   if (moment === 'punch-in') {
     const activity = role === 'developer' ? 'happy coding' : role === 'tester' ? 'happy testing' : role === 'hr' ? 'happy supporting your team' : role === 'manager' ? 'happy leading your team' : role === 'designer' ? 'happy designing' : 'ready to make progress';
     return `Hi ${name}, ${activity}!`;
@@ -52,7 +63,7 @@ function profileDialogue(profile: MiloProfile, moment: ProfileMoment) {
     const win = role === 'developer' ? 'You turned ideas into progress today.' : role === 'tester' ? 'Your careful testing helped make things better today.' : role === 'hr' ? 'Your care made a difference to your people today.' : role === 'manager' ? 'Your guidance helped move the team forward today.' : role === 'designer' ? 'You brought thoughtful ideas to life today.' : 'You made good progress today.';
     return `Good work today, ${name}. ${win} Rest well—you’ve earned it.`;
   }
-  return role === 'developer' ? `Welcome back, ${name}. Ready to build something good today?` : role === 'tester' ? `Welcome back, ${name}. Ready to make today a little more reliable?` : `Welcome back, ${name}. Let’s make today a good one.`;
+  return `Welcome back, ${name}. Let’s make today a good one.`;
 }
 const clock = (value: string | null) => value ? new Date(value).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '—';
 const authRedirectOrigin = (process.env.EXPO_PUBLIC_APP_URL || 'https://office-time-flame.vercel.app').replace(/\/$/, '');
@@ -433,7 +444,8 @@ function OfficeTimeApp() {
   const [session, setSession] = useState<any>(null);
   const [miloProfile, setMiloProfile] = useState<MiloProfile>(DEFAULT_MILO_PROFILE);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
-  const [profileMoment, setProfileMoment] = useState<ProfileMoment>('welcome');
+  const [profileMoment, setProfileMoment] = useState<ProfileMoment>('motivation');
+  const [profileMotivationText, setProfileMotivationText] = useState(() => profileMotivation(DEFAULT_MILO_PROFILE));
   const [passwordRecovery, setPasswordRecovery] = useState(() => typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('reset-password'));
   const [role, setRole] = useState('employee');
   const [booting, setBooting] = useState(true);
@@ -500,8 +512,15 @@ function OfficeTimeApp() {
   const refresh = useCallback(async () => {
     const [loadedDays, loadedPolicy, loadedPreferences, loadedProfile] = await Promise.all([loadDays(), loadPolicy(), loadPreferences(), loadMiloProfile()]);
     setDays(loadedDays); setPolicy(loadedPolicy); setPreferences(loadedPreferences); setMiloProfile(loadedProfile);
+    setProfileMotivationText(profileMotivation(loadedProfile));
     setBreakReminderEnabled(loadedPreferences.breakEndReminderEnabled);
   }, []);
+
+  useEffect(() => {
+    if (booting || !profileMoment) return;
+    const timer = setTimeout(() => setProfileMoment(null), 8000);
+    return () => clearTimeout(timer);
+  }, [profileMoment, booting]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return;
@@ -842,7 +861,7 @@ function OfficeTimeApp() {
     <ScrollView contentContainerStyle={styles.page}>
       <View style={styles.header}><View><Text style={styles.eyebrow}>YOUR OFFICE COMPANION</Text><Text style={styles.title}>Milo</Text><Text style={styles.subtitle}>{now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</Text></View><View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}><PwaInstallButton /><Pressable accessibilityRole="button" accessibilityLabel="Edit profile" onPress={() => setProfileEditorOpen(true)} style={styles.headerSettingIcon}><Text style={styles.headerSettingIconText}>👤</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Open reminder settings" onPress={() => setReminderSettingsOpen(true)} style={styles.headerSettingIcon}><Text style={styles.headerSettingIconText}>🔔</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Open app settings" onPress={() => setAppSettingsOpen(true)} style={styles.headerSettingIcon}><Text style={styles.headerSettingIconText}>⚙️</Text></Pressable><MiloControlPanel now={now} onNavigate={nextTab => setTab(nextTab)} /></View></View>
       <View style={[styles.connection, !online && styles.offline]}><View style={[styles.dot, { backgroundColor: online ? '#16A34A' : '#D97706' }]} /><Text style={styles.connectionText}>{online ? (session ? 'Connected · changes sync automatically' : 'Local mode · sign in to sync') : 'Offline · punches saved on this device'}</Text><Pressable onPress={() => { if (session) void signOut(); }}><Text style={styles.link}>{session ? 'Sign out' : ''}</Text></Pressable></View>
-      <View style={styles.profileCard}><View style={styles.profileIdentity}>{miloProfile.photoUrl ? <Image accessibilityLabel={`${miloProfile.displayName || 'Milo user'} profile photo`} source={{ uri: miloProfile.photoUrl }} style={styles.profilePhoto} /> : <View style={styles.profilePhotoFallback}><Text style={styles.profilePhotoInitial}>{(miloProfile.displayName || session?.user?.email?.split('@')[0] || 'M').trim().charAt(0).toUpperCase()}</Text></View>}<View style={styles.profileIdentityText}><Text style={styles.profileName}>{miloProfile.displayName || session?.user?.email?.split('@')[0] || 'Milo user'}</Text><Text style={styles.profileMeta}>{miloProfile.username ? `@${miloProfile.username}` : 'Milo member'} · {miloProfile.jobRole || 'Other'}</Text></View></View><Text style={styles.profileDialogue}>{profileDialogue(miloProfile, profileMoment)}</Text></View>
+      <View style={styles.profileCard}><View style={styles.profileIdentity}>{miloProfile.photoUrl ? <Image accessibilityLabel={`${miloProfile.displayName || 'Milo user'} profile photo`} source={{ uri: miloProfile.photoUrl }} style={styles.profilePhoto} /> : <View style={styles.profilePhotoFallback}><Text style={styles.profilePhotoInitial}>{(miloProfile.displayName || session?.user?.email?.split('@')[0] || 'M').trim().charAt(0).toUpperCase()}</Text></View>}<View style={styles.profileIdentityText}><Text style={styles.profileName}>{miloProfile.displayName || session?.user?.email?.split('@')[0] || 'Milo user'}</Text><Text style={styles.profileMeta}>{miloProfile.username ? `@${miloProfile.username}` : 'Milo member'} · {miloProfile.jobRole || 'Other'}</Text></View></View>{profileMoment && <Text style={styles.profileDialogue}>{profileDialogue(miloProfile, profileMoment, profileMotivationText)}</Text>}</View>
       {Platform.OS === 'web' && <PwaInstallPrompt />}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}><>{(['Today', 'History', 'Games', 'Calls', 'Chat', 'Desktop', ...(role !== 'employee' ? ['HR'] : [])] as Tab[]).map(item => <Pressable key={item} onPress={() => setTab(item)} style={[styles.tab, tab === item && styles.tabActive]}><Text style={[styles.tabText, tab === item && styles.tabTextActive]}>{item}</Text></Pressable>)}</></ScrollView>
       {tab === 'Today' && showAnimations && <WalkingCat />}

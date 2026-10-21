@@ -981,7 +981,7 @@ function MiloProfileEditor({ visible, profile, onClose, onSaveProfile, onUploadP
     if (!/^[a-z0-9_]{3,24}$/.test(next.username)) { setProfileMessage('Username must be 3–24 characters using letters, numbers, or underscores.'); return; }
     if (next.photoUrl) { try { const photo = new URL(next.photoUrl); if (!['http:', 'https:'].includes(photo.protocol)) throw new Error(); } catch { setProfileMessage('Enter a valid image URL starting with https://.'); return; } }
     setProfileBusy(true); setProfileMessage('');
-    try { const error = await onSaveProfile(next); if (error) setProfileMessage(error); else setProfileMessage('Profile saved.'); }
+    try { const error = await onSaveProfile(next); if (error) setProfileMessage(error); else onClose(); }
     catch (error) { setProfileMessage(error instanceof Error ? error.message : 'Could not save profile.'); }
     finally { setProfileBusy(false); }
   }

@@ -291,11 +291,15 @@ export async function uploadMiloProfilePhoto(file: Blob): Promise<string> {
   if (userError || !user || user.is_anonymous) throw new Error('Sign in to upload a profile photo.');
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 3 * 1024 * 1024) throw new Error('Choose a JPG, PNG, or WebP image under 3 MB.');
   const extension = file.type === 'image/jpeg' ? 'jpg' : file.type.split('/')[1];
-  const path = `${user.id}/avatar.${extension}`;
-  const { error } = await supabase.storage.from('milo-profile-photos').upload(path, file, { contentType: file.type, cacheControl: '3600', upsert: true });
+  // Give each upload a new object path. Replacing avatar.jpg in place can leave
+  // mobile image caches and the storage CDN serving the previous image even
+  // when the public URL has a cache-busting query string.
+  const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const path = `${user.id}/avatar-${uploadId}.${extension}`;
+  const { error } = await supabase.storage.from('milo-profile-photos').upload(path, file, { contentType: file.type, cacheControl: '31536000', upsert: false });
   if (error) throw error;
   const { data } = supabase.storage.from('milo-profile-photos').getPublicUrl(path);
-  return `${data.publicUrl}?v=${Date.now()}`;
+  return data.publicUrl;
 }
 
 async function readSettings(): Promise<{ policy?: Partial<typeof DEFAULT_POLICY>; preferences?: Partial<MiloPreferences>; pendingSync?: boolean }> {

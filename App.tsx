@@ -957,6 +957,7 @@ function OfficeTimeApp() {
       {tab === 'HR' && <HRDashboard rows={hrRows} loading={busy} role={role} policyUploadBusy={policyUploadBusy} policyUploadedName={policyUploadedName} onUploadPolicy={uploadMiloPolicy} onRefresh={async () => { setBusy(true); const { data } = await supabase!.rpc('hr_attendance_report'); setHrRows(data ?? []); setBusy(false); }} onResolve={resolveReview} />}
       <View style={styles.footerCard}><Text style={styles.footerTitle}>A note about official attendance</Text><Text style={styles.footerText}>The supplied policy says the office biometric system is the official record. Milo is a companion tracker until HR authorizes it for official use.</Text></View>
       <Pressable accessibilityRole="link" onPress={openMiloLanding} style={{ alignItems: 'center', gap: 4 }}><Text style={styles.footer}>Milo · Your office companion</Text><Text style={styles.link}>Explore Milo and see how it works</Text></Pressable>
+      <Pressable accessibilityRole="link" accessibilityLabel="Developed by Sharjith. View portfolio and recent work." onPress={() => void Linking.openURL('https://sharjithaportfolio.vercel.app/')} style={{ alignItems: 'center', gap: 4 }}><Text style={styles.footer}>Developed by Sharjith</Text><Text style={styles.link}>Portfolio · Recent work</Text></Pressable>
     </ScrollView>
     {showPageAnimations && <PassingGlitterGif />}
     {showPageAnimations && !desktopLayout && <FallingSpiderMan />}

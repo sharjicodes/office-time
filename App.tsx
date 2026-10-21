@@ -370,6 +370,33 @@ function DeploymentUpdateNotice() {
 
 function OfficeTimeApp() {
   const desktopDownload = getDesktopDownload();
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const previousHtmlTouchAction = document.documentElement.style.touchAction;
+    const previousBodyTouchAction = document.body?.style.touchAction ?? '';
+    document.documentElement.style.touchAction = 'pan-x pan-y';
+    if (document.body) document.body.style.touchAction = 'pan-x pan-y';
+    const preventZoomShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && ['+', '-', '=', '0'].includes(event.key)) event.preventDefault();
+    };
+    const preventPinch = (event: Event) => event.preventDefault();
+    const preventCtrlWheel = (event: WheelEvent) => { if (event.ctrlKey || event.metaKey) event.preventDefault(); };
+    const preventTouchPinch = (event: TouchEvent) => { if (event.touches.length > 1) event.preventDefault(); };
+    document.addEventListener('keydown', preventZoomShortcut);
+    document.addEventListener('gesturestart', preventPinch, { passive: false });
+    document.addEventListener('gesturechange', preventPinch, { passive: false });
+    document.addEventListener('touchmove', preventTouchPinch, { passive: false });
+    document.addEventListener('wheel', preventCtrlWheel, { passive: false });
+    return () => {
+      document.removeEventListener('keydown', preventZoomShortcut);
+      document.removeEventListener('gesturestart', preventPinch);
+      document.removeEventListener('gesturechange', preventPinch);
+      document.removeEventListener('touchmove', preventTouchPinch);
+      document.removeEventListener('wheel', preventCtrlWheel);
+      document.documentElement.style.touchAction = previousHtmlTouchAction;
+      if (document.body) document.body.style.touchAction = previousBodyTouchAction;
+    };
+  }, []);
   const [session, setSession] = useState<any>(null);
   const [passwordRecovery, setPasswordRecovery] = useState(() => typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('reset-password'));
   const [role, setRole] = useState('employee');

@@ -4,6 +4,8 @@ import { ActivityIndicator, Alert, Animated, Easing, Image, ImageSourcePropType,
 import { StatusBar } from 'expo-status-bar';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as Notifications from 'expo-notifications';
 import NetInfo from '@react-native-community/netinfo';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -64,6 +66,26 @@ function profileDialogue(profile: MiloProfile, moment: Exclude<ProfileMoment, nu
     return `Good work today, ${name}. ${win} Rest well—you’ve earned it.`;
   }
   return `Welcome back, ${name}. Let’s make today a good one.`;
+}
+async function convertWebProfilePhotoToJpeg(file: File): Promise<Blob> {
+  if (!file.type.startsWith('image/')) throw new Error('Choose an image file.');
+  const source = URL.createObjectURL(file);
+  try {
+    const image = document.createElement('img');
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error('This phone could not open that photo. Choose a JPG or PNG image.'));
+      image.src = source;
+    });
+    const scale = Math.min(1, 1024 / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Could not prepare the selected photo.');
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return await new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not convert the selected photo.')), 'image/jpeg', 0.86));
+  } finally { URL.revokeObjectURL(source); }
 }
 const clock = (value: string | null) => value ? new Date(value).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '—';
 const authRedirectOrigin = (process.env.EXPO_PUBLIC_APP_URL || 'https://office-time-flame.vercel.app').replace(/\/$/, '');
@@ -964,12 +986,33 @@ function MiloProfileEditor({ visible, profile, onClose, onSaveProfile, onUploadP
     finally { setProfileBusy(false); }
   }
   async function chooseProfilePhoto() {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') { setProfileMessage('Paste an image URL in the photo field on this device.'); return; }
-    const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/jpeg,image/png,image/webp';
+    if (Platform.OS !== 'web') {
+      setProfileBusy(true); setProfileMessage('Choose a photo…');
+      try {
+        const selection = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 0.85 });
+        if (selection.canceled || !selection.assets[0]) { setProfileMessage(''); return; }
+        const asset = selection.assets[0];
+        const maxSide = Math.max(asset.width, asset.height);
+        const actions: ImageManipulator.Action[] = maxSide > 1024
+          ? [asset.width >= asset.height ? { resize: { width: 1024 } } : { resize: { height: 1024 } }]
+          : [];
+        const normalized = await ImageManipulator.manipulateAsync(asset.uri, actions, { compress: 0.86, format: ImageManipulator.SaveFormat.JPEG });
+        const response = await fetch(normalized.uri);
+        if (!response.ok) throw new Error('Could not read the selected photo.');
+        const file = new Blob([await response.arrayBuffer()], { type: 'image/jpeg' });
+        const photoUrl = await onUploadProfilePhoto(file);
+        setDraftProfile(current => ({ ...current, photoUrl }));
+        setProfileMessage('Photo uploaded. Preview it here, then save your profile.');
+      } catch (error) { setProfileMessage(error instanceof Error ? error.message : 'Could not upload photo.'); }
+      finally { setProfileBusy(false); }
+      return;
+    }
+    if (typeof document === 'undefined') { setProfileMessage('Photo selection is unavailable on this device.'); return; }
+    const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
     input.onchange = async () => {
       const file = input.files?.[0]; if (!file) return;
       setProfileBusy(true); setProfileMessage('Uploading photo…');
-      try { const photoUrl = await onUploadProfilePhoto(file); setDraftProfile(current => ({ ...current, photoUrl })); setProfileMessage('Photo uploaded. Save your profile to apply it.'); }
+      try { const normalized = await convertWebProfilePhotoToJpeg(file); const photoUrl = await onUploadProfilePhoto(normalized); setDraftProfile(current => ({ ...current, photoUrl })); setProfileMessage('Photo uploaded. Preview it here, then save your profile.'); }
       catch (error) { setProfileMessage(error instanceof Error ? error.message : 'Could not upload photo.'); }
       finally { setProfileBusy(false); }
     };
@@ -987,7 +1030,7 @@ function MiloProfileEditor({ visible, profile, onClose, onSaveProfile, onUploadP
           {roleMenuOpen && <View style={styles.profileRoleMenu}>{profileRoleOptions.map(option => <Pressable key={option} accessibilityRole="button" onPress={() => { setDraftProfile(current => ({ ...current, jobRole: option })); setRoleMenuOpen(false); }} style={styles.profileRoleOption}><Text style={styles.outlineText}>{option}</Text></Pressable>)}</View>}
           <TextInput style={styles.input} placeholder="Profile photo URL (or upload below)" autoCapitalize="none" keyboardType="url" value={draftProfile.photoUrl} onChangeText={photoUrl => setDraftProfile(current => ({ ...current, photoUrl }))} />
           {!!draftProfile.photoUrl && <View style={styles.profilePhotoPreview}><Image accessibilityLabel="Profile photo preview" source={{ uri: draftProfile.photoUrl }} style={styles.profilePhoto} onLoad={() => setPhotoPreviewError(false)} onError={() => setPhotoPreviewError(true)} /><View style={{ flex: 1 }}><Text style={styles.profileName}>{photoPreviewError ? 'Preview unavailable' : 'Photo ready'}</Text><Text style={styles.muted}>{photoPreviewError ? 'The image URL could not be loaded. Check the link and try again.' : 'This is the photo that will appear on your profile card.'}</Text></View></View>}
-          {Platform.OS === 'web' && <Pressable accessibilityRole="button" disabled={profileBusy} onPress={() => void chooseProfilePhoto()} style={styles.outlineButton}><Text style={styles.outlineText}>{profileBusy ? 'Uploading…' : draftProfile.photoUrl ? 'Change profile photo' : 'Choose profile photo'}</Text></Pressable>}
+          <Pressable accessibilityRole="button" disabled={profileBusy} onPress={() => void chooseProfilePhoto()} style={styles.outlineButton}><Text style={styles.outlineText}>{profileBusy ? 'Choosing or uploading…' : draftProfile.photoUrl ? 'Change profile photo' : 'Choose profile photo'}</Text></Pressable>
           <Pressable accessibilityRole="button" disabled={profileBusy} onPress={() => void saveProfile()} style={[styles.action, styles.primary, profileBusy && styles.dim]}><Text style={styles.actionText}>{profileBusy ? 'Saving…' : 'Save profile'}</Text></Pressable>
           {!!profileMessage && <Text accessibilityLiveRegion="polite" style={styles.muted}>{profileMessage}</Text>}
           <Text style={styles.muted}>Your role here personalizes greetings. It does not change HR access.</Text>

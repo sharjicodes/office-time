@@ -43,6 +43,14 @@
           ]
         }
       ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Milo to access photos so you can set your profile picture.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
       "expo-status-bar"
     ]
   }
